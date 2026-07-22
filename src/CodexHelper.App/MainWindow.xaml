@@ -1,0 +1,120 @@
+<Window x:Class="CodexHelper.App.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Codex Helper" Height="820" Width="1280" MinHeight="680" MinWidth="1050"
+        WindowStartupLocation="CenterScreen" Background="{StaticResource AppBackgroundBrush}"
+        Icon="Assets/CodexHelper.ico">
+    <Grid>
+        <Grid.ColumnDefinitions><ColumnDefinition Width="228"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+        <Border Grid.Column="0" Background="{StaticResource SidebarBrush}">
+            <Grid>
+                <Grid.RowDefinitions><RowDefinition Height="92"/><RowDefinition Height="*"/><RowDefinition Height="84"/></Grid.RowDefinitions>
+                <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="18,18,12,12" VerticalAlignment="Center">
+                    <Image Source="Assets/CodexHelper.png" Width="54" Height="54" Stretch="Uniform" />
+                    <StackPanel Margin="10,5,0,0">
+                        <TextBlock Text="Codex Helper" Foreground="White" FontSize="17" FontWeight="SemiBold" />
+                        <TextBlock Text="连接 · 保护 · 迁移" Foreground="#8EA4BE" FontSize="11" Margin="0,4,0,0" />
+                    </StackPanel>
+                </StackPanel>
+                <StackPanel Grid.Row="1">
+                    <RadioButton x:Name="DashboardNav" GroupName="Navigation" Style="{StaticResource NavButton}" Content="⌂   总览" Tag="Dashboard" IsChecked="True" Checked="Navigate_Checked"/>
+                    <RadioButton x:Name="ConnectionsNav" GroupName="Navigation" Style="{StaticResource NavButton}" Content="⇄   连接中心" Tag="Connections" Checked="Navigate_Checked"/>
+                    <RadioButton x:Name="ProjectsNav" GroupName="Navigation" Style="{StaticResource NavButton}" Content="▣   选择要保护的项目" Tag="Projects" Checked="Navigate_Checked"/>
+                    <RadioButton x:Name="SnapshotsNav" GroupName="Navigation" Style="{StaticResource NavButton}" Content="◷   备份与恢复" Tag="Snapshots" Checked="Navigate_Checked"/>
+                    <RadioButton x:Name="MigrationNav" GroupName="Navigation" Style="{StaticResource NavButton}" Content="⇅   迁移中心" Tag="Migration" Checked="Navigate_Checked"/>
+                    <RadioButton x:Name="HealthNav" GroupName="Navigation" Style="{StaticResource NavButton}" Content="♡   健康中心" Tag="Health" Checked="Navigate_Checked"/>
+                    <RadioButton x:Name="SettingsNav" GroupName="Navigation" Style="{StaticResource NavButton}" Content="⚙   设置" Tag="Settings" Checked="Navigate_Checked"/>
+                </StackPanel>
+                <Border Grid.Row="2" Margin="18,12" BorderBrush="#29415D" BorderThickness="1" CornerRadius="8" Padding="10">
+                    <StackPanel>
+                        <TextBlock Text="本地优先 · 秘密加密" Foreground="#C7D3E2" FontSize="11" />
+                        <TextBlock Text="v1.0.0" Foreground="#68829E" FontSize="11" Margin="0,4,0,0" />
+                    </StackPanel>
+                </Border>
+            </Grid>
+        </Border>
+
+        <Grid Grid.Column="1">
+            <Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="66"/></Grid.RowDefinitions>
+            <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                <Grid Margin="28,22,28,28">
+                    <Grid x:Name="DashboardPage">
+                        <StackPanel>
+                            <TextBlock Text="总览" FontSize="28" FontWeight="SemiBold" Foreground="{StaticResource PrimaryTextBrush}" />
+                            <TextBlock Text="当前连接、数据保护状态与需要处理的问题。" Foreground="{StaticResource SecondaryTextBrush}" Margin="0,7,0,20" />
+                            <UniformGrid Columns="3" Margin="0,0,0,18">
+                                <Border Style="{StaticResource Card}" Margin="0,0,10,0"><StackPanel><TextBlock Text="当前连接" Foreground="{StaticResource SecondaryTextBrush}"/><TextBlock x:Name="CurrentConnectionText" Text="正在识别…" FontSize="19" FontWeight="SemiBold" Margin="0,10,0,4"/><TextBlock x:Name="ConnectionDetailText" Text="" Foreground="{StaticResource SecondaryTextBrush}" TextTrimming="CharacterEllipsis"/></StackPanel></Border>
+                                <Border Style="{StaticResource Card}" Margin="5,0"><StackPanel><TextBlock Text="最近快照" Foreground="{StaticResource SecondaryTextBrush}"/><TextBlock x:Name="LastSnapshotText" Text="尚未备份" FontSize="19" FontWeight="SemiBold" Margin="0,10,0,4"/><TextBlock x:Name="SnapshotDetailText" Text="请选择备份仓库" Foreground="{StaticResource SecondaryTextBrush}"/></StackPanel></Border>
+                                <Border Style="{StaticResource Card}" Margin="10,0,0,0"><StackPanel><TextBlock Text="保护项目" Foreground="{StaticResource SecondaryTextBrush}"/><TextBlock x:Name="ProtectedProjectText" Text="0 个" FontSize="19" FontWeight="SemiBold" Margin="0,10,0,4"/><TextBlock x:Name="ProjectDetailText" Text="添加工作区后自动发现" Foreground="{StaticResource SecondaryTextBrush}"/></StackPanel></Border>
+                            </UniformGrid>
+                            <Border Style="{StaticResource Card}" Margin="0,0,0,18">
+                                <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                    <StackPanel><TextBlock Text="一键保护" FontSize="20" FontWeight="SemiBold"/><TextBlock Text="增量保护 Codex 关键数据、个人 Skills 和已钉住项目；重复内容不会再次占用空间。" Foreground="{StaticResource SecondaryTextBrush}" Margin="0,7,20,0" TextWrapping="Wrap"/></StackPanel>
+                                    <Button Grid.Column="1" Style="{StaticResource PrimaryButton}" Content="立即保护" Click="BackupNow_Click" MinWidth="130"/>
+                                </Grid>
+                            </Border>
+                            <Border Style="{StaticResource Card}">
+                                <StackPanel><TextBlock Text="Codex 数据概览" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,12"/>
+                                    <DataGrid x:Name="InventoryGrid" IsReadOnly="True" MaxHeight="330">
+                                        <DataGrid.Columns>
+                                            <DataGridTextColumn Header="数据" Binding="{Binding DisplayName}" Width="2*"/>
+                                            <DataGridTextColumn Header="类别" Binding="{Binding Kind}" Width="*"/>
+                                            <DataGridTextColumn Header="文件" Binding="{Binding FileCount}" Width="*"/>
+                                            <DataGridTextColumn Header="大小" Binding="{Binding SizeBytes, Converter={x:Static local:ByteSizeConverter.Instance}}" Width="*" xmlns:local="clr-namespace:CodexHelper.App"/>
+                                            <DataGridCheckBoxColumn Header="默认保护" Binding="{Binding IncludedByDefault}" Width="*"/>
+                                        </DataGrid.Columns>
+                                    </DataGrid>
+                                </StackPanel>
+                            </Border>
+                        </StackPanel>
+                    </Grid>
+
+                    <Grid x:Name="ConnectionsPage" Visibility="Collapsed">
+                        <StackPanel>
+                            <TextBlock Text="连接中心" FontSize="28" FontWeight="SemiBold"/><TextBlock Text="统一管理官方账号、普通 Responses API 和 Sub2API。切换前会检查 Codex 进程。" Foreground="{StaticResource SecondaryTextBrush}" Margin="0,7,0,20"/>
+                            <Border Style="{StaticResource Card}" Margin="0,0,0,16"><StackPanel><TextBlock Text="已保存连接" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,12"/>
+                                <DataGrid x:Name="ConnectionsGrid" IsReadOnly="True" SelectionMode="Extended" Height="250">
+                                    <DataGrid.Columns><DataGridTextColumn Header="名称" Binding="{Binding Label}" Width="2*"/><DataGridTextColumn Header="类型" Binding="{Binding Kind}" Width="*"/><DataGridTextColumn Header="身份/地址" Binding="{Binding DisplayTarget}" Width="2*"/><DataGridTextColumn Header="模型" Binding="{Binding Model}" Width="*"/><DataGridCheckBoxColumn Header="活动" Binding="{Binding IsActive}" Width="*"/><DataGridTextColumn Header="状态" Binding="{Binding StatusMessage}" Width="2*"/></DataGrid.Columns>
+                                </DataGrid>
+                                <WrapPanel Margin="0,12,0,0"><Button Style="{StaticResource PrimaryButton}" Content="切换到所选连接" Click="SwitchConnection_Click" Margin="0,0,8,0"/><Button Style="{StaticResource SecondaryButton}" Content="测试 API" Click="TestApi_Click" Margin="0,0,8,0"/><Button Style="{StaticResource SecondaryButton}" Content="安全退出 Codex" Click="StopCodex_Click"/></WrapPanel>
+                            </StackPanel></Border>
+                            <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="16"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                <Border Grid.Column="0" Style="{StaticResource Card}"><StackPanel><TextBlock Text="保存当前官方登录" FontSize="18" FontWeight="SemiBold"/><TextBlock Text="只读取 Codex 已生成的 auth.json，并使用当前 Windows 用户 DPAPI 加密。" TextWrapping="Wrap" Foreground="{StaticResource SecondaryTextBrush}" Margin="0,6,0,12"/><TextBlock Text="账号名称"/><TextBox x:Name="OfficialLabelBox" Margin="0,5,0,12"/><WrapPanel><Button Style="{StaticResource PrimaryButton}" Content="保存当前登录" Click="SaveOfficial_Click" Margin="0,0,8,0"/><Button Style="{StaticResource SecondaryButton}" Content="准备登录新账号" Click="PrepareLogin_Click"/></WrapPanel></StackPanel></Border>
+                                <Border Grid.Column="2" Style="{StaticResource Card}"><StackPanel><TextBlock Text="保存 API 档案" FontSize="18" FontWeight="SemiBold"/><Grid Margin="0,10,0,0"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions><StackPanel Margin="0,0,6,0"><TextBlock Text="名称"/><TextBox x:Name="ApiLabelBox" Margin="0,5,0,8"/></StackPanel><StackPanel Grid.Column="1" Margin="6,0,0,0"><TextBlock Text="类型"/><ComboBox x:Name="ApiKindBox" Margin="0,5,0,8" MinHeight="34" SelectedIndex="0"><ComboBoxItem Content="普通第三方 API" Tag="CustomApi"/><ComboBoxItem Content="Sub2API" Tag="Sub2Api"/></ComboBox></StackPanel></Grid><TextBlock Text="Base URL"/><TextBox x:Name="ApiUrlBox" Margin="0,5,0,8"/><TextBlock Text="模型"/><TextBox x:Name="ApiModelBox" Margin="0,5,0,8"/><TextBlock Text="API Key（留空表示保留已有 Key）"/><PasswordBox x:Name="ApiKeyBox" Margin="0,5,0,12"/><Button Style="{StaticResource PrimaryButton}" Content="加密保存 API 档案" Click="SaveApi_Click" HorizontalAlignment="Left"/></StackPanel></Border>
+                            </Grid>
+                        </StackPanel>
+                    </Grid>
+
+                    <Grid x:Name="ProjectsPage" Visibility="Collapsed"><StackPanel><TextBlock Text="选择要保护的项目" FontSize="28" FontWeight="SemiBold"/><TextBlock Text="先找到你的开发项目，再决定哪些项目需要进入日常备份。" Foreground="{StaticResource SecondaryTextBrush}" Margin="0,7,0,20"/>
+                        <Border Style="{StaticResource Card}" Margin="0,0,0,16"><StackPanel><TextBlock Text="从这里查找项目" FontSize="18" FontWeight="SemiBold"/><TextBlock Text="请选择“放着多个项目的上级文件夹”，例如 C:\实用软件开发；这里不存放备份。软件会扫描该目录和第一层子目录。" TextWrapping="Wrap" Foreground="{StaticResource SecondaryTextBrush}" Margin="0,7,0,10"/><Grid Margin="0,0,0,0"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBox x:Name="WorkspaceRootBox"/><Button Grid.Column="1" Style="{StaticResource SecondaryButton}" Content="选择项目所在位置" Click="ChooseWorkspace_Click" Margin="10,0,0,0"/></Grid></StackPanel></Border>
+                        <Border Style="{StaticResource Card}"><StackPanel><TextBlock Text="找到的项目" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,12"/><DataGrid x:Name="ProjectsGrid" IsReadOnly="True" SelectionMode="Extended" Height="350"><DataGrid.Columns><DataGridTextColumn Header="项目" Binding="{Binding Name}" Width="2*"/><DataGridTextColumn Header="位置" Binding="{Binding Path}" Width="4*"/><DataGridCheckBoxColumn Header="Git" Binding="{Binding IsGitRepository}" Width="*"/><DataGridCheckBoxColumn Header="AGENTS" Binding="{Binding HasAgentsFile}" Width="*"/><DataGridCheckBoxColumn Header="已加入备份" Binding="{Binding IsProtected}" Width="*"/></DataGrid.Columns></DataGrid><WrapPanel Margin="0,12,0,0"><Button Style="{StaticResource PrimaryButton}" Content="加入备份" Click="ProtectProjects_Click" Margin="0,0,8,0"/><Button Style="{StaticResource SecondaryButton}" Content="不再备份" Click="UnprotectProjects_Click"/></WrapPanel></StackPanel></Border>
+                    </StackPanel></Grid>
+
+                    <Grid x:Name="SnapshotsPage" Visibility="Collapsed"><StackPanel><TextBlock Text="备份与恢复" FontSize="28" FontWeight="SemiBold"/><TextBlock Text="把已选择的项目和 Codex 重要数据备份起来；需要时恢复到一个新位置。" Foreground="{StaticResource SecondaryTextBrush}" Margin="0,7,0,20"/>
+                        <Border Style="{StaticResource Card}" Margin="0,0,0,16"><Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="备份保存位置" FontSize="18" FontWeight="SemiBold"/><TextBlock Text="请选择一个专门存放备份的文件夹，例如 D:\CodexHelperBackup；不要选项目目录、CODEX_HOME 或它们的子目录。" TextWrapping="Wrap" Foreground="{StaticResource SecondaryTextBrush}" Margin="0,7,10,4"/><TextBlock x:Name="RepositoryPathText" Text="尚未设置" Foreground="{StaticResource SecondaryTextBrush}" Margin="0,0,10,0" TextTrimming="CharacterEllipsis"/></StackPanel><Button Grid.Column="1" Style="{StaticResource SecondaryButton}" Content="选择备份位置" Click="ChooseRepository_Click"/></Grid></Border>
+                        <Border Style="{StaticResource Card}"><StackPanel><TextBlock Text="已有备份" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,12"/><DataGrid x:Name="SnapshotsGrid" IsReadOnly="True" Height="350"><DataGrid.Columns><DataGridTextColumn Header="备份时间" Binding="{Binding CreatedUtc, StringFormat=yyyy-MM-dd HH:mm:ss}" Width="2*"/><DataGridTextColumn Header="名称" Binding="{Binding Label}" Width="2*"/><DataGridTextColumn Header="文件" Binding="{Binding FileCount}" Width="*"/><DataGridTextColumn Header="总大小" Binding="{Binding TotalBytes, Converter={x:Static local:ByteSizeConverter.Instance}}" Width="*" xmlns:local="clr-namespace:CodexHelper.App"/><DataGridTextColumn Header="本次新增" Binding="{Binding NewStoredBytes, Converter={x:Static local:ByteSizeConverter.Instance}}" Width="*" xmlns:local="clr-namespace:CodexHelper.App"/><DataGridTextColumn Header="结果" Binding="{Binding Outcome}" Width="*"/></DataGrid.Columns></DataGrid><WrapPanel Margin="0,12,0,0"><Button Style="{StaticResource PrimaryButton}" Content="立即备份" Click="BackupNow_Click" Margin="0,0,8,0"/><Button Style="{StaticResource SecondaryButton}" Content="恢复文件到新位置" Click="RestoreSnapshot_Click"/></WrapPanel></StackPanel></Border>
+                    </StackPanel></Grid>
+
+                    <Grid x:Name="MigrationPage" Visibility="Collapsed"><StackPanel><TextBlock Text="迁移中心" FontSize="28" FontWeight="SemiBold"/><TextBlock Text="批量导出和导入加密 .chbundle；导入默认不覆盖现有数据。" Foreground="{StaticResource SecondaryTextBrush}" Margin="0,7,0,20"/>
+                        <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="16"/><ColumnDefinition/></Grid.ColumnDefinitions>
+                            <Border Grid.Column="0" Style="{StaticResource Card}"><StackPanel><TextBlock Text="批量导出" FontSize="19" FontWeight="SemiBold"/><TextBlock Text="可一次导出 Skills、配置、项目和全部连接档案。账号令牌与 API Key 会在迁移包内再次独立加密。" TextWrapping="Wrap" Foreground="{StaticResource SecondaryTextBrush}" Margin="0,7,0,14"/><CheckBox x:Name="ExportSkillsCheck" Content="个人 Skills" IsChecked="True" Margin="0,0,0,8"/><CheckBox x:Name="ExportConfigCheck" Content="Codex 配置与 AGENTS" IsChecked="True" Margin="0,0,0,8"/><CheckBox x:Name="ExportProjectsCheck" Content="已保护项目" IsChecked="True" Margin="0,0,0,8"/><CheckBox x:Name="ExportConnectionsCheck" Content="连接档案（官方账号、API、Sub2API）" IsChecked="True" Margin="0,0,0,14"/><TextBlock Text="迁移口令（至少 10 个字符）"/><PasswordBox x:Name="ExportPasswordBox" Margin="0,5,0,14"/><Button Style="{StaticResource PrimaryButton}" Content="选择位置并批量导出" Click="ExportBundle_Click" HorizontalAlignment="Left"/><Separator Margin="0,16,0,12"/><TextBlock Text="官方账号 JSON" FontWeight="SemiBold"/><TextBlock Text="将已保存的官方账号分别导出为“账号名称.json”。此格式为官方客户端登录文件，内容含登录令牌，请妥善保存。" TextWrapping="Wrap" Foreground="{StaticResource SecondaryTextBrush}" Margin="0,5,0,10"/><Button Style="{StaticResource SecondaryButton}" Content="选择目录并批量导出 JSON" Click="ExportOfficialJson_Click" HorizontalAlignment="Left"/></StackPanel></Border>
+                            <Border Grid.Column="2" Style="{StaticResource Card}"><StackPanel><TextBlock Text="批量导入" FontSize="19" FontWeight="SemiBold"/><TextBlock Text="先验证完整性。普通文件导入到新目录；连接档案导入本机保险库且不会自动激活。" TextWrapping="Wrap" Foreground="{StaticResource SecondaryTextBrush}" Margin="0,7,0,14"/><TextBlock Text="迁移包"/><Grid Margin="0,5,0,10"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBox x:Name="ImportBundlePathBox" IsReadOnly="True"/><Button Grid.Column="1" Style="{StaticResource SecondaryButton}" Content="选择" Click="ChooseBundle_Click" Margin="8,0,0,0"/></Grid><TextBlock Text="迁移口令"/><PasswordBox x:Name="ImportPasswordBox" Margin="0,5,0,10"/><TextBlock x:Name="BundlePreviewText" Text="尚未读取迁移包" Foreground="{StaticResource SecondaryTextBrush}" TextWrapping="Wrap" Margin="0,0,0,14"/><WrapPanel><Button Style="{StaticResource SecondaryButton}" Content="预览" Click="PreviewBundle_Click" Margin="0,0,8,8"/><Button Style="{StaticResource PrimaryButton}" Content="导入普通文件" Click="ImportBundle_Click" Margin="0,0,8,8"/><Button Style="{StaticResource PrimaryButton}" Content="导入连接档案" Click="ImportConnections_Click" Margin="0,0,0,8"/></WrapPanel><Separator Margin="0,12,0,12"/><TextBlock Text="官方账号 JSON" FontWeight="SemiBold"/><TextBlock Text="可一次选择多个“名称.json”官方登录文件。导入只保存到本机保险库，不会切换当前账号。" Foreground="{StaticResource SecondaryTextBrush}" TextWrapping="Wrap" Margin="0,5,0,10"/><Button Style="{StaticResource SecondaryButton}" Content="选择多个 JSON 并导入" Click="ImportOfficialJson_Click" HorizontalAlignment="Left"/><Separator Margin="0,12,0,12"/><TextBlock Text="旧工具迁移" FontWeight="SemiBold"/><TextBlock Text="从旧版 account-switcher 与 api-switcher 目录批量导入；不会改变当前登录或配置。" Foreground="{StaticResource SecondaryTextBrush}" TextWrapping="Wrap" Margin="0,5,0,10"/><Button Style="{StaticResource SecondaryButton}" Content="选择旧数据目录并导入" Click="ImportLegacy_Click" HorizontalAlignment="Left"/></StackPanel></Border>
+                        </Grid>
+                    </StackPanel></Grid>
+
+                    <Grid x:Name="HealthPage" Visibility="Collapsed"><StackPanel><TextBlock Text="健康中心" FontSize="28" FontWeight="SemiBold"/><TextBlock Text="检查 Codex、凭据、配置和备份仓库，不显示秘密内容。" Foreground="{StaticResource SecondaryTextBrush}" Margin="0,7,0,20"/><Border Style="{StaticResource Card}"><StackPanel><TextBlock Text="诊断结果" FontSize="18" FontWeight="SemiBold"/><TextBox x:Name="HealthTextBox" IsReadOnly="True" AcceptsReturn="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" Height="360" Margin="0,12,0,12"/><Button Style="{StaticResource PrimaryButton}" Content="运行健康检查" Click="RunHealth_Click" HorizontalAlignment="Left"/></StackPanel></Border></StackPanel></Grid>
+
+                    <Grid x:Name="SettingsPage" Visibility="Collapsed"><StackPanel><TextBlock Text="设置" FontSize="28" FontWeight="SemiBold"/><TextBlock Text="目录和策略均可配置，不依赖固定盘符。" Foreground="{StaticResource SecondaryTextBrush}" Margin="0,7,0,20"/><Border Style="{StaticResource Card}"><StackPanel><TextBlock Text="Codex 根目录"/><Grid Margin="0,5,0,12"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBox x:Name="CodexRootBox"/><Button Grid.Column="1" Style="{StaticResource SecondaryButton}" Content="选择" Click="ChooseCodexRoot_Click" Margin="8,0,0,0"/></Grid><CheckBox x:Name="IncludeSessionsCheck" Content="日常快照包含任务与会话" Margin="0,0,0,8"/><CheckBox x:Name="IncludeAttachmentsCheck" Content="日常快照包含附件与上传" Margin="0,0,0,8"/><CheckBox x:Name="IncludeGeneratedCheck" Content="日常快照包含生成图片" Margin="0,0,0,14"/><WrapPanel><Button Style="{StaticResource PrimaryButton}" Content="保存设置并重新扫描" Click="SaveSettings_Click" Margin="0,0,8,0"/><Button Style="{StaticResource SecondaryButton}" Content="重新观看新手引导" Click="ShowTutorial_Click"/></WrapPanel></StackPanel></Border></StackPanel></Grid>
+                </Grid>
+            </ScrollViewer>
+
+            <Border Grid.Row="1" Background="White" BorderBrush="{StaticResource BorderBrushSoft}" BorderThickness="0,1,0,0">
+                <Grid Margin="24,10"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="260"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                    <StackPanel><TextBlock x:Name="OperationStageText" Text="就绪" FontWeight="SemiBold"/><TextBlock x:Name="OperationMessageText" Text="数据仅保存在本机。" Foreground="{StaticResource SecondaryTextBrush}" FontSize="11" TextTrimming="CharacterEllipsis"/></StackPanel>
+                    <ProgressBar x:Name="OperationProgressBar" Grid.Column="1" Height="8" VerticalAlignment="Center" Minimum="0" Maximum="100" Visibility="Collapsed"/>
+                    <Button x:Name="CancelOperationButton" Grid.Column="2" Style="{StaticResource SecondaryButton}" Content="取消" Margin="12,0,0,0" Visibility="Collapsed" Click="CancelOperation_Click"/>
+                </Grid>
+            </Border>
+        </Grid>
+    </Grid>
+</Window>

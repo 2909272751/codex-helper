@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <AssemblyName>CodexHelperRescue</AssemblyName>
+    <RootNamespace>CodexHelper.Rescue</RootNamespace>
+    <ApplicationIcon>..\..\assets\CodexHelper.ico</ApplicationIcon>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\CodexHelper.Core\CodexHelper.Core.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <Resource Include="..\..\assets\CodexHelper-512.png" Link="Assets\CodexHelper.png" />
+    <Resource Include="..\..\assets\CodexHelper.ico" Link="Assets\CodexHelper.ico" />
+  </ItemGroup>
+</Project>

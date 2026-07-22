@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <AssemblyName>CodexHelper</AssemblyName>
+    <RootNamespace>CodexHelper.App</RootNamespace>
+    <ApplicationIcon>..\..\assets\CodexHelper.ico</ApplicationIcon>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\CodexHelper.Core\CodexHelper.Core.csproj" />
+    <ProjectReference Include="..\CodexHelper.CredentialHelper\CodexHelper.CredentialHelper.csproj" ReferenceOutputAssembly="false" />
+  </ItemGroup>
+  <ItemGroup>
+    <Resource Include="..\..\assets\CodexHelper-512.png" Link="Assets\CodexHelper.png" />
+    <Resource Include="..\..\assets\CodexHelper.ico" Link="Assets\CodexHelper.ico" />
+  </ItemGroup>
+  <Target Name="CopyCredentialHelperForDevelopment" AfterTargets="Build">
+    <Copy SourceFiles="..\CodexHelper.CredentialHelper\bin\$(Configuration)\net8.0-windows\CodexHelperCredentialHelper.exe"
+          DestinationFolder="$(OutputPath)"
+          Condition="Exists('..\CodexHelper.CredentialHelper\bin\$(Configuration)\net8.0-windows\CodexHelperCredentialHelper.exe')" />
+  </Target>
+</Project>

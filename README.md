@@ -2,7 +2,7 @@
 
 Codex Helper 是面向 Windows 10/11 的 Codex 专属工作台，统一管理官方账号、第三方 Responses API、重要项目、个人 Skills、Codex 配置、加密增量备份与批量迁移。
 
-当前正式版本：`1.0.0`
+当前正式版本：`1.1.0`
 
 ![Codex Helper Logo](assets/CodexHelper-256.png)
 
@@ -17,6 +17,7 @@ Codex Helper 是面向 Windows 10/11 的 Codex 专属工作台，统一管理官
 ## 当前功能
 
 - 官方账号、Responses API 与 Sub2API 统一档案；切换前检查 Codex 进程。
+- “双模型执行”：GPT/Codex 保持规划与验收，OpenCode Go 模型通过官方 Chat Completions API 执行读写、测试和 Git 操作；无需安装 OpenCode，也不会替换主模型。
 - API 切换同时同步 `config.toml`、状态数据库与会话 JSONL，任何一步失败都回滚。
 - 自动发现个人 Skills、Codex 关键数据与 Git 项目，一键创建认证加密增量快照。
 - `.chbundle` 批量导出/导入；账号令牌和 API Key 在已加密迁移包内再次独立加密。
@@ -30,6 +31,15 @@ Codex Helper 是面向 Windows 10/11 的 Codex 专属工作台，统一管理官
 3. 在“连接中心”保存账号/API 档案；切换时先彻底退出 Codex。
 4. 在“迁移中心”设置至少 10 位口令，批量导出普通数据与连接档案。
 5. 新机器先预览迁移包，再分别导入普通文件和连接档案；连接不会自动启用。
+
+### 使用 OpenCode Go 双模型执行
+
+1. 打开“**双模型执行**”，粘贴 OpenCode Go API Key，点击“读取支持模型”。列表会显示 Go API 返回的全部模型；软件会按模型自动选择 OpenAI Chat Completions 或 Anthropic Messages 协议。
+2. 从自动读取的列表选择模型，保存后点击“测试所选档案”。Key 只用当前 Windows 用户的 DPAPI 加密保存。
+3. 点击“一键启用双模型执行”，按提示退出并重新打开 Codex。
+4. 在 Codex 中提出任务时，GPT 会先压缩为任务合同，随后让 Go 外部执行代理修改、测试和汇报，GPT 最后检查 diff 与证据。
+
+OpenCode Go 公开的是 Chat Completions 与 Anthropic Messages 接口，而不是 Responses API，因此它以受 Codex Helper 管理的外部执行代理运行；这避免改变 Plus 登录的 GPT 主控。启用档案默认允许执行代理在当前 Windows 用户可访问范围内编辑、测试、提交和 `git push`，请只在你信任的 Go 模型和工作区中启用。
 
 本地快照仓库密钥由当前 Windows 用户 DPAPI 保护，适合本机恢复；跨机器迁移请使用带口令的 `.chbundle`。详细安全模型见 [docs/SECURITY.md](docs/SECURITY.md)。
 
@@ -54,6 +64,6 @@ powershell -ExecutionPolicy Bypass -File scripts\build.ps1
 powershell -ExecutionPolicy Bypass -File scripts\build-release.ps1
 ```
 
-发布构建输出到 `artifacts/v1.0.0/`，文件名均包含版本号。
+发布构建输出到 `artifacts/v1.1.0/`，文件名均包含版本号。
 
-`codex-helper-v1.0.0-setup.exe` 是推荐的一键安装包：提供安装向导、可选桌面快捷方式、开始菜单入口和卸载项；卸载不会删除 Codex 数据、账号保险库或备份目录。`windows-x64-portable.zip` 适合免安装使用。
+`codex-helper-v1.1.0-setup.exe` 是推荐的一键安装包：提供安装向导、可选桌面快捷方式、开始菜单入口和卸载项；卸载不会删除 Codex 数据、账号保险库或备份目录。`windows-x64-portable.zip` 适合免安装使用。

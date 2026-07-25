@@ -23,6 +23,7 @@ public sealed class ApiProviderService
     private readonly string stableHelperPath;
     private readonly CodexProcessService processes;
     private readonly JsonStore json = new();
+    private const string OpenCodeGoSkillName = "codex-helper-dual-model";
 
     public ApiProviderService(string rootPath, AppPaths paths, CodexProcessService processes)
     {
@@ -61,9 +62,33 @@ public sealed class ApiProviderService
         return profile;
     }
 
+    public ConnectionProfile SaveOpenCodeGoProfile(string label, string model, string? apiKey)
+    {
+        var cleanModel = model.Trim();
+        if (string.IsNullOrWhiteSpace(label) || string.IsNullOrWhiteSpace(cleanModel)) throw new InvalidOperationException("名称和模型不能为空。");
+        var index = LoadIndex();
+        var profile = index.Profiles.FirstOrDefault(item => item.Kind == ConnectionKind.OpenCodeGo && string.Equals(item.Label, label.Trim(), StringComparison.OrdinalIgnoreCase));
+        if (profile is null)
+        {
+            profile = new ConnectionProfile { Label = label.Trim(), Kind = ConnectionKind.OpenCodeGo };
+            index.Profiles.Add(profile);
+        }
+        if (!string.IsNullOrWhiteSpace(apiKey)) SaveSecret(profile.Id, apiKey.Trim());
+        else if (!File.Exists(SecretPath(profile.Id))) throw new InvalidOperationException("首次保存 OpenCode Go 档案时必须填写 API Key。");
+        profile.BaseUrl = OpenCodeGoExecutor.BaseUrl;
+        profile.Model = cleanModel;
+        profile.UpdatedUtc = DateTime.UtcNow;
+        profile.RequiresAttention = false;
+        profile.StatusMessage = "尚未验证；启用后不会替换 GPT 主模型";
+        SaveIndex(index);
+        return profile;
+    }
+
     public async Task<IReadOnlyList<string>> ListModelsAsync(string profileId, CancellationToken cancellationToken = default)
     {
         var profile = RequireProvider(profileId);
+        if (profile.Kind == ConnectionKind.OpenCodeGo)
+            return await new OpenCodeGoExecutor().ListModelsAsync(ReadSecret(profileId), cancellationToken);
         using var client = CreateClient(ReadSecret(profileId));
         using var response = await client.GetAsync(profile.BaseUrl.TrimEnd('/') + "/models", cancellationToken);
         var body = await response.Content.ReadAsStringAsync(cancellationToken);
@@ -81,6 +106,16 @@ public sealed class ApiProviderService
     public async Task<string> TestAsync(string profileId, CancellationToken cancellationToken = default)
     {
         var profile = RequireProvider(profileId);
+        if (profile.Kind == ConnectionKind.OpenCodeGo)
+        {
+            var message = await new OpenCodeGoExecutor().TestAsync(ReadSecret(profileId), profile.Model, cancellationToken);
+            var goIndex = LoadIndex();
+            var goSaved = goIndex.Profiles.First(item => item.Id == profileId);
+            goSaved.LastVerifiedUtc = DateTime.UtcNow;
+            goSaved.StatusMessage = message;
+            SaveIndex(goIndex);
+            return message;
+        }
         using var client = CreateClient(ReadSecret(profileId));
         var payload = JsonSerializer.Serialize(new
         {
@@ -105,10 +140,20 @@ public sealed class ApiProviderService
         return saved.StatusMessage;
     }
 
+    public Task<OpenCodeGoExecutionResult> ExecuteOpenCodeGoAsync(string profileId, string workspace, string instruction, string? modelOverride = null, CancellationToken cancellationToken = default)
+    {
+        var profile = RequireProvider(profileId);
+        if (profile.Kind != ConnectionKind.OpenCodeGo) throw new InvalidOperationException("所选档案不是 OpenCode Go 执行档案。");
+        var model = string.IsNullOrWhiteSpace(modelOverride) ? profile.Model : modelOverride.Trim();
+        return new OpenCodeGoExecutor().ExecuteAsync(new OpenCodeGoExecutionRequest(ReadSecret(profileId), model, Path.GetFullPath(workspace), instruction), cancellationToken);
+    }
+
     public void SwitchTo(string profileId, string credentialHelperSourcePath)
     {
         AssertSafeToWrite();
         var profile = RequireProvider(profileId);
+        if (profile.Kind == ConnectionKind.OpenCodeGo)
+            throw new InvalidOperationException("OpenCode Go 是双模型执行端，不能替换 Codex 的 GPT 主模型。请使用“启用双模型执行”。");
         if (profile.RequiresAttention && profile.BaseUrl.StartsWith("http://", StringComparison.OrdinalIgnoreCase) && !IsLoopback(profile.BaseUrl))
             throw new InvalidOperationException("该档案使用远程 HTTP，可能明文传输 API Key。请改用 HTTPS 后再切换。");
         EnsureHelperInstalled(credentialHelperSourcePath);
@@ -182,8 +227,54 @@ public sealed class ApiProviderService
     public string EmitSecret(string profileId) => ReadSecret(profileId);
 
     public IReadOnlyList<ConnectionProfile> GetProfiles() => LoadIndex().Profiles
-        .Where(item => item.Kind is ConnectionKind.CustomApi or ConnectionKind.Sub2Api)
+        .Where(item => item.Kind is ConnectionKind.CustomApi or ConnectionKind.Sub2Api or ConnectionKind.OpenCodeGo)
         .ToList();
+
+    public void EnableDualModel(string profileId, string credentialHelperSourcePath)
+    {
+        AssertSafeToWrite();
+        var profile = RequireProvider(profileId);
+        if (profile.Kind != ConnectionKind.OpenCodeGo) throw new InvalidOperationException("请选择 OpenCode Go 执行档案。");
+        EnsureHelperInstalled(credentialHelperSourcePath);
+        var skillDirectory = Path.Combine(codexRoot, "skills", OpenCodeGoSkillName);
+        var skillPath = Path.Combine(skillDirectory, "SKILL.md");
+        var backup = CreateDualModelBackup(skillPath, "enable");
+        try
+        {
+            Directory.CreateDirectory(skillDirectory);
+            AtomicFile.WriteAllText(skillPath, BuildDualModelSkill(profile.Id, profile.Model));
+            var index = LoadIndex();
+            foreach (var item in index.Profiles.Where(item => item.Kind == ConnectionKind.OpenCodeGo)) item.IsDualModelEnabled = item.Id == profileId;
+            index.Profiles.First(item => item.Id == profileId).StatusMessage = "双模型执行已启用；GPT 保持为主控";
+            SaveIndex(index);
+        }
+        catch
+        {
+            RestoreDualModelBackup(skillPath, backup);
+            throw;
+        }
+    }
+
+    public void DisableDualModel()
+    {
+        AssertSafeToWrite();
+        var skillPath = Path.Combine(codexRoot, "skills", OpenCodeGoSkillName, "SKILL.md");
+        var backup = CreateDualModelBackup(skillPath, "disable");
+        try
+        {
+            if (File.Exists(skillPath)) File.Delete(skillPath);
+            var directory = Path.GetDirectoryName(skillPath)!;
+            if (Directory.Exists(directory) && !Directory.EnumerateFileSystemEntries(directory).Any()) Directory.Delete(directory);
+            var index = LoadIndex();
+            foreach (var item in index.Profiles.Where(item => item.Kind == ConnectionKind.OpenCodeGo)) item.IsDualModelEnabled = false;
+            SaveIndex(index);
+        }
+        catch
+        {
+            RestoreDualModelBackup(skillPath, backup);
+            throw;
+        }
+    }
 
     public byte[] ExportSecretBytesForBundle(string profileId)
     {
@@ -193,9 +284,9 @@ public sealed class ApiProviderService
 
     public ConnectionProfile ImportDecryptedProfile(string label, ConnectionKind kind, string baseUrl, string model, ReadOnlySpan<byte> secretBytes)
     {
-        if (kind is not (ConnectionKind.CustomApi or ConnectionKind.Sub2Api)) throw new InvalidDataException("API 连接档案类型无效。");
+        if (kind is not (ConnectionKind.CustomApi or ConnectionKind.Sub2Api or ConnectionKind.OpenCodeGo)) throw new InvalidDataException("API 连接档案类型无效。");
         if (secretBytes.IsEmpty) throw new InvalidDataException("API 连接档案缺少 API Key。");
-        var profile = SaveProfileMetadata(UniqueLabel(LoadIndex(), label), kind, baseUrl, model);
+        var profile = SaveProfileMetadata(UniqueLabel(LoadIndex(), label), kind, kind == ConnectionKind.OpenCodeGo ? OpenCodeGoExecutor.BaseUrl : baseUrl, model);
         SaveSecretBytes(profile.Id, secretBytes);
         return profile;
     }
@@ -213,7 +304,7 @@ public sealed class ApiProviderService
     private ConnectionProfile RequireProvider(string profileId)
     {
         ValidateProfileId(profileId);
-        return LoadIndex().Profiles.FirstOrDefault(item => item.Id == profileId && item.Kind is ConnectionKind.CustomApi or ConnectionKind.Sub2Api)
+        return LoadIndex().Profiles.FirstOrDefault(item => item.Id == profileId && item.Kind is ConnectionKind.CustomApi or ConnectionKind.Sub2Api or ConnectionKind.OpenCodeGo)
             ?? throw new InvalidOperationException("未找到 API 连接档案。");
     }
 
@@ -274,6 +365,53 @@ public sealed class ApiProviderService
         SaveIndex(index);
         return profile;
     }
+
+    private string CreateDualModelBackup(string skillPath, string purpose)
+    {
+        Directory.CreateDirectory(recoveryDirectory);
+        var backup = Path.Combine(recoveryDirectory, $"dual-model-{purpose}-{DateTime.UtcNow:yyyyMMddTHHmmssfffZ}-{Guid.NewGuid():N}.bak");
+        if (File.Exists(skillPath)) File.Copy(skillPath, backup, overwrite: false);
+        else File.WriteAllText(backup, "# Codex Helper dual-model skill did not exist before this operation.\n", Encoding.UTF8);
+        return backup;
+    }
+
+    private static void RestoreDualModelBackup(string skillPath, string backup)
+    {
+        var contents = File.ReadAllText(backup, Encoding.UTF8);
+        if (contents.StartsWith("# Codex Helper dual-model skill did not exist", StringComparison.Ordinal))
+        {
+            if (File.Exists(skillPath)) File.Delete(skillPath);
+            return;
+        }
+        Directory.CreateDirectory(Path.GetDirectoryName(skillPath)!);
+        AtomicFile.WriteAllText(skillPath, contents);
+    }
+
+    private string BuildDualModelSkill(string profileId, string model) => $$"""
+---
+name: codex-helper-dual-model
+description: Use GPT as the planner and reviewer while delegating implementation and verification to the configured OpenCode Go model.
+---
+
+# Codex Helper Dual Model
+
+Use this workflow when the user asks to save GPT/Codex usage through an external execution agent.
+
+1. Inspect the request and repository. Write a compact task contract that includes the goal, acceptance criteria, relevant tests, and any constraints.
+2. Save the contract to a temporary UTF-8 text file. Do not include secrets in it.
+3. Run the command below, replacing `<contract-file>` with that file and `<workspace>` with the repository root:
+
+```powershell
+& '{{EscapePowerShell(stableHelperPath)}}' --root '{{EscapePowerShell(codexRoot)}}' --profile '{{profileId}}' --execute-go --model '{{EscapePowerShell(model)}}' --workspace '<workspace>' --instruction-file '<contract-file>'
+```
+
+4. The execution model is authorized by this enabled profile to edit, test, commit, and push by default. Wait for its evidence. Never include secrets in commands, commits, or output.
+5. Independently inspect the final diff and test evidence. If it misses acceptance criteria, issue one targeted follow-up through the same command. After two failed repairs, take over with GPT.
+
+The main Codex model remains the planner and final reviewer. Never print or request the Go API key.
+""";
+
+    private static string EscapePowerShell(string value) => value.Replace("'", "''", StringComparison.Ordinal);
 
     private int ImportLegacyProfile(string directory, IReadOnlyDictionary<string, string> values, ConnectionKind kind, string label, string urlKey, string modelKey, string credentialName)
     {

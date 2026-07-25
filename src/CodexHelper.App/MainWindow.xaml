@@ -19,6 +19,7 @@
                 <StackPanel Grid.Row="1">
                     <RadioButton x:Name="DashboardNav" GroupName="Navigation" Style="{StaticResource NavButton}" Content="⌂   总览" Tag="Dashboard" IsChecked="True" Checked="Navigate_Checked"/>
                     <RadioButton x:Name="ConnectionsNav" GroupName="Navigation" Style="{StaticResource NavButton}" Content="⇄   连接中心" Tag="Connections" Checked="Navigate_Checked"/>
+                    <RadioButton x:Name="DualModelNav" GroupName="Navigation" Style="{StaticResource NavButton}" Content="◈   双模型执行" Tag="DualModel" Checked="Navigate_Checked"/>
                     <RadioButton x:Name="ProjectsNav" GroupName="Navigation" Style="{StaticResource NavButton}" Content="▣   选择要保护的项目" Tag="Projects" Checked="Navigate_Checked"/>
                     <RadioButton x:Name="SnapshotsNav" GroupName="Navigation" Style="{StaticResource NavButton}" Content="◷   备份与恢复" Tag="Snapshots" Checked="Navigate_Checked"/>
                     <RadioButton x:Name="MigrationNav" GroupName="Navigation" Style="{StaticResource NavButton}" Content="⇅   迁移中心" Tag="Migration" Checked="Navigate_Checked"/>
@@ -28,7 +29,7 @@
                 <Border Grid.Row="2" Margin="18,12" BorderBrush="#29415D" BorderThickness="1" CornerRadius="8" Padding="10">
                     <StackPanel>
                         <TextBlock Text="本地优先 · 秘密加密" Foreground="#C7D3E2" FontSize="11" />
-                        <TextBlock Text="v1.0.0" Foreground="#68829E" FontSize="11" Margin="0,4,0,0" />
+                        <TextBlock Text="v1.1.0" Foreground="#68829E" FontSize="11" Margin="0,4,0,0" />
                     </StackPanel>
                 </Border>
             </Grid>
@@ -82,6 +83,30 @@
                                 <Border Grid.Column="0" Style="{StaticResource Card}"><StackPanel><TextBlock Text="保存当前官方登录" FontSize="18" FontWeight="SemiBold"/><TextBlock Text="只读取 Codex 已生成的 auth.json，并使用当前 Windows 用户 DPAPI 加密。" TextWrapping="Wrap" Foreground="{StaticResource SecondaryTextBrush}" Margin="0,6,0,12"/><TextBlock Text="账号名称"/><TextBox x:Name="OfficialLabelBox" Margin="0,5,0,12"/><WrapPanel><Button Style="{StaticResource PrimaryButton}" Content="保存当前登录" Click="SaveOfficial_Click" Margin="0,0,8,0"/><Button Style="{StaticResource SecondaryButton}" Content="准备登录新账号" Click="PrepareLogin_Click"/></WrapPanel></StackPanel></Border>
                                 <Border Grid.Column="2" Style="{StaticResource Card}"><StackPanel><TextBlock Text="保存 API 档案" FontSize="18" FontWeight="SemiBold"/><Grid Margin="0,10,0,0"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions><StackPanel Margin="0,0,6,0"><TextBlock Text="名称"/><TextBox x:Name="ApiLabelBox" Margin="0,5,0,8"/></StackPanel><StackPanel Grid.Column="1" Margin="6,0,0,0"><TextBlock Text="类型"/><ComboBox x:Name="ApiKindBox" Margin="0,5,0,8" MinHeight="34" SelectedIndex="0"><ComboBoxItem Content="普通第三方 API" Tag="CustomApi"/><ComboBoxItem Content="Sub2API" Tag="Sub2Api"/></ComboBox></StackPanel></Grid><TextBlock Text="Base URL"/><TextBox x:Name="ApiUrlBox" Margin="0,5,0,8"/><TextBlock Text="模型"/><TextBox x:Name="ApiModelBox" Margin="0,5,0,8"/><TextBlock Text="API Key（留空表示保留已有 Key）"/><PasswordBox x:Name="ApiKeyBox" Margin="0,5,0,12"/><Button Style="{StaticResource PrimaryButton}" Content="加密保存 API 档案" Click="SaveApi_Click" HorizontalAlignment="Left"/></StackPanel></Border>
                             </Grid>
+                        </StackPanel>
+                    </Grid>
+
+                    <Grid x:Name="DualModelPage" Visibility="Collapsed">
+                        <StackPanel>
+                            <TextBlock Text="双模型执行" FontSize="28" FontWeight="SemiBold"/>
+                            <TextBlock Text="GPT 保持在 Codex 中负责规划、审查和接管；OpenCode Go 的模型执行读代码、修改、测试与 Git 操作。此功能不替换当前 GPT 连接。" Foreground="{StaticResource SecondaryTextBrush}" Margin="0,7,0,20" TextWrapping="Wrap"/>
+                            <Border Style="{StaticResource Card}" Margin="0,0,0,16">
+                                <StackPanel>
+                                    <TextBlock Text="OpenCode Go 档案" FontSize="18" FontWeight="SemiBold"/>
+                                    <TextBlock Text="首次粘贴 Go API Key 后，点击“读取支持模型”；模型列表直接来自 Go API。密钥仅以当前 Windows 用户 DPAPI 加密保存。" Foreground="{StaticResource SecondaryTextBrush}" Margin="0,6,0,14" TextWrapping="Wrap"/>
+                                    <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="16"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                        <StackPanel Grid.Column="0"><TextBlock Text="档案名称"/><TextBox x:Name="GoLabelBox" Text="OpenCode Go" Margin="0,5,0,10"/><TextBlock Text="Go API Key"/><PasswordBox x:Name="GoApiKeyBox" Margin="0,5,0,10"/><Button Style="{StaticResource SecondaryButton}" Content="读取支持模型" Click="LoadGoModels_Click" HorizontalAlignment="Left"/></StackPanel>
+                                        <StackPanel Grid.Column="2"><TextBlock Text="执行模型"/><ComboBox x:Name="GoModelBox" Margin="0,5,0,10" MinHeight="34" IsEditable="False"/><TextBlock Text="建议：DeepSeek V4 Pro 处理普通任务；DeepSeek V4 Flash 用于批量、低风险改动。" TextWrapping="Wrap" Foreground="{StaticResource SecondaryTextBrush}" Margin="0,0,0,10"/><Button Style="{StaticResource PrimaryButton}" Content="加密保存 Go 档案" Click="SaveGoProfile_Click" HorizontalAlignment="Left"/></StackPanel>
+                                    </Grid>
+                                </StackPanel>
+                            </Border>
+                            <Border Style="{StaticResource Card}">
+                                <StackPanel><TextBlock Text="已保存的执行档案" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,12"/>
+                                    <DataGrid x:Name="GoProfilesGrid" IsReadOnly="True" Height="220"><DataGrid.Columns><DataGridTextColumn Header="名称" Binding="{Binding Label}" Width="2*"/><DataGridTextColumn Header="模型" Binding="{Binding Model}" Width="2*"/><DataGridTextColumn Header="验证" Binding="{Binding LastVerifiedUtc, StringFormat=yyyy-MM-dd HH:mm}" Width="*"/><DataGridCheckBoxColumn Header="已启用" Binding="{Binding IsDualModelEnabled}" Width="*"/><DataGridTextColumn Header="状态" Binding="{Binding StatusMessage}" Width="3*"/></DataGrid.Columns></DataGrid>
+                                    <WrapPanel Margin="0,12,0,0"><Button Style="{StaticResource SecondaryButton}" Content="测试 Go API" Click="TestGoProfile_Click" Margin="0,0,8,0"/><Button Style="{StaticResource PrimaryButton}" Content="一键启用双模型" Click="EnableDualModel_Click" Margin="0,0,8,0"/><Button Style="{StaticResource SecondaryButton}" Content="停用双模型" Click="DisableDualModel_Click"/></WrapPanel>
+                                    <TextBlock Text="启用时会安装一个不含密钥的 Codex Skill。关闭并重新打开 Codex 后，在任务中要求“使用 Codex Helper 双模型执行”即可；执行端默认可修改任意用户可访问项目并执行 git push。" Foreground="{StaticResource SecondaryTextBrush}" TextWrapping="Wrap" Margin="0,12,0,0"/>
+                                </StackPanel>
+                            </Border>
                         </StackPanel>
                     </Grid>
 

@@ -1,4 +1,6 @@
 using System.Security.Cryptography;
+using System.Net;
+using System.Net.Http;
 using System.Reflection;
 using System.Text;
 using System.Text.Json;
@@ -24,6 +26,8 @@ internal static class Program
         ("官方账号保存与安全切换", TestOfficialAccountsAsync),
         ("官方账号 JSON 批量导入导出", TestOfficialJsonTransferAsync),
         ("API 配置保留与凭据隔离", TestApiProviderSwitchAsync),
+        ("双模型 Skill 安装与主模型保留", TestDualModelSkillAsync),
+        ("OpenCode Go 工具执行回路", TestOpenCodeGoExecutorAsync),
         ("TOML 损坏配置阻断", TestTomlValidationAsync)
     ];
 
@@ -301,6 +305,51 @@ internal static class Program
         });
     }
 
+    private static async Task TestDualModelSkillAsync()
+    {
+        await WithTempDirectoryAsync("dual-model", async root =>
+        {
+            var codex = Path.Combine(root, "codex");
+            Directory.CreateDirectory(codex);
+            await File.WriteAllTextAsync(Path.Combine(codex, "config.toml"), "model_provider = \"openai\"\nmodel = \"gpt-test\"\n");
+            var app = new AppPaths(Path.Combine(root, "app"));
+            app.EnsureCreated();
+            var helper = Path.Combine(root, "helper.exe");
+            await File.WriteAllBytesAsync(helper, [0x4D, 0x5A, 0x01]);
+            var service = new ApiProviderService(codex, app, new CodexProcessService());
+            var profile = service.SaveOpenCodeGoProfile("Go 执行", "deepseek-v4-pro", "go-key-secret-test");
+            service.EnableDualModel(profile.Id, helper);
+            var skill = Path.Combine(codex, "skills", "codex-helper-dual-model", "SKILL.md");
+            var text = await File.ReadAllTextAsync(skill);
+            Assert(File.Exists(skill), "启用后应安装双模型 Skill");
+            Assert(text.Contains("--execute-go") && text.Contains(profile.Id), "Skill 应调用指定执行档案");
+            Assert(!text.Contains("go-key-secret-test", StringComparison.Ordinal), "Skill 不得包含 Go API Key");
+            Assert((await File.ReadAllTextAsync(Path.Combine(codex, "config.toml"))).Contains("model_provider = \"openai\""), "启用双模型不得切换 GPT 主 provider");
+            Assert(service.GetProfiles().Single(item => item.Id == profile.Id).IsDualModelEnabled, "档案应标记为已启用");
+            service.DisableDualModel();
+            Assert(!File.Exists(skill), "停用后应移除 Helper 安装的 Skill");
+            Assert(!service.GetProfiles().Single(item => item.Id == profile.Id).IsDualModelEnabled, "停用后不应保留启用标记");
+        });
+    }
+
+    private static async Task TestOpenCodeGoExecutorAsync()
+    {
+        await WithTempDirectoryAsync("go-executor", async root =>
+        {
+            using var client = new HttpClient(new GoFakeHandler());
+            var executor = new OpenCodeGoExecutor(client);
+            var models = await executor.ListModelsAsync("synthetic-go-key");
+            Assert(models.SequenceEqual(["deepseek-v4-flash", "deepseek-v4-pro", "minimax-m3", "qwen3.7-plus"]), "Go 模型列表解析不正确");
+            await executor.TestAsync("synthetic-go-key", "deepseek-v4-pro");
+            var result = await executor.ExecuteAsync(new OpenCodeGoExecutionRequest("synthetic-go-key", "deepseek-v4-flash", root, "创建验证文件并报告。"));
+            Assert(result.ToolCalls == 1 && result.FinalOutput == "完成", "Go 工具执行回路结果不正确");
+            Assert(File.Exists(Path.Combine(root, "go-probe.txt")), "执行器未在工作目录中执行模型请求的命令");
+            var messagesResult = await executor.ExecuteAsync(new OpenCodeGoExecutionRequest("synthetic-go-key", "minimax-m3", root, "创建 Anthropic 验证文件并报告。"));
+            Assert(messagesResult.ToolCalls == 1 && messagesResult.FinalOutput == "Messages 完成", "Go Messages 工具执行回路结果不正确");
+            Assert(File.Exists(Path.Combine(root, "messages-probe.txt")), "Messages 执行器未在工作目录中执行模型请求的命令");
+        });
+    }
+
     private static Task TestTomlValidationAsync()
     {
         _ = TomlConfigurationDocument.Parse(["model = \"x\"", "[mcp_servers.demo]", "command = \"demo\""]);
@@ -310,6 +359,37 @@ internal static class Program
     }
 
     private static string Auth(string accountId) => JsonSerializer.Serialize(new { auth_mode = "chatgpt", account_id = accountId, tokens = new { access_token = "synthetic" } });
+
+    private sealed class GoFakeHandler : HttpMessageHandler
+    {
+        private int chatCalls;
+        private int messageCalls;
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            if (request.Method == HttpMethod.Get && request.RequestUri!.AbsolutePath.EndsWith("/models", StringComparison.Ordinal))
+                return Task.FromResult(Json("{\"data\":[{\"id\":\"deepseek-v4-pro\"},{\"id\":\"deepseek-v4-flash\"},{\"id\":\"qwen3.7-plus\"},{\"id\":\"minimax-m3\"}]}"));
+            if (request.Method == HttpMethod.Post && request.RequestUri!.AbsolutePath.EndsWith("/chat/completions", StringComparison.Ordinal))
+            {
+                chatCalls++;
+                return Task.FromResult(chatCalls == 1
+                    ? Json("{\"choices\":[{\"message\":{\"content\":\"OK\"}}]}")
+                    : chatCalls == 2
+                    ? Json("{\"choices\":[{\"message\":{\"content\":\"\",\"tool_calls\":[{\"id\":\"call-1\",\"type\":\"function\",\"function\":{\"name\":\"run_powershell\",\"arguments\":\"{\\\"command\\\":\\\"Set-Content -LiteralPath go-probe.txt -Value probe\\\"}\"}}]}}]}")
+                    : Json("{\"choices\":[{\"message\":{\"content\":\"完成\"}}]}"));
+            }
+            if (request.Method == HttpMethod.Post && request.RequestUri!.AbsolutePath.EndsWith("/messages", StringComparison.Ordinal))
+            {
+                messageCalls++;
+                return Task.FromResult(messageCalls == 1
+                    ? Json("{\"content\":[{\"type\":\"tool_use\",\"id\":\"toolu-1\",\"name\":\"run_powershell\",\"input\":{\"command\":\"Set-Content -LiteralPath messages-probe.txt -Value probe\"}}]}")
+                    : Json("{\"content\":[{\"type\":\"text\",\"text\":\"Messages 完成\"}]}"));
+            }
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
+        }
+
+        private static HttpResponseMessage Json(string body) => new(HttpStatusCode.OK) { Content = new StringContent(body, Encoding.UTF8, "application/json") };
+    }
 
     private static async Task WithTempDirectoryAsync(string name, Func<string, Task> action)
     {

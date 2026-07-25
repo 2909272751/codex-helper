@@ -72,6 +72,17 @@ C:\实用软件开发\codex-helper\.git\backup  ← 更不能选
 - **保存 API 档案**：填写名称、Base URL、模型和 API Key。Key 不会写进 `config.toml`。
 - **切换连接**：先关闭 Codex。软件会检查进程、备份并同步需要的配置/会话元数据，然后再切换。
 
+## 双模型执行：GPT 主控 + OpenCode Go 执行
+
+这不是把 Codex 的官方模型替换成其他 API。Codex 中的 GPT 负责理解需求、规划和最终验收；OpenCode Go 通过其 Chat Completions API 充当外部执行代理，负责在工作区内查看文件、修改、运行测试和报告结果。这样通常把长时间的实现与试错交给 Go，保留 GPT 用于高价值的规划与审查。
+
+1. 进入“**双模型执行**”，粘贴 OpenCode Go API Key，点击“读取支持模型”。模型列表来自 Go API，不需要手工填写模型 ID；软件会为 DeepSeek 等模型走 OpenAI Chat Completions、为 Qwen/MiniMax 等模型走 Anthropic Messages。
+2. 选择模型、保存档案，然后点击“测试所选档案”。测试同时检查 Chat Completions 和工具调用协议；密钥只以当前 Windows 用户的 DPAPI 加密保存。
+3. 点击“一键启用双模型执行”。程序会先要求 Codex 完全退出，再把无密钥的工作流 Skill 安装到 `CODEX_HOME\skills\codex-helper-dual-model\SKILL.md`，并为该文件创建恢复副本。
+4. 重新打开 Codex 后，要求使用双模型工作流处理任务。GPT 会先形成不含秘密的任务合同，再启动 Go 执行代理；完成后 GPT 检查 diff 和测试证据，必要时最多发起一次定向修复。
+
+此模式不需要安装 OpenCode 客户端，也不会改写 `config.toml` 的 GPT 主模型。根据当前启用档案的授权，执行代理默认可操作当前 Windows 用户可访问的文件，并可执行测试、Git 提交和 `git push`。这是一项高权限自动化：只对可信项目和可信模型启用，不要在任务合同、命令输出或提交中放入密钥。
+
 ## 官方账号 JSON：与官方客户端互通
 
 在“迁移中心”可以单独处理官方账号的标准登录 JSON：

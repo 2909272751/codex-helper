@@ -98,7 +98,7 @@ public sealed class ConnectionTransferService
                     {
                         if (profile.Kind == ConnectionKind.OfficialAccount)
                             accounts.ImportDecryptedProfile(profile.Label, profile.Secret);
-                        else if (profile.Kind is ConnectionKind.CustomApi or ConnectionKind.Sub2Api)
+                        else if (profile.Kind is ConnectionKind.CustomApi or ConnectionKind.Sub2Api or ConnectionKind.OpenCodeGo)
                             providers.ImportDecryptedProfile(profile.Label, profile.Kind, profile.BaseUrl, profile.Model, profile.Secret);
                         else
                             throw new InvalidDataException("连接档案类型无效。");

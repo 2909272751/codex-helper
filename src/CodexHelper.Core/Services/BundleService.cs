@@ -38,7 +38,7 @@ public sealed class BundleService
             BundleId = Guid.NewGuid().ToString("N"),
             CreatedUtc = DateTime.UtcNow,
             DeviceName = Environment.MachineName,
-            CodexHelperVersion = Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "1.0.0"
+            CodexHelperVersion = Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "1.1.0"
         };
 
         try

@@ -4,7 +4,8 @@ public enum ConnectionKind
 {
     OfficialAccount,
     CustomApi,
-    Sub2Api
+    Sub2Api,
+    OpenCodeGo
 }
 
 public sealed class ConnectionProfile
@@ -21,6 +22,7 @@ public sealed class ConnectionProfile
     public DateTime? LastVerifiedUtc { get; set; }
     public bool IsActive { get; set; }
     public bool RequiresAttention { get; set; }
+    public bool IsDualModelEnabled { get; set; }
     public string StatusMessage { get; set; } = string.Empty;
     public string DisplayTarget => Kind == ConnectionKind.OfficialAccount ? IdentityHint : BaseUrl;
 }

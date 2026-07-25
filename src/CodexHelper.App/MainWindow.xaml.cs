@@ -65,6 +65,7 @@ public partial class MainWindow : Window
                 InventoryGrid.ItemsSource = inventory;
                 ProjectsGrid.ItemsSource = projects;
                 RefreshConnections();
+                RefreshGoProfiles();
                 RefreshSnapshots();
                 RefreshDashboard();
             });
@@ -82,6 +83,20 @@ public partial class MainWindow : Window
         {
             ConnectionsGrid.ItemsSource = Array.Empty<ConnectionProfile>();
         }
+    }
+
+    private void RefreshGoProfiles()
+    {
+        try
+        {
+            GoProfilesGrid.ItemsSource = new ApiProviderService(settings.CodexRoot, appPaths, processService)
+                .GetProfiles()
+                .Where(item => item.Kind == ConnectionKind.OpenCodeGo)
+                .OrderByDescending(item => item.IsDualModelEnabled)
+                .ThenBy(item => item.Label)
+                .ToList();
+        }
+        catch { GoProfilesGrid.ItemsSource = Array.Empty<ConnectionProfile>(); }
     }
 
     private void RefreshSnapshots()
@@ -123,6 +138,7 @@ public partial class MainWindow : Window
         {
             ["Dashboard"] = DashboardPage,
             ["Connections"] = ConnectionsPage,
+            ["DualModel"] = DualModelPage,
             ["Projects"] = ProjectsPage,
             ["Snapshots"] = SnapshotsPage,
             ["Migration"] = MigrationPage,
@@ -134,6 +150,7 @@ public partial class MainWindow : Window
         {
             ["Dashboard"] = DashboardNav,
             ["Connections"] = ConnectionsNav,
+            ["DualModel"] = DualModelNav,
             ["Projects"] = ProjectsNav,
             ["Snapshots"] = SnapshotsNav,
             ["Migration"] = MigrationNav,
@@ -295,6 +312,84 @@ public partial class MainWindow : Window
             var message = await new ApiProviderService(settings.CodexRoot, appPaths, processService).TestAsync(profile.Id, cancellationToken);
             await Dispatcher.InvokeAsync(() => { RefreshConnections(); MessageBox.Show(message, "检测通过", MessageBoxButton.OK, MessageBoxImage.Information); });
         });
+    }
+
+    private async void LoadGoModels_Click(object sender, RoutedEventArgs e)
+    {
+        var key = GoApiKeyBox.Password;
+        if (string.IsNullOrWhiteSpace(key))
+        {
+            MessageBox.Show("请先输入 OpenCode Go API Key；读取成功后可立即清空输入框。", "需要 API Key", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        await RunOperationAsync("读取 Go 模型", async cancellationToken =>
+        {
+            var models = await new OpenCodeGoExecutor().ListModelsAsync(key, cancellationToken);
+            await Dispatcher.InvokeAsync(() =>
+            {
+                GoModelBox.ItemsSource = models;
+                var preferred = models.FirstOrDefault(item => string.Equals(item, "deepseek-v4-pro", StringComparison.OrdinalIgnoreCase))
+                    ?? models.FirstOrDefault();
+                GoModelBox.SelectedItem = preferred;
+                MessageBox.Show($"已读取 {models.Count} 个支持模型。", "OpenCode Go", MessageBoxButton.OK, MessageBoxImage.Information);
+            });
+        }, showProgress: false);
+    }
+
+    private void SaveGoProfile_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var model = GoModelBox.SelectedItem?.ToString();
+            if (string.IsNullOrWhiteSpace(model)) throw new InvalidOperationException("请先读取并选择一个支持模型。");
+            new ApiProviderService(settings.CodexRoot, appPaths, processService).SaveOpenCodeGoProfile(GoLabelBox.Text, model, GoApiKeyBox.Password);
+            GoApiKeyBox.Clear();
+            RefreshGoProfiles();
+            RefreshConnections();
+            MessageBox.Show("OpenCode Go 档案已加密保存。它不会替换当前 GPT 主模型。", "保存完成", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        catch (Exception ex) { ShowError(ex); }
+    }
+
+    private async void TestGoProfile_Click(object sender, RoutedEventArgs e)
+    {
+        if (GoProfilesGrid.SelectedItem is not ConnectionProfile { Kind: ConnectionKind.OpenCodeGo } profile)
+        {
+            MessageBox.Show("请选择一个 OpenCode Go 执行档案。", "未选择档案", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        await RunOperationAsync("测试 Go API", async cancellationToken =>
+        {
+            var message = await new ApiProviderService(settings.CodexRoot, appPaths, processService).TestAsync(profile.Id, cancellationToken);
+            await Dispatcher.InvokeAsync(() => { RefreshGoProfiles(); RefreshConnections(); MessageBox.Show(message, "检测通过", MessageBoxButton.OK, MessageBoxImage.Information); });
+        });
+    }
+
+    private async void EnableDualModel_Click(object sender, RoutedEventArgs e)
+    {
+        if (GoProfilesGrid.SelectedItem is not ConnectionProfile { Kind: ConnectionKind.OpenCodeGo } profile)
+        {
+            MessageBox.Show("请选择要启用的 OpenCode Go 档案。", "未选择档案", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        if (MessageBox.Show("将安装 Codex Helper 双模型 Skill。当前 GPT 登录和 model_provider 不会改变；请在完成后重新打开 Codex。继续吗？", "启用双模型", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
+        if (!await EnsureCodexStoppedAsync()) return;
+        var success = await RunOperationAsync("启用双模型", cancellationToken => Task.Run(() =>
+            new ApiProviderService(settings.CodexRoot, appPaths, processService).EnableDualModel(profile.Id, FindCredentialHelper()), cancellationToken), showProgress: false);
+        if (success)
+        {
+            RefreshGoProfiles();
+            MessageBox.Show("双模型已启用。重新打开 Codex 后，直接要求“使用 Codex Helper 双模型执行”。", "已启用", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+    }
+
+    private async void DisableDualModel_Click(object sender, RoutedEventArgs e)
+    {
+        if (MessageBox.Show("将移除 Codex Helper 安装的双模型 Skill，不会删除 Go 档案或密钥。继续吗？", "停用双模型", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
+        if (!await EnsureCodexStoppedAsync()) return;
+        var success = await RunOperationAsync("停用双模型", cancellationToken => Task.Run(() =>
+            new ApiProviderService(settings.CodexRoot, appPaths, processService).DisableDualModel(), cancellationToken), showProgress: false);
+        if (success) RefreshGoProfiles();
     }
 
     private async void StopCodex_Click(object sender, RoutedEventArgs e) => await EnsureCodexStoppedAsync(reportWhenAlreadyStopped: true);

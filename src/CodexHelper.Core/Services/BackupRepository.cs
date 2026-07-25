@@ -96,7 +96,7 @@ public sealed class BackupRepository
             Label = string.IsNullOrWhiteSpace(label) ? "手动保护" : label.Trim(),
             CreatedUtc = DateTime.UtcNow,
             DeviceName = Environment.MachineName,
-            CodexHelperVersion = Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "1.0.0",
+            CodexHelperVersion = Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "1.1.0",
             Sources = sources.Select(source => new SnapshotSource(source.Id, source.DisplayName, Path.GetFullPath(source.Path))).ToList()
         };
 

@@ -49,16 +49,19 @@ Filename: "{app}\CodexHelper.exe"; Description: "启动 Codex Helper"; Flags: no
 [Code]
 function HasDotNetDesktopRuntime8(): Boolean;
 var
-  RuntimeVersions: TArrayOfString;
-  Index: Integer;
+  FindRec: TFindRec;
 begin
   Result := False;
-  if RegGetSubkeyNames(HKLM64, 'SOFTWARE\dotnet\Setup\InstalledVersions\x64\sharedfx\Microsoft.WindowsDesktop.App', RuntimeVersions) then begin
-    for Index := 0 to GetArrayLength(RuntimeVersions) - 1 do begin
-      if Copy(RuntimeVersions[Index], 1, 2) = '8.' then begin
+  if FindFirst(ExpandConstant('{commonpf64}\dotnet\shared\Microsoft.WindowsDesktop.App\8.*'), FindRec) then begin
+    try
+      repeat
+        if (FindRec.Attributes and FILE_ATTRIBUTE_DIRECTORY <> 0) then begin
         Result := True;
         exit;
-      end;
+        end;
+      until not FindNext(FindRec);
+    finally
+      FindClose(FindRec);
     end;
   end;
 end;

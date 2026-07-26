@@ -64,9 +64,13 @@ begin
 end;
 
 function InitializeSetup(): Boolean;
+var
+  ErrorCode: Integer;
 begin
   Result := HasDotNetDesktopRuntime8();
   if not Result then begin
-    MsgBox('此精简安装包需要 .NET 8 Desktop Runtime。请先安装微软官方 .NET 8 Desktop Runtime，或下载本项目的便携 ZIP / 离线完整包。', mbError, MB_OK);
+    if MsgBox('此精简安装包需要 .NET 8 Desktop Runtime。' + #13#10 + #13#10 + '点击“是”将立即打开微软官方下载链接；安装完成后请重新运行本安装包。' + #13#10 + '点击“否”则退出安装，可改用本项目的便携 ZIP 完整包。', mbConfirmation, MB_YESNO) = IDYES then begin
+      ShellExec('open', 'https://aka.ms/dotnet/8.0/windowsdesktop-runtime-win-x64.exe', '', '', SW_SHOWNORMAL, ewNoWait, ErrorCode);
+    end;
   end;
 end;

@@ -34,6 +34,11 @@ public sealed class ConnectionProfile
     public string StatusMessage { get; set; } = string.Empty;
     public string QuotaSummary { get; set; } = string.Empty;
     public DateTime? QuotaCheckedUtc { get; set; }
+    public string PlanName { get; set; } = string.Empty;
+    public decimal? PrimaryUsedPercent { get; set; }
+    public decimal? SecondaryUsedPercent { get; set; }
+    public DateTime? PrimaryResetsAtUtc { get; set; }
+    public DateTime? SecondaryResetsAtUtc { get; set; }
     public string DisplayTarget => Kind == ConnectionKind.OfficialAccount ? IdentityHint : BaseUrl;
     public string DisplayQuota => string.IsNullOrWhiteSpace(QuotaSummary) ? "未查询" : QuotaSummary;
 }
@@ -58,3 +63,16 @@ public sealed record OfficialAccountUsage(
     decimal? SecondaryUsedPercent,
     DateTime? PrimaryResetsAtUtc,
     DateTime? SecondaryResetsAtUtc);
+
+public sealed class AccountHealthHistoryEntry
+{
+    public string ProfileId { get; set; } = string.Empty;
+    public DateTime CheckedUtc { get; set; } = DateTime.UtcNow;
+    public bool IsAvailable { get; set; }
+    public string Summary { get; set; } = string.Empty;
+    public string Plan { get; set; } = string.Empty;
+    public decimal? PrimaryUsedPercent { get; set; }
+    public decimal? SecondaryUsedPercent { get; set; }
+}
+
+public sealed class AccountHealthHistoryStore { public List<AccountHealthHistoryEntry> Entries { get; set; } = new(); }

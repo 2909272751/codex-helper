@@ -2,7 +2,7 @@
 
 Codex Helper 是面向 Windows 10/11 的 Codex 专属工作台，统一管理官方账号、第三方 Responses API、重要项目、个人 Skills、Codex 配置、加密增量备份与批量迁移。
 
-当前正式版本：`2.0.1`
+当前正式版本：`2.1.0`
 
 ![Codex Helper Logo](assets/CodexHelper-256.png)
 
@@ -18,6 +18,7 @@ Codex Helper 是面向 Windows 10/11 的 Codex 专属工作台，统一管理官
 
 - 官方账号、Responses API 与 Sub2API 统一档案；支持安全删除和缺失保险库档案自动清理。
 - 官方账号可直接检查登录状态与官方返回的额度摘要；账号 JSON 支持官方 Codex、CPA Codex 与 Sub2API 格式的批量导入导出。
+- 官方账号健康详情提供套餐、双额度窗口、重置时间和本机检测历史；可串行刷新全部官方账号。
 - API 切换同时同步 `config.toml`、状态数据库与会话 JSONL，任何一步失败都回滚。
 - 自动发现个人 Skills、Codex 关键数据与 Git 项目，一键创建认证加密增量快照。
 - `.chbundle` 批量导出/导入；账号令牌和 API Key 在已加密迁移包内再次独立加密。

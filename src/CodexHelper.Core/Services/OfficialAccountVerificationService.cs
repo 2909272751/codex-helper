@@ -44,15 +44,18 @@ public sealed class OfficialAccountVerificationService
                 if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
                 {
                     accounts.UpdateVerification(profileId, false, "登录已失效或官方拒绝验证；请在 Codex 中重新登录。");
+                    accounts.RecordHealthHistory(profileId, false, "登录已失效或官方拒绝验证");
                     throw new InvalidOperationException("账号未通过官方验证（HTTP " + (int)response.StatusCode + "）。请重新登录后再试。");
                 }
                 if (!response.IsSuccessStatusCode)
                 {
                     accounts.UpdateVerification(profileId, false, "额度服务暂时不可用（HTTP " + (int)response.StatusCode + "）。");
+                    accounts.RecordHealthHistory(profileId, false, "额度服务暂时不可用（HTTP " + (int)response.StatusCode + "）");
                     throw new InvalidOperationException("无法读取账号额度（HTTP " + (int)response.StatusCode + "）。");
                 }
                 var usage = ParseUsage(body);
                 accounts.UpdateVerification(profileId, true, "官方账号可用", usage);
+                accounts.RecordHealthHistory(profileId, true, usage.Summary, usage);
                 return usage;
             }
             finally { CryptographicOperations.ZeroMemory(body); }
@@ -60,6 +63,7 @@ public sealed class OfficialAccountVerificationService
         catch (HttpRequestException ex)
         {
             accounts.UpdateVerification(profileId, false, "无法连接官方额度服务，请检查网络后重试。");
+            accounts.RecordHealthHistory(profileId, false, "无法连接官方额度服务");
             throw new InvalidOperationException("无法连接官方额度服务。", ex);
         }
         finally { CryptographicOperations.ZeroMemory(auth); }

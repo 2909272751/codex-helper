@@ -19,6 +19,7 @@ public sealed class OfficialAccountService
     private readonly string providerDirectory;
     private readonly string recoveryDirectory;
     private readonly string indexPath;
+    private readonly string historyPath;
     private readonly JsonStore json = new();
     private readonly CodexProcessService processes;
 
@@ -31,6 +32,7 @@ public sealed class OfficialAccountService
         providerDirectory = Path.Combine(appPaths.VaultDirectory, "providers");
         recoveryDirectory = Path.Combine(appPaths.RecoveryDirectory, "accounts");
         indexPath = Path.Combine(appPaths.VaultDirectory, "connections.json");
+        historyPath = Path.Combine(appPaths.BaseDirectory, "account-health-history.json");
         this.processes = processes;
         Directory.CreateDirectory(profileDirectory);
         Directory.CreateDirectory(recoveryDirectory);
@@ -248,8 +250,24 @@ public sealed class OfficialAccountService
         profile.StatusMessage = statusMessage;
         profile.QuotaSummary = usage?.Summary ?? string.Empty;
         profile.QuotaCheckedUtc = usage is null ? null : DateTime.UtcNow;
+        profile.PlanName = usage?.Plan ?? string.Empty;
+        profile.PrimaryUsedPercent = usage?.PrimaryUsedPercent;
+        profile.SecondaryUsedPercent = usage?.SecondaryUsedPercent;
+        profile.PrimaryResetsAtUtc = usage?.PrimaryResetsAtUtc;
+        profile.SecondaryResetsAtUtc = usage?.SecondaryResetsAtUtc;
         profile.UpdatedUtc = DateTime.UtcNow;
         SaveIndex(index);
+    }
+
+    public IReadOnlyList<AccountHealthHistoryEntry> GetHealthHistory(string profileId) => json.LoadOrCreate(historyPath, () => new AccountHealthHistoryStore()).Entries
+        .Where(item => item.ProfileId == profileId).OrderByDescending(item => item.CheckedUtc).Take(30).ToList();
+
+    public void RecordHealthHistory(string profileId, bool available, string summary, OfficialAccountUsage? usage = null)
+    {
+        var store = json.LoadOrCreate(historyPath, () => new AccountHealthHistoryStore());
+        store.Entries.Add(new AccountHealthHistoryEntry { ProfileId = profileId, IsAvailable = available, Summary = summary, Plan = usage?.Plan ?? string.Empty, PrimaryUsedPercent = usage?.PrimaryUsedPercent, SecondaryUsedPercent = usage?.SecondaryUsedPercent });
+        store.Entries = store.Entries.OrderByDescending(item => item.CheckedUtc).Take(300).ToList();
+        json.Save(historyPath, store);
     }
 
     public ConnectionProfile ImportDecryptedProfile(string label, ReadOnlySpan<byte> authBytes)

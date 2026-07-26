@@ -78,11 +78,29 @@ public partial class MainWindow : Window
         {
             var service = new OfficialAccountService(settings.CodexRoot, appPaths, processService);
             ConnectionsGrid.ItemsSource = service.LoadIndex().Profiles.OrderByDescending(item => item.IsActive).ThenBy(item => item.Label).ToList();
+            RefreshAccountHealthDetail();
         }
         catch
         {
             ConnectionsGrid.ItemsSource = Array.Empty<ConnectionProfile>();
         }
+    }
+
+    private void ConnectionsGrid_SelectionChanged(object sender, SelectionChangedEventArgs e) => RefreshAccountHealthDetail();
+
+    private void RefreshAccountHealthDetail()
+    {
+        if (AccountHealthDetailText is null) return;
+        if (ConnectionsGrid.SelectedItem is not ConnectionProfile { Kind: ConnectionKind.OfficialAccount } profile)
+        {
+            AccountHealthDetailText.Text = "选择一个官方账号可查看套餐、额度窗口、重置时间和最近检测历史。";
+            return;
+        }
+        var history = new OfficialAccountService(settings.CodexRoot, appPaths, processService).GetHealthHistory(profile.Id).Take(3).ToList();
+        string Percent(decimal? used) => used is null ? "官方未提供" : $"剩余 {100 - used.Value:0.#}%（已用 {used.Value:0.#}%）";
+        string Reset(DateTime? time) => time is null ? "官方未提供" : time.Value.ToLocalTime().ToString("yyyy-MM-dd HH:mm");
+        var recent = history.Count == 0 ? "暂无检测历史" : string.Join("；", history.Select(item => item.CheckedUtc.ToLocalTime().ToString("MM-dd HH:mm") + " " + (item.IsAvailable ? "可用" : "异常")));
+        AccountHealthDetailText.Text = $"账号：{profile.IdentityHint}\n状态：{profile.StatusMessage}\n套餐：{(string.IsNullOrWhiteSpace(profile.PlanName) ? "官方未提供" : profile.PlanName)}\n短周期：{Percent(profile.PrimaryUsedPercent)}，重置：{Reset(profile.PrimaryResetsAtUtc)}\n长周期：{Percent(profile.SecondaryUsedPercent)}，重置：{Reset(profile.SecondaryResetsAtUtc)}\n最近检测：{(profile.LastVerifiedUtc?.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") ?? "未检测")}\n历史：{recent}";
     }
 
     private void RefreshSnapshots()
@@ -313,6 +331,31 @@ public partial class MainWindow : Window
             {
                 RefreshConnections();
                 MessageBox.Show("账号可用。\n" + usage.Summary + (string.IsNullOrWhiteSpace(usage.Plan) ? string.Empty : "\n套餐：" + usage.Plan), "官方账号检测", MessageBoxButton.OK, MessageBoxImage.Information);
+            });
+        });
+    }
+
+    private async void VerifyAllOfficialAccounts_Click(object sender, RoutedEventArgs e)
+    {
+        var profiles = new OfficialAccountService(settings.CodexRoot, appPaths, processService).LoadIndex().Profiles.Where(item => item.Kind == ConnectionKind.OfficialAccount).ToList();
+        if (profiles.Count == 0) { MessageBox.Show("还没有已保存的官方账号。", "刷新全部账号", MessageBoxButton.OK, MessageBoxImage.Information); return; }
+        await RunOperationAsync("刷新全部官方账号", async cancellationToken =>
+        {
+            var accounts = new OfficialAccountService(settings.CodexRoot, appPaths, processService);
+            var verifier = new OfficialAccountVerificationService(accounts);
+            var failures = new List<string>();
+            var progress = CreateProgress();
+            for (var index = 0; index < profiles.Count; index++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                try { await verifier.VerifyAsync(profiles[index].Id, cancellationToken); }
+                catch (Exception ex) { failures.Add(profiles[index].Label + "：" + ex.Message); }
+                progress.Report(new OperationProgress("刷新官方账号", profiles[index].Label, index + 1, profiles.Count, 0, "正在检测"));
+            }
+            await Dispatcher.InvokeAsync(() =>
+            {
+                RefreshConnections();
+                MessageBox.Show(failures.Count == 0 ? $"已完成 {profiles.Count} 个账号检测。" : $"已完成检测；失败 {failures.Count} 个。\n" + string.Join("\n", failures), "刷新全部账号", MessageBoxButton.OK, failures.Count == 0 ? MessageBoxImage.Information : MessageBoxImage.Warning);
             });
         });
     }

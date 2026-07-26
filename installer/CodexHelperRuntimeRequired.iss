@@ -69,8 +69,8 @@ var
 begin
   Result := HasDotNetDesktopRuntime8();
   if not Result then begin
-    if MsgBox('此精简安装包需要 .NET 8 Desktop Runtime。' + #13#10 + #13#10 + '点击“是”将立即打开微软官方下载链接；安装完成后请重新运行本安装包。' + #13#10 + '点击“否”则退出安装，可改用本项目的便携 ZIP 完整包。', mbConfirmation, MB_YESNO) = IDYES then begin
-      ShellExec('open', 'https://aka.ms/dotnet/8.0/windowsdesktop-runtime-win-x64.exe', '', '', SW_SHOWNORMAL, ewNoWait, ErrorCode);
+    if MsgBox('此精简安装包需要 .NET 8 Desktop Runtime。' + #13#10 + #13#10 + '点击“是”将打开微软 .NET 8 官方下载页，请自行选择 Windows x64 的 Desktop Runtime 或 SDK；安装完成后请重新运行本安装包。' + #13#10 + '点击“否”则退出安装，可改用本项目的完整离线安装包或便携 ZIP。', mbConfirmation, MB_YESNO) = IDYES then begin
+      ShellExec('open', 'https://dotnet.microsoft.com/zh-cn/download/dotnet/8.0', '', '', SW_SHOWNORMAL, ewNoWait, ErrorCode);
     end;
   end;
 end;

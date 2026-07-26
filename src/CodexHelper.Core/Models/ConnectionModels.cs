@@ -4,7 +4,17 @@ public enum ConnectionKind
 {
     OfficialAccount,
     CustomApi,
-    Sub2Api
+    Sub2Api,
+    /// <summary>Read-only compatibility value left by an early dual-agent preview.</summary>
+    LegacyAgentProfile
+}
+
+/// <summary>External account-file layouts that Codex Helper can exchange.</summary>
+public enum OfficialAccountExportFormat
+{
+    OfficialCodexJson,
+    CpaJson,
+    Sub2ApiJson
 }
 
 public sealed class ConnectionProfile
@@ -22,7 +32,10 @@ public sealed class ConnectionProfile
     public bool IsActive { get; set; }
     public bool RequiresAttention { get; set; }
     public string StatusMessage { get; set; } = string.Empty;
+    public string QuotaSummary { get; set; } = string.Empty;
+    public DateTime? QuotaCheckedUtc { get; set; }
     public string DisplayTarget => Kind == ConnectionKind.OfficialAccount ? IdentityHint : BaseUrl;
+    public string DisplayQuota => string.IsNullOrWhiteSpace(QuotaSummary) ? "未查询" : QuotaSummary;
 }
 
 public sealed class ConnectionIndex
@@ -34,6 +47,14 @@ public sealed class ConnectionIndex
 
 public sealed record CodexProcessInfo(int Id, string Name);
 
-public sealed record OfficialJsonExportResult(int ExportedCount, IReadOnlyList<string> Paths);
+public sealed record OfficialJsonExportResult(int ExportedCount, IReadOnlyList<string> Paths, OfficialAccountExportFormat Format = OfficialAccountExportFormat.OfficialCodexJson);
 
 public sealed record OfficialJsonImportResult(int ImportedCount, int NewProfiles);
+
+public sealed record OfficialAccountUsage(
+    string Summary,
+    string Plan,
+    decimal? PrimaryUsedPercent,
+    decimal? SecondaryUsedPercent,
+    DateTime? PrimaryResetsAtUtc,
+    DateTime? SecondaryResetsAtUtc);

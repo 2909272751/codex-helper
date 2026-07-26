@@ -185,6 +185,32 @@ public sealed class ApiProviderService
         .Where(item => item.Kind is ConnectionKind.CustomApi or ConnectionKind.Sub2Api)
         .ToList();
 
+    /// <summary>Removes an inactive API profile after retaining a DPAPI-protected recovery copy.</summary>
+    public void DeleteProfile(string profileId)
+    {
+        ValidateProfileId(profileId);
+        var index = LoadIndex();
+        var profile = index.Profiles.FirstOrDefault(item => item.Id == profileId && item.Kind != ConnectionKind.OfficialAccount)
+            ?? throw new InvalidOperationException("未找到要删除的 API 连接档案。");
+        if (string.Equals(index.ActiveProfileId, profileId, StringComparison.Ordinal))
+            throw new InvalidOperationException("该 API 档案正在使用。请先切换到其他连接或官方模式后再删除。");
+        var secretPath = SecretPath(profileId);
+        if (File.Exists(secretPath))
+        {
+            var encrypted = File.ReadAllBytes(secretPath);
+            try
+            {
+                var deletedDirectory = Path.Combine(recoveryDirectory, "deleted-profiles");
+                Directory.CreateDirectory(deletedDirectory);
+                AtomicFile.WriteAllBytes(Path.Combine(deletedDirectory, profileId + "-" + DateTime.UtcNow.ToString("yyyyMMddTHHmmssfffZ") + ".dat"), encrypted);
+            }
+            finally { CryptographicOperations.ZeroMemory(encrypted); }
+        }
+        index.Profiles.Remove(profile);
+        SaveIndex(index);
+        if (File.Exists(secretPath)) File.Delete(secretPath);
+    }
+
     public byte[] ExportSecretBytesForBundle(string profileId)
     {
         _ = RequireProvider(profileId);
@@ -213,7 +239,7 @@ public sealed class ApiProviderService
     private ConnectionProfile RequireProvider(string profileId)
     {
         ValidateProfileId(profileId);
-        return LoadIndex().Profiles.FirstOrDefault(item => item.Id == profileId && item.Kind is ConnectionKind.CustomApi or ConnectionKind.Sub2Api)
+        return LoadIndex().Profiles.FirstOrDefault(item => item.Id == profileId && (item.Kind is ConnectionKind.CustomApi or ConnectionKind.Sub2Api))
             ?? throw new InvalidOperationException("未找到 API 连接档案。");
     }
 

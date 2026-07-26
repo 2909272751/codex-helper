@@ -22,7 +22,9 @@ internal static class Program
         ("连接档案双层加密迁移", TestConnectionTransferAsync),
         ("旧版 API 工具批量迁移", TestLegacyApiImportAsync),
         ("官方账号保存与安全切换", TestOfficialAccountsAsync),
+        ("缺失保险库档案自动清理", TestOrphanedConnectionCleanupAsync),
         ("官方账号 JSON 批量导入导出", TestOfficialJsonTransferAsync),
+        ("官方账号额度响应解析", TestOfficialUsageParsingAsync),
         ("API 配置保留与凭据隔离", TestApiProviderSwitchAsync),
         ("TOML 损坏配置阻断", TestTomlValidationAsync)
     ];
@@ -219,11 +221,65 @@ internal static class Program
             Assert(imported.ImportedCount == 2 && imported.NewProfiles == 2, "应批量导入两个新账号");
             Assert(target.LoadIndex().Profiles.Count == 2 && string.IsNullOrEmpty(target.LoadIndex().ActiveProfileId), "JSON 导入不应自动切换当前账号");
 
+            var cpaDirectory = Path.Combine(root, "cpa-export");
+            var cpa = source.ExportProfiles(cpaDirectory, OfficialAccountExportFormat.CpaJson);
+            using (var document = JsonDocument.Parse(await File.ReadAllTextAsync(cpa.Paths[0])))
+                Assert(document.RootElement.GetProperty("type").GetString() == "codex", "CPA 导出应使用 codex 类型");
+            var cpaTarget = new OfficialAccountService(Path.Combine(root, "cpa-target"), new AppPaths(Path.Combine(root, "cpa-target-app")), new CodexProcessService());
+            Directory.CreateDirectory(Path.Combine(root, "cpa-target"));
+            Assert(cpaTarget.ImportProfilesFromJson(cpa.Paths).ImportedCount == 2, "CPA JSON 应可被统一导入");
+
+            var sub2Directory = Path.Combine(root, "sub2-export");
+            var sub2 = source.ExportProfiles(sub2Directory, OfficialAccountExportFormat.Sub2ApiJson);
+            Assert(sub2.Paths.Count == 1, "Sub2API 应导出单个批量 JSON");
+            using (var document = JsonDocument.Parse(await File.ReadAllTextAsync(sub2.Paths[0])))
+                Assert(document.RootElement.ValueKind == JsonValueKind.Array && document.RootElement.GetArrayLength() == 2, "Sub2API 导出应为账号数组");
+            var sub2TargetRoot = Path.Combine(root, "sub2-target");
+            Directory.CreateDirectory(sub2TargetRoot);
+            var sub2Target = new OfficialAccountService(sub2TargetRoot, new AppPaths(Path.Combine(root, "sub2-target-app")), new CodexProcessService());
+            Assert(sub2Target.ImportProfilesFromJson(sub2.Paths).ImportedCount == 2, "Sub2API JSON 应可被统一导入");
+
+            var work = source.LoadIndex().Profiles.Single(item => item.Label == "工作账号");
+            source.DeleteProfile(work.Id);
+            Assert(!source.LoadIndex().Profiles.Any(item => item.Id == work.Id), "删除连接应移除账号档案");
+            Assert(!File.Exists(Path.Combine(sourceCodex, "auth.json")), "删除活动官方账号应清除 live auth.json");
+
             var invalid = Path.Combine(root, "invalid.json");
             await File.WriteAllTextAsync(invalid, "{}");
             await AssertThrowsAsync<InvalidDataException>(() => Task.Run(() => target.ImportProfilesFromJson([invalid])));
             Assert(target.LoadIndex().Profiles.Count == 2, "无效 JSON 不得改变已有账号");
         });
+    }
+
+    private static async Task TestOrphanedConnectionCleanupAsync()
+    {
+        await WithTempDirectoryAsync("orphan-cleanup", async root =>
+        {
+            var codex = Path.Combine(root, "codex");
+            Directory.CreateDirectory(codex);
+            var paths = new AppPaths(Path.Combine(root, "app"));
+            paths.EnsureCreated();
+            var accounts = new OfficialAccountService(codex, paths, new CodexProcessService());
+            await File.WriteAllTextAsync(Path.Combine(codex, "auth.json"), Auth("first"));
+            accounts.SaveCurrent("第一个");
+            accounts.PrepareNewLogin();
+            await File.WriteAllTextAsync(Path.Combine(codex, "auth.json"), Auth("second"));
+            accounts.SaveCurrent("第二个");
+            var orphan = accounts.LoadIndex().Profiles.Single(item => item.Label == "第一个");
+            File.Delete(Path.Combine(paths.VaultDirectory, "accounts", orphan.Id + ".dat"));
+            var remaining = accounts.LoadIndex();
+            Assert(!remaining.Profiles.Any(item => item.Id == orphan.Id), "缺失保险库文件的连接应在刷新时自动清理");
+            Assert(remaining.Profiles.Count == 1, "不应误删仍有保险库文件的连接");
+        });
+    }
+
+    private static Task TestOfficialUsageParsingAsync()
+    {
+        var json = Encoding.UTF8.GetBytes("""{ "plan_type": "plus", "rate_limit": { "primary_window": { "used_percent": 25, "reset_after_seconds": 60 }, "secondary_window": { "used_percent": 70.5 } } }""");
+        var usage = OfficialAccountVerificationService.ParseUsage(json);
+        Assert(usage.Plan == "plus" && usage.PrimaryUsedPercent == 25 && usage.SecondaryUsedPercent == 70.5m, "额度响应应解析两个窗口的已用比例");
+        Assert(usage.Summary.Contains("短周期已用 25%") && usage.Summary.Contains("长周期已用 70.5%"), "额度摘要不正确");
+        return Task.CompletedTask;
     }
 
     private static async Task TestLegacyApiImportAsync()

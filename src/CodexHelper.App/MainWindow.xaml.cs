@@ -30,6 +30,7 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        VersionText.Text = "v" + (Assembly.GetEntryAssembly()?.GetName().Version?.ToString(3) ?? "—");
         logger = new AppLogger(appPaths);
         settingsService = new SettingsService(appPaths);
         settings = settingsService.Load();
@@ -297,6 +298,53 @@ public partial class MainWindow : Window
         });
     }
 
+    private async void VerifyOfficialAccount_Click(object sender, RoutedEventArgs e)
+    {
+        if (ConnectionsGrid.SelectedItem is not ConnectionProfile { Kind: ConnectionKind.OfficialAccount } profile)
+        {
+            MessageBox.Show("请选择一个官方账号；普通 API 请使用“测试 API”。", "检测账号", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        await RunOperationAsync("查询官方账号额度", async cancellationToken =>
+        {
+            var accounts = new OfficialAccountService(settings.CodexRoot, appPaths, processService);
+            var usage = await new OfficialAccountVerificationService(accounts).VerifyAsync(profile.Id, cancellationToken);
+            await Dispatcher.InvokeAsync(() =>
+            {
+                RefreshConnections();
+                MessageBox.Show("账号可用。\n" + usage.Summary + (string.IsNullOrWhiteSpace(usage.Plan) ? string.Empty : "\n套餐：" + usage.Plan), "官方账号检测", MessageBoxButton.OK, MessageBoxImage.Information);
+            });
+        });
+    }
+
+    private async void DeleteConnection_Click(object sender, RoutedEventArgs e)
+    {
+        var selected = ConnectionsGrid.SelectedItems.Cast<ConnectionProfile>().ToList();
+        if (selected.Count == 0) { MessageBox.Show("请先选择要删除的连接。", "删除连接", MessageBoxButton.OK, MessageBoxImage.Information); return; }
+        var activeOfficial = selected.Any(item => item.Kind == ConnectionKind.OfficialAccount && item.IsActive);
+        var notice = activeOfficial ? "其中包含当前官方账号。删除后会保存恢复副本，并清除 Codex 当前 auth.json，需要重新登录或切换其他账号。\n\n" : string.Empty;
+        if (MessageBox.Show(notice + "确认删除所选 " + selected.Count + " 个连接吗？删除前会保留本机加密恢复副本。", "确认删除", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
+        if (!await EnsureCodexStoppedAsync()) return;
+        var success = await RunOperationAsync("删除连接", cancellationToken => Task.Run(() =>
+        {
+            var accounts = new OfficialAccountService(settings.CodexRoot, appPaths, processService);
+            var providers = new ApiProviderService(settings.CodexRoot, appPaths, processService);
+            var failures = new List<string>();
+            foreach (var profile in selected)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                try
+                {
+                    if (profile.Kind == ConnectionKind.OfficialAccount) accounts.DeleteProfile(profile.Id);
+                    else providers.DeleteProfile(profile.Id);
+                }
+                catch (Exception ex) { failures.Add(profile.Label + "：" + ex.Message); }
+            }
+            if (failures.Count > 0) throw new InvalidOperationException("部分连接未删除：\n" + string.Join("\n", failures));
+        }, cancellationToken), showProgress: false);
+        if (success) { RefreshConnections(); RefreshDashboard(); }
+    }
+
     private async void StopCodex_Click(object sender, RoutedEventArgs e) => await EnsureCodexStoppedAsync(reportWhenAlreadyStopped: true);
 
     private async Task<bool> EnsureCodexStoppedAsync(bool reportWhenAlreadyStopped = false)
@@ -398,14 +446,18 @@ public partial class MainWindow : Window
             MessageBox.Show("还没有已保存的官方账号。请先在“连接中心”保存当前官方登录。", "没有可导出的账号", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
-        if (MessageBox.Show("将导出为未加密的官方登录 JSON 文件（名称.json），其中包含登录令牌。只应保存到你信任的本地目录或加密介质，且不要发送给他人。继续吗？", "导出官方账号 JSON", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
-        var dialog = new OpenFolderDialog { Title = "选择存放官方账号 JSON 文件的目录", InitialDirectory = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments) };
+        var tag = (AccountExportFormatBox.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? nameof(OfficialAccountExportFormat.OfficialCodexJson);
+        var format = Enum.Parse<OfficialAccountExportFormat>(tag);
+        var formatName = format switch { OfficialAccountExportFormat.CpaJson => "CPA Codex", OfficialAccountExportFormat.Sub2ApiJson => "Sub2API", _ => "官方 Codex" };
+        if (MessageBox.Show("将导出为未加密的 " + formatName + " 账号 JSON，其中包含登录令牌。只应保存到你信任的本地目录或加密介质，且不要发送给他人。继续吗？", "导出账号 JSON", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
+        var dialog = new OpenFolderDialog { Title = "选择存放 " + formatName + " 账号 JSON 的目录", InitialDirectory = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments) };
         if (dialog.ShowDialog(this) != true) return;
         await RunOperationAsync("导出官方账号 JSON", cancellationToken => Task.Run(() =>
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var result = accounts.ExportProfilesAsJson(dialog.FolderName);
-            Dispatcher.Invoke(() => MessageBox.Show($"已导出 {result.ExportedCount} 个官方账号 JSON 文件：\n{dialog.FolderName}\n\n文件名使用账号名称，例如“个人账号.json”。", "JSON 导出完成", MessageBoxButton.OK, MessageBoxImage.Information));
+            var result = accounts.ExportProfiles(dialog.FolderName, format);
+            var files = result.Paths.Count == 1 ? "已生成 1 个批量文件" : "已生成 " + result.Paths.Count + " 个账号文件";
+            Dispatcher.Invoke(() => MessageBox.Show($"已按 {formatName} 格式导出 {result.ExportedCount} 个账号，{files}：\n{dialog.FolderName}", "JSON 导出完成", MessageBoxButton.OK, MessageBoxImage.Information));
         }, cancellationToken), showProgress: false);
     }
 
@@ -480,17 +532,17 @@ public partial class MainWindow : Window
     {
         var dialog = new OpenFileDialog
         {
-            Title = "选择一个或多个官方账号 JSON 文件",
-            Filter = "Codex 官方登录文件 (*.json)|*.json",
+            Title = "选择一个或多个官方 Codex、CPA 或 Sub2API 账号 JSON 文件",
+            Filter = "账号 JSON 文件 (*.json)|*.json",
             Multiselect = true
         };
         if (dialog.ShowDialog(this) != true || dialog.FileNames.Length == 0) return;
         var selectedFiles = dialog.FileNames;
-        var success = await RunOperationAsync("导入官方账号 JSON", cancellationToken => Task.Run(() =>
+        var success = await RunOperationAsync("导入账号 JSON", cancellationToken => Task.Run(() =>
         {
             cancellationToken.ThrowIfCancellationRequested();
             var result = new OfficialAccountService(settings.CodexRoot, appPaths, processService).ImportProfilesFromJson(selectedFiles);
-            Dispatcher.Invoke(() => MessageBox.Show($"已读取 {result.ImportedCount} 个官方账号 JSON 文件，其中新增 {result.NewProfiles} 个账号。\n当前登录没有改变；请到“连接中心”手动切换。", "JSON 导入完成", MessageBoxButton.OK, MessageBoxImage.Information));
+            Dispatcher.Invoke(() => MessageBox.Show($"已读取 {result.ImportedCount} 个账号条目，其中新增 {result.NewProfiles} 个账号。\n当前登录没有改变；请到“连接中心”手动切换。", "JSON 导入完成", MessageBoxButton.OK, MessageBoxImage.Information));
         }, cancellationToken), showProgress: false);
         if (success) { RefreshConnections(); RefreshDashboard(); }
     }

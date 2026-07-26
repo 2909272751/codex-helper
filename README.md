@@ -2,7 +2,7 @@
 
 Codex Helper 是面向 Windows 10/11 的 Codex 专属工作台，统一管理官方账号、第三方 Responses API、重要项目、个人 Skills、Codex 配置、加密增量备份与批量迁移。
 
-当前正式版本：`1.0.0`
+当前正式版本：`2.0.1`
 
 ![Codex Helper Logo](assets/CodexHelper-256.png)
 
@@ -16,7 +16,8 @@ Codex Helper 是面向 Windows 10/11 的 Codex 专属工作台，统一管理官
 
 ## 当前功能
 
-- 官方账号、Responses API 与 Sub2API 统一档案；切换前检查 Codex 进程。
+- 官方账号、Responses API 与 Sub2API 统一档案；支持安全删除和缺失保险库档案自动清理。
+- 官方账号可直接检查登录状态与官方返回的额度摘要；账号 JSON 支持官方 Codex、CPA Codex 与 Sub2API 格式的批量导入导出。
 - API 切换同时同步 `config.toml`、状态数据库与会话 JSONL，任何一步失败都回滚。
 - 自动发现个人 Skills、Codex 关键数据与 Git 项目，一键创建认证加密增量快照。
 - `.chbundle` 批量导出/导入；账号令牌和 API Key 在已加密迁移包内再次独立加密。
@@ -54,6 +55,6 @@ powershell -ExecutionPolicy Bypass -File scripts\build.ps1
 powershell -ExecutionPolicy Bypass -File scripts\build-release.ps1
 ```
 
-发布构建输出到 `artifacts/v1.0.0/`，文件名均包含版本号。
+发布构建输出到 `artifacts/v2.0.1/`，文件名均包含版本号。
 
-`codex-helper-v1.0.0-setup.exe` 是推荐的一键安装包：提供安装向导、可选桌面快捷方式、开始菜单入口和卸载项；卸载不会删除 Codex 数据、账号保险库或备份目录。`windows-x64-portable.zip` 适合免安装使用。
+`codex-helper-v2.0.1-setup.exe` 是推荐的一键安装包：提供安装向导、可选桌面快捷方式、开始菜单入口和卸载项；卸载不会删除 Codex 数据、账号保险库或备份目录。`codex-helper-v2.0.1-windows-x64-portable.zip` 适合免安装使用。

@@ -16,6 +16,7 @@ public sealed class OfficialAccountService
     private readonly string codexRoot;
     private readonly string authPath;
     private readonly string profileDirectory;
+    private readonly string providerDirectory;
     private readonly string recoveryDirectory;
     private readonly string indexPath;
     private readonly JsonStore json = new();
@@ -27,6 +28,7 @@ public sealed class OfficialAccountService
         codexRoot = Path.GetFullPath(rootPath);
         authPath = Path.Combine(codexRoot, "auth.json");
         profileDirectory = Path.Combine(appPaths.VaultDirectory, "accounts");
+        providerDirectory = Path.Combine(appPaths.VaultDirectory, "providers");
         recoveryDirectory = Path.Combine(appPaths.RecoveryDirectory, "accounts");
         indexPath = Path.Combine(appPaths.VaultDirectory, "connections.json");
         this.processes = processes;
@@ -37,12 +39,28 @@ public sealed class OfficialAccountService
     public ConnectionIndex LoadIndex()
     {
         var index = json.LoadOrCreate(indexPath, () => new ConnectionIndex());
+        var missing = index.Profiles.Where(ProfileFileIsMissing).ToList();
+        if (missing.Count > 0)
+        {
+            foreach (var profile in missing) index.Profiles.Remove(profile);
+            if (missing.Any(profile => string.Equals(profile.Id, index.ActiveProfileId, StringComparison.Ordinal))) index.ActiveProfileId = string.Empty;
+            SaveIndex(index);
+        }
         foreach (var profile in index.Profiles)
         {
             ValidateProfileId(profile.Id);
             profile.IsActive = string.Equals(profile.Id, index.ActiveProfileId, StringComparison.Ordinal);
         }
         return index;
+    }
+
+    private bool ProfileFileIsMissing(ConnectionProfile profile)
+    {
+        if (!Guid.TryParseExact(profile.Id, "N", out _)) return true;
+        var path = profile.Kind == ConnectionKind.OfficialAccount
+            ? ProfilePath(profile.Id)
+            : Path.Combine(providerDirectory, profile.Id + ".dat");
+        return !File.Exists(path);
     }
 
     public ConnectionProfile SaveCurrent(string label)
@@ -218,6 +236,22 @@ public sealed class OfficialAccountService
         return auth;
     }
 
+    /// <summary>Persists a non-secret account health result produced by the direct usage check.</summary>
+    public void UpdateVerification(string profileId, bool available, string statusMessage, OfficialAccountUsage? usage = null)
+    {
+        ValidateProfileId(profileId);
+        var index = LoadIndex();
+        var profile = index.Profiles.FirstOrDefault(item => item.Kind == ConnectionKind.OfficialAccount && item.Id == profileId)
+            ?? throw new InvalidOperationException("未找到官方账号档案。");
+        profile.LastVerifiedUtc = DateTime.UtcNow;
+        profile.RequiresAttention = !available;
+        profile.StatusMessage = statusMessage;
+        profile.QuotaSummary = usage?.Summary ?? string.Empty;
+        profile.QuotaCheckedUtc = usage is null ? null : DateTime.UtcNow;
+        profile.UpdatedUtc = DateTime.UtcNow;
+        SaveIndex(index);
+    }
+
     public ConnectionProfile ImportDecryptedProfile(string label, ReadOnlySpan<byte> authBytes)
     {
         var auth = authBytes.ToArray();
@@ -243,26 +277,47 @@ public sealed class OfficialAccountService
         finally { CryptographicOperations.ZeroMemory(auth); }
     }
 
-    /// <summary>Exports saved official-account profiles as standard Codex auth JSON files.</summary>
-    public OfficialJsonExportResult ExportProfilesAsJson(string destinationDirectory)
+    /// <summary>Exports saved official-account profiles in a selected, documented account-file layout.</summary>
+    public OfficialJsonExportResult ExportProfiles(string destinationDirectory, OfficialAccountExportFormat format)
     {
         if (string.IsNullOrWhiteSpace(destinationDirectory)) throw new ArgumentException("请选择导出目录。", nameof(destinationDirectory));
         var directory = Path.GetFullPath(destinationDirectory);
         Directory.CreateDirectory(directory);
+        var profiles = LoadIndex().Profiles.Where(item => item.Kind == ConnectionKind.OfficialAccount).OrderBy(item => item.Label, StringComparer.OrdinalIgnoreCase).ToList();
         var paths = new List<string>();
-        foreach (var profile in LoadIndex().Profiles.Where(item => item.Kind == ConnectionKind.OfficialAccount).OrderBy(item => item.Label, StringComparer.OrdinalIgnoreCase))
+        if (format == OfficialAccountExportFormat.Sub2ApiJson)
+        {
+            var records = new List<JsonElement>();
+            foreach (var profile in profiles)
+            {
+                var auth = ExportDecryptedProfileForBundle(profile.Id);
+                try { records.Add(CreateSub2Record(profile.Label, auth)); }
+                finally { CryptographicOperations.ZeroMemory(auth); }
+            }
+            var path = CreateUniqueJsonPath(directory, "Codex-Sub2API-accounts");
+            AtomicFile.WriteAllText(path, JsonSerializer.Serialize(records, new JsonSerializerOptions { WriteIndented = true }));
+            paths.Add(path);
+            return new OfficialJsonExportResult(profiles.Count, paths, format);
+        }
+        foreach (var profile in profiles)
         {
             var auth = ExportDecryptedProfileForBundle(profile.Id);
             try
             {
                 var path = CreateUniqueJsonPath(directory, profile.Label);
-                AtomicFile.WriteAllBytes(path, auth);
+                var output = format == OfficialAccountExportFormat.CpaJson ? CreateCpaRecord(auth) : auth;
+                try { AtomicFile.WriteAllBytes(path, output); }
+                finally { if (!ReferenceEquals(output, auth)) CryptographicOperations.ZeroMemory(output); }
                 paths.Add(path);
             }
             finally { CryptographicOperations.ZeroMemory(auth); }
         }
-        return new OfficialJsonExportResult(paths.Count, paths);
+        return new OfficialJsonExportResult(paths.Count, paths, format);
     }
+
+    /// <summary>Compatibility wrapper for existing callers that expect raw Codex auth.json files.</summary>
+    public OfficialJsonExportResult ExportProfilesAsJson(string destinationDirectory) =>
+        ExportProfiles(destinationDirectory, OfficialAccountExportFormat.OfficialCodexJson);
 
     /// <summary>Imports one or more standard Codex auth JSON files without activating any account.</summary>
     public OfficialJsonImportResult ImportProfilesFromJson(IEnumerable<string> paths)
@@ -277,9 +332,13 @@ public sealed class OfficialAccountService
                 if (!string.Equals(Path.GetExtension(source), ".json", StringComparison.OrdinalIgnoreCase))
                     throw new InvalidDataException($"不是 JSON 文件：{Path.GetFileName(source)}");
                 if (!File.Exists(source)) throw new FileNotFoundException("找不到选择的 JSON 文件。", source);
-                var auth = File.ReadAllBytes(source);
-                try { ValidateAuth(auth); validated.Add((source, auth)); }
-                catch { CryptographicOperations.ZeroMemory(auth); throw; }
+                var bytes = File.ReadAllBytes(source);
+                try
+                {
+                    var records = NormalizeImportedRecords(bytes);
+                    foreach (var auth in records) validated.Add((source, auth));
+                }
+                finally { CryptographicOperations.ZeroMemory(bytes); }
             }
 
             var existingIds = LoadIndex().Profiles.Select(item => item.Id).ToHashSet(StringComparer.Ordinal);
@@ -296,6 +355,130 @@ public sealed class OfficialAccountService
             foreach (var (_, auth) in validated) CryptographicOperations.ZeroMemory(auth);
         }
     }
+
+    /// <summary>Safely removes an archived official account. Deleting the active profile also clears live auth.json.</summary>
+    public void DeleteProfile(string profileId)
+    {
+        AssertSafeToWrite();
+        ValidateProfileId(profileId);
+        var index = LoadIndex();
+        var profile = index.Profiles.FirstOrDefault(item => item.Kind == ConnectionKind.OfficialAccount && item.Id == profileId)
+            ?? throw new InvalidOperationException("未找到要删除的官方账号档案。");
+        var protectedPath = ProfilePath(profile.Id);
+        if (File.Exists(protectedPath))
+        {
+            var archived = File.ReadAllBytes(protectedPath);
+            try { AtomicFile.WriteAllBytes(Path.Combine(recoveryDirectory, "deleted-" + profile.Id + "-" + DateTime.UtcNow.ToString("yyyyMMddTHHmmssfffZ") + ".dat"), archived); }
+            finally { CryptographicOperations.ZeroMemory(archived); }
+        }
+        if (string.Equals(index.ActiveProfileId, profileId, StringComparison.Ordinal))
+        {
+            BackupCurrentAuth();
+            if (File.Exists(authPath)) File.Delete(authPath);
+            index.ActiveProfileId = string.Empty;
+            ArchiveModelCache();
+        }
+        index.Profiles.Remove(profile);
+        SaveIndex(index);
+        if (File.Exists(protectedPath)) File.Delete(protectedPath);
+    }
+
+    private static List<byte[]> NormalizeImportedRecords(ReadOnlySpan<byte> source)
+    {
+        var copy = source.ToArray();
+        try
+        {
+            using var document = JsonDocument.Parse(copy);
+            var roots = document.RootElement.ValueKind == JsonValueKind.Array
+                ? document.RootElement.EnumerateArray().ToList()
+                : new List<JsonElement> { document.RootElement };
+            if (roots.Count == 0) throw new InvalidDataException("账号 JSON 数组为空。");
+            var result = new List<byte[]>();
+            try
+            {
+                foreach (var root in roots)
+                {
+                    var auth = NormalizeImportedRecord(root);
+                    ValidateAuth(auth);
+                    result.Add(auth);
+                }
+                return result;
+            }
+            catch
+            {
+                foreach (var auth in result) CryptographicOperations.ZeroMemory(auth);
+                throw;
+            }
+        }
+        catch (JsonException ex) { throw new InvalidDataException("账号文件不是有效 JSON。", ex); }
+        finally { CryptographicOperations.ZeroMemory(copy); }
+    }
+
+    private static byte[] NormalizeImportedRecord(JsonElement root)
+    {
+        if (root.ValueKind != JsonValueKind.Object) throw new InvalidDataException("账号 JSON 条目必须是对象。");
+        if (root.TryGetProperty("auth_mode", out _)) return Encoding.UTF8.GetBytes(root.GetRawText());
+        if (!root.TryGetProperty("type", out var type) || !string.Equals(type.GetString(), "codex", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException("不支持的账号 JSON；仅支持 Codex 官方、CPA Codex 或 Sub2API Codex 格式。");
+        return CreateOfficialRecord(root);
+    }
+
+    private static byte[] CreateOfficialRecord(JsonElement source)
+    {
+        var tokens = source.TryGetProperty("tokens", out var nested) && nested.ValueKind == JsonValueKind.Object ? nested : source;
+        var access = ReadString(tokens, "access_token");
+        var refresh = ReadString(tokens, "refresh_token");
+        var idToken = ReadString(tokens, "id_token");
+        if (string.IsNullOrWhiteSpace(access) && string.IsNullOrWhiteSpace(refresh))
+            throw new InvalidDataException("账号 JSON 缺少 access_token 和 refresh_token。");
+        var accountId = ReadString(source, "account_id");
+        if (string.IsNullOrWhiteSpace(accountId)) accountId = ReadString(tokens, "account_id");
+        var payload = new Dictionary<string, object?>
+        {
+            ["auth_mode"] = "chatgpt",
+            ["account_id"] = accountId,
+            ["tokens"] = new Dictionary<string, string?>
+            {
+                ["access_token"] = access, ["refresh_token"] = refresh, ["id_token"] = idToken, ["account_id"] = accountId
+            }
+        };
+        return JsonSerializer.SerializeToUtf8Bytes(payload);
+    }
+
+    private static byte[] CreateCpaRecord(ReadOnlySpan<byte> auth)
+    {
+        using var document = JsonDocument.Parse(auth.ToArray());
+        var root = document.RootElement;
+        var tokens = root.TryGetProperty("tokens", out var value) ? value : root;
+        var idToken = ReadString(tokens, "id_token");
+        var accountId = ReadString(root, "account_id");
+        var record = new Dictionary<string, object?>
+        {
+            ["type"] = "codex", ["account_id"] = accountId,
+            ["access_token"] = ReadString(tokens, "access_token"), ["refresh_token"] = ReadString(tokens, "refresh_token"),
+            ["id_token"] = idToken, ["email"] = TryReadJwtClaim(idToken, "email"), ["last_refresh"] = DateTime.UtcNow.ToString("O")
+        };
+        return JsonSerializer.SerializeToUtf8Bytes(record, new JsonSerializerOptions { WriteIndented = true });
+    }
+
+    private static JsonElement CreateSub2Record(string label, ReadOnlySpan<byte> auth)
+    {
+        using var document = JsonDocument.Parse(auth.ToArray());
+        var root = document.RootElement;
+        var tokens = root.TryGetProperty("tokens", out var value) ? value : root;
+        var idToken = ReadString(tokens, "id_token");
+        var record = new Dictionary<string, object?>
+        {
+            ["type"] = "codex", ["name"] = label, ["account_id"] = ReadString(root, "account_id"),
+            ["email"] = TryReadJwtClaim(idToken, "email"),
+            ["tokens"] = new Dictionary<string, string?> { ["access_token"] = ReadString(tokens, "access_token"), ["refresh_token"] = ReadString(tokens, "refresh_token"), ["id_token"] = idToken }
+        };
+        using var result = JsonDocument.Parse(JsonSerializer.Serialize(record));
+        return result.RootElement.Clone();
+    }
+
+    private static string ReadString(JsonElement element, string property) =>
+        element.ValueKind == JsonValueKind.Object && element.TryGetProperty(property, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() ?? string.Empty : string.Empty;
 
     private void AssertSafeToWrite()
     {

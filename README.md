@@ -56,6 +56,6 @@ powershell -ExecutionPolicy Bypass -File scripts\build.ps1
 powershell -ExecutionPolicy Bypass -File scripts\build-release.ps1
 ```
 
-发布构建输出到 `artifacts/v2.0.1/`，文件名均包含版本号。
+完整发布构建输出到 `artifacts/v2.1.0/`，文件名均包含版本号。若需要制作精简安装包，运行 `powershell -ExecutionPolicy Bypass -File scripts\build-runtime-required-installer.ps1`，输出到 `artifacts/v2.1.0-runtime-required/`。
 
-`codex-helper-v2.0.1-setup.exe` 是推荐的一键安装包：提供安装向导、可选桌面快捷方式、开始菜单入口和卸载项；卸载不会删除 Codex 数据、账号保险库或备份目录。`codex-helper-v2.0.1-windows-x64-portable.zip` 适合免安装使用。
+`codex-helper-v2.1.0-setup.exe` 是约 2.5MB 的精简一键安装包：提供安装向导、可选桌面快捷方式、开始菜单入口和卸载项；它需要电脑已安装 **.NET 8 Desktop Runtime**。`codex-helper-v2.1.0-windows-x64-portable.zip` 是免安装、内含运行时的完整包，适合未安装 .NET 8 Runtime 或希望直接解压使用的电脑。卸载不会删除 Codex 数据、账号保险库或备份目录。

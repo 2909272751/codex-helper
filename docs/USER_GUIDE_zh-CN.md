@@ -81,6 +81,8 @@ C:\实用软件开发\codex-helper\.git\backup  ← 更不能选
 
 从 `3.3.2` 起，Reasonix 不再承担任何截图、看图和视觉结论，所有屏幕、DPI、布局、颜色与视觉验收都归 GPT 独立完成；Reasonix 最多只做一次“窗口能启动/响应/退出/无残留”的事实型 GUI 烟测，失败时记录并收敛，不再为截图反复更换环境方案。
 
+从 `3.3.3` 起，Helper 启动扫描不得执行 Reasonix Desktop/launcher/update-helper，只能探测真实 CLI；任何来源命中 Desktop 启动器或辅助可执行文件即被排除，形成单一安全边界，运行中的 Desktop 路径仅作为定位线索派生 `reasonix-cli.exe`。
+
 ### Reasonix CLI 自动发现与手动选择
 
 Helper 会从多个来源自动发现 Reasonix CLI，不进行全盘递归扫描：

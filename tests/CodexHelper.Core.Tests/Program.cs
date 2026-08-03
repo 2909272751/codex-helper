@@ -62,7 +62,8 @@ internal static class Program
         ("DeepSeek 历史统计安全回填", TestDeepSeekBackfillAsync),
         ("DeepSeek 缓存范围与可取消", TestDeepSeekCacheRangeAndCancelAsync),
         ("TOML 损坏配置阻断", TestTomlValidationAsync),
-        ("隔离 GUI 烟测配置", TestGuiSmokeFixtureAsync)
+        ("隔离 GUI 烟测配置", TestGuiSmokeFixtureAsync),
+        ("精简发布策略静态校验（3.3.3 版本一致/无 full-portable/运行库检测文案）", TestThinReleasePolicyStaticAsync)
     ];
 
     private static async Task<int> Main()
@@ -1065,6 +1066,42 @@ internal static class Program
         _ = TomlConfigurationDocument.Parse(await File.ReadAllLinesAsync(configPath));
     }
 
+    private static async Task TestThinReleasePolicyStaticAsync()
+    {
+        // 从 CWD 向上定位仓库根（含 CodexHelper.sln）。
+        var root = Directory.GetCurrentDirectory();
+        while (!File.Exists(Path.Combine(root, "CodexHelper.sln")))
+        {
+            var parent = Path.GetDirectoryName(root);
+            if (parent is null) throw new InvalidOperationException("无法定位仓库根：" + Directory.GetCurrentDirectory());
+            root = parent;
+        }
+
+        // 版本源必须是 3.3.3。
+        var props = await File.ReadAllTextAsync(Path.Combine(root, "Directory.Build.props"));
+        var match = System.Text.RegularExpressions.Regex.Match(props, @"<Version>([^<]+)</Version>");
+        Assert(match.Success && match.Groups[1].Value == "3.3.3", "版本源必须为 3.3.3，实际：" + (match.Success ? match.Groups[1].Value : "未找到"));
+
+        // 安装器：含微软官方链接、无 full/portable 旧引导、运行库检测不依赖单一目录。
+        var iss = await File.ReadAllTextAsync(Path.Combine(root, "installer", "CodexHelperRuntimeRequired.iss"));
+        Assert(iss.Contains("https://dotnet.microsoft.com/zh-cn/download/dotnet/8.0", StringComparison.Ordinal), "安装器必须包含微软官方 .NET 8 下载链接。");
+        Assert(!iss.Contains("完整离线安装包", StringComparison.Ordinal) && !iss.Contains("便携 ZIP", StringComparison.Ordinal) && !iss.Contains("setup-full", StringComparison.OrdinalIgnoreCase), "安装器中文文案不得再引导完整离线包或便携 ZIP。");
+        Assert(iss.Contains("RegGetValueNames", StringComparison.Ordinal) && iss.Contains(@"InstalledVersions\x64\sharedfx\Microsoft.WindowsDesktop.App", StringComparison.Ordinal), "运行库检测应枚举注册表已登记版本，而非仅依赖键存在或单个固定目录。");
+        Assert(iss.Contains("Copy(VersionNames[i], 1, 2) = '8.'", StringComparison.Ordinal), "运行库检测应仅接受以 8. 开头的主版本，避免把只装 9/10 的电脑误判为已装 8。");
+
+        // 精简发布脚本：引用精简 iss、不生成 full/portable。
+        var release = await File.ReadAllTextAsync(Path.Combine(root, "scripts", "build-release.ps1"));
+        Assert(release.Contains("CodexHelperRuntimeRequired.iss", StringComparison.Ordinal), "精简发布必须使用精简安装器脚本。");
+        Assert(!release.Contains("CodexHelper.iss", StringComparison.Ordinal) && !release.Contains("portable", StringComparison.OrdinalIgnoreCase) && !release.Contains("self-contained true", StringComparison.OrdinalIgnoreCase), "精简发布入口不得生成或选入 full/portable 资产。");
+        Assert(release.Contains("codex-helper-v$version-setup.exe", StringComparison.Ordinal) && release.Contains("sha256", StringComparison.Ordinal), "精简发布必须产出版本化 setup 与 SHA-256。");
+
+        // README：醒目的 v3.3.3 下载区（Release 页、setup 直链、微软下载页），且不再推荐 full/portable。
+        var readme = await File.ReadAllTextAsync(Path.Combine(root, "README.md"));
+        Assert(readme.Contains("v3.3.3 Release 页面", StringComparison.Ordinal) && readme.Contains("releases/download/v3.3.3/codex-helper-v3.3.3-setup.exe", StringComparison.Ordinal), "README 下载区应直达 v3.3.3 Release 与精简安装包直链。");
+        Assert(readme.Contains("https://dotnet.microsoft.com/zh-cn/download/dotnet/8.0", StringComparison.Ordinal), "README 下载区应提供微软官方 .NET 8 下载页。");
+        Assert(!readme.Contains("setup-full", StringComparison.OrdinalIgnoreCase) && !readme.Contains("portable.zip", StringComparison.OrdinalIgnoreCase), "README 不得再推荐 full/portable 下载。");
+    }
+
     private static async Task TestReasonixIntegrationAsync()
     {
         await WithTempDirectoryAsync("r", async root =>
@@ -1727,6 +1764,54 @@ internal static class Program
             };
             var dupCandidates = dupDiscovery.Discover(null);
             Assert(dupCandidates.Count(c => string.Equals(c.Path, dDriveCli, StringComparison.OrdinalIgnoreCase)) == 1, "重复路径应去重。");
+
+            // 6) 安装根同时存在 CLI 与 Desktop/启动器/update-helper 时，只有 CLI 被选中，
+            //    运行中 Desktop 仍能推导兄弟/版本目录的 reasonix-cli.exe，且 ProcessRunner 从不收到 Desktop 路径。
+            var installRoot = Path.Combine(root, "install");
+            var versionsDir = Path.Combine(installRoot, "versions", "v1.19.3");
+            Directory.CreateDirectory(versionsDir);
+            foreach (var name in new[] { "reasonix-cli.exe", "Reasonix.exe", "reasonix-launcher.exe", "reasonix-update-helper.exe" })
+                await File.WriteAllTextAsync(Path.Combine(installRoot, name), "fake");
+            await File.WriteAllTextAsync(Path.Combine(versionsDir, "reasonix-cli.exe"), "fake");
+            await File.WriteAllTextAsync(Path.Combine(versionsDir, "reasonix-desktop.exe"), "fake");
+
+            var desktopDiscovery = new ReasonixCliDiscovery
+            {
+                SpecialFolder = folders,
+                FileExists = File.Exists,
+                RegistryReader = () => Array.Empty<string>(),
+                RunningProcessReader = () => new[] { Path.Combine(installRoot, "Reasonix.exe"), Path.Combine(versionsDir, "reasonix-desktop.exe") },
+                PathDirectoryReader = () => Array.Empty<string>()
+            };
+            var desktopCandidates = desktopDiscovery.Discover(null);
+            string[] forbidden = { "reasonix.exe", "reasonix-desktop.exe", "reasonix-launcher.exe", "reasonix-update-helper.exe" };
+            Assert(desktopCandidates.Count > 0
+                && desktopCandidates.All(c => !forbidden.Contains(Path.GetFileName(c.Path), StringComparer.OrdinalIgnoreCase)),
+                "安装根同时存在 CLI 与 Desktop 启动器时，候选不得包含任何 Desktop/启动器。候选=" + string.Join(";", desktopCandidates.Select(c => c.Path)));
+            Assert(desktopCandidates.Any(c => string.Equals(c.Path, Path.Combine(installRoot, "reasonix-cli.exe"), StringComparison.OrdinalIgnoreCase)),
+                "运行中 Desktop 应推导安装根兄弟 reasonix-cli.exe。");
+            Assert(desktopCandidates.Any(c => string.Equals(c.Path, Path.Combine(versionsDir, "reasonix-cli.exe"), StringComparison.OrdinalIgnoreCase)),
+                "运行中 Desktop 应推导版本目录 reasonix-cli.exe。");
+
+            var captured = new List<string>();
+            var desktopProbe = new ReasonixCliProbe
+            {
+                ProcessRunner = (path, args) =>
+                {
+                    captured.Add(path);
+                    return args.Contains("--version")
+                        ? new ReasonixProcessResult(0, "1.19.3", "")
+                        : new ReasonixProcessResult(0, NewDoctorJson(), "");
+                }
+            };
+            var desktopSelection = await desktopProbe.SelectBestAsync(desktopCandidates, null);
+            Assert(captured.Count > 0
+                && captured.All(p => !forbidden.Contains(Path.GetFileName(p), StringComparer.OrdinalIgnoreCase)),
+                "ProcessRunner 从未收到 Desktop/启动器路径，仅探测 CLI/shim。captured=" + string.Join(";", captured));
+            Assert(desktopSelection.Best is not null
+                && string.Equals(desktopSelection.Best.Path, Path.Combine(installRoot, "reasonix-cli.exe"), StringComparison.OrdinalIgnoreCase)
+                && desktopSelection.Best.Source == ReasonixCliSource.RunningProcess,
+                "应仅选中运行中 Desktop 派生的 reasonix-cli.exe。Best=" + (desktopSelection.Best?.Path ?? "null"));
         });
     }
 

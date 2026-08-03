@@ -14,7 +14,7 @@ public enum ReasonixCliSource
     RunningProcess,
     /// <summary>常见安装位置（%LOCALAPPDATA%\Programs\Reasonix 等）。</summary>
     CommonLocation,
-    /// <summary>PATH 环境变量中的 reasonix-cli.exe / reasonix.exe。</summary>
+    /// <summary>PATH 环境变量中的 reasonix-cli.exe。</summary>
     Path,
     /// <summary>npm 全局 shim（%APPDATA%\npm\reasonix.cmd），最后兜底。</summary>
     Npm
@@ -30,6 +30,17 @@ public sealed record ReasonixCliCandidate(string Path, ReasonixCliSource Source)
 /// </summary>
 public sealed class ReasonixCliDiscovery
 {
+    /// <summary>绝不可作为 CLI 候选的 Desktop 启动器与辅助可执行文件（按文件名忽略大小写）。
+    /// 任何来源（保存路径、注册表、运行中进程、常见位置、PATH）一旦命中即排除，形成单一安全边界，
+    /// 确保这些文件永远不会被交给探测器执行。运行中的 Desktop 路径仍可作定位线索派生 reasonix-cli.exe。</summary>
+    private static readonly HashSet<string> NonCliExecutableNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "reasonix.exe",              // Desktop 启动器（注意与 reasonix-cli.exe 区分）
+        "reasonix-desktop.exe",      // Desktop 主程序
+        "reasonix-launcher.exe",     // 启动器
+        "reasonix-update-helper.exe" // 更新辅助
+    };
+
     /// <summary>文件存在性检查（默认 File.Exists）。</summary>
     public Func<string, bool> FileExists { get; init; } = File.Exists;
 
@@ -39,7 +50,8 @@ public sealed class ReasonixCliDiscovery
     /// <summary>注册表卸载项读取器，返回推导出的安装根/可执行文件路径（默认读真实注册表）。</summary>
     public Func<IEnumerable<string>>? RegistryReader { get; init; }
 
-    /// <summary>运行中进程可执行文件路径（默认枚举 reasonix-desktop.exe / Reasonix.exe / reasonix-cli.exe）。</summary>
+    /// <summary>运行中进程可执行文件路径（默认枚举 reasonix-desktop.exe / Reasonix.exe / reasonix-cli.exe，
+    /// 供目录线索；Desktop/启动器本身会被候选过滤排除）。</summary>
     public Func<IEnumerable<string>>? RunningProcessReader { get; init; }
 
     /// <summary>PATH 目录（默认从环境变量解析）。</summary>
@@ -63,6 +75,8 @@ public sealed class ReasonixCliDiscovery
             if (string.IsNullOrWhiteSpace(path)) return;
             try { path = Path.GetFullPath(path); }
             catch { return; }
+            var fileName = Path.GetFileName(path);
+            if (string.IsNullOrWhiteSpace(fileName) || NonCliExecutableNames.Contains(fileName)) return;
             if (!FileExists(path)) return;
             if (seen.Add(path)) candidates.Add(new ReasonixCliCandidate(path, source));
         }
@@ -80,10 +94,10 @@ public sealed class ReasonixCliDiscovery
         {
             foreach (var derived in DeriveCliPaths(installDir)) Add(derived, ReasonixCliSource.Registry);
             Add(Path.Combine(installDir, "reasonix-cli.exe"), ReasonixCliSource.Registry);
-            Add(Path.Combine(installDir, "reasonix.exe"), ReasonixCliSource.Registry);
         }
 
         // 3) 正在运行的 reasonix-desktop.exe / Reasonix.exe 所在安装根或版本目录。
+        //    可执行文件本身（Desktop/启动器）被 NonCliExecutableNames 过滤，仅作为目录线索派生 reasonix-cli.exe。
         foreach (var executable in (RunningProcessReader ?? ReadRunningProcessExecutables)())
         {
             Add(executable, ReasonixCliSource.RunningProcess);
@@ -92,7 +106,6 @@ public sealed class ReasonixCliDiscovery
                 var directory = Path.GetDirectoryName(Path.GetFullPath(executable));
                 if (string.IsNullOrWhiteSpace(directory)) continue;
                 Add(Path.Combine(directory, "reasonix-cli.exe"), ReasonixCliSource.RunningProcess);
-                Add(Path.Combine(directory, "reasonix.exe"), ReasonixCliSource.RunningProcess);
                 // 进程位于 versions\vX.Y.Z 时，安装根在上两级。
                 var versionsParent = Path.GetDirectoryName(directory);
                 if (!string.IsNullOrWhiteSpace(versionsParent) && string.Equals(Path.GetFileName(versionsParent), "versions", StringComparison.OrdinalIgnoreCase))
@@ -108,14 +121,12 @@ public sealed class ReasonixCliDiscovery
         foreach (var baseDir in new[] { Path.Combine(localAppData, "Programs", "Reasonix"), Path.Combine(localAppData, "reasonix"), Path.Combine(programFiles, "Reasonix"), Path.Combine(programFilesX86, "Reasonix") })
         {
             Add(Path.Combine(baseDir, "reasonix-cli.exe"), ReasonixCliSource.CommonLocation);
-            Add(Path.Combine(baseDir, "reasonix.exe"), ReasonixCliSource.CommonLocation);
         }
 
         // 5) PATH 中的 reasonix-cli.exe / reasonix.exe。
         foreach (var directory in (PathDirectoryReader ?? ReadPathDirectories)())
         {
             Add(Path.Combine(directory, "reasonix-cli.exe"), ReasonixCliSource.Path);
-            Add(Path.Combine(directory, "reasonix.exe"), ReasonixCliSource.Path);
         }
 
         // 6) npm shim 最后兜底。

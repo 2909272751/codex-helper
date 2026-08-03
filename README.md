@@ -2,9 +2,20 @@
 
 Codex Helper 是面向 Windows 10/11 的 Codex 专属工作台，统一管理官方账号、第三方 Responses API、重要项目、个人 Skills、Codex 配置、加密增量备份与批量迁移。
 
-当前开发版本：`3.3.2`
+当前开发版本：`3.3.3`
 
 ![Codex Helper Logo](assets/CodexHelper-256.png)
+
+## 下载安装
+
+**Codex Helper v3.3.3** 精简一键安装包（GitHub Release）：
+
+- 精简安装包：`codex-helper-v3.3.3-setup.exe`（依赖 Windows x64 的 **.NET 8 Desktop Runtime**，安装 .NET 8 SDK 也可满足）
+- [打开 v3.3.3 Release 页面](https://github.com/2909272751/codex-helper/releases/tag/v3.3.3)
+- [直接下载精简安装包](https://github.com/2909272751/codex-helper/releases/download/v3.3.3/codex-helper-v3.3.3-setup.exe)
+- [微软官方 .NET 8 下载页](https://dotnet.microsoft.com/zh-cn/download/dotnet/8.0)
+
+> 若安装器提示缺少运行库，请先安装 **.NET 8 Desktop Runtime（Windows x64）**，再重新打开并运行本安装包。自 `v3.3.3` 起项目只发布精简安装包与对应的 SHA-256 校验文件，不再提供完整离线安装包或便携 ZIP。
 
 ## 连接中心与协作开发
 
@@ -19,6 +30,8 @@ Codex Helper 是面向 Windows 10/11 的 Codex 专属工作台，统一管理官
 `3.3.1` 修复 Reasonix 1.19.x 在“完全权限”下因旧权限参数而于首轮模型调用前立即退出的问题；完全权限现在使用经实际写文件验证的兼容模式。
 
 `3.3.2` 收敛视觉验收职责：Reasonix 不截图、不看图、不作视觉结论（禁止 PrintWindow、BitBlt、离屏渲染与像素分析等），所有视觉验收归 GPT 独立完成；Reasonix 最多做一次“窗口能启动/响应/退出/无残留”的事实型 GUI 烟测，失败即记录并收敛，不再为截图反复诊断环境。
+
+`3.3.3` 收紧启动扫描：Helper 启动扫描不得执行 Reasonix Desktop/launcher/update-helper，只能探测真实 CLI；任何来源命中 Desktop 启动器或辅助可执行文件即被排除，形成单一安全边界。
 
 ### Reasonix CLI 自动发现与手动选择
 
@@ -82,6 +95,10 @@ powershell -ExecutionPolicy Bypass -File scripts\build.ps1
 powershell -ExecutionPolicy Bypass -File scripts\build-release.ps1
 ```
 
-完整发布构建输出到 `artifacts/v3.3.1/`，文件名均包含版本号。若需要制作精简安装包，运行 `powershell -ExecutionPolicy Bypass -File scripts\build-runtime-required-installer.ps1`，输出到 `artifacts/v3.3.1-runtime-required/`。
+精简发布构建输出到 `artifacts/v3.3.3/`，只生成 `codex-helper-v3.3.3-setup.exe` 与 `codex-helper-v3.3.3-sha256.txt`：
 
-`codex-helper-v3.3.1-setup.exe` 是精简一键安装包：提供安装向导、可选桌面快捷方式、开始菜单入口和卸载项；它需要电脑已安装 **.NET 8 Desktop Runtime**，缺少时会一键打开微软官方下载页。`codex-helper-v3.3.1-setup-full.exe` 是内置运行时的完整离线安装包，适合未安装 .NET 8 Runtime 的电脑。`codex-helper-v3.3.1-windows-x64-portable.zip` 是免安装、内含运行时的完整包，解压即可使用。卸载不会删除 Codex 数据、账号保险库或备份目录。
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\build-release.ps1
+```
+
+`codex-helper-v3.3.3-setup.exe` 是精简一键安装包：提供安装向导、可选桌面快捷方式、开始菜单入口和卸载项；它需要电脑已安装 **.NET 8 Desktop Runtime**，缺少时会可靠检测并一键打开微软官方下载页。自 `v3.3.3` 起不再发布完整离线安装包或便携 ZIP。卸载不会删除 Codex 数据、账号保险库或备份目录。

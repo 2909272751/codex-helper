@@ -1098,9 +1098,10 @@ internal static class Program
             Assert(jobHost.Contains("Get-SessionBaseline") && jobHost.Contains("Find-NewSession") && jobHost.Contains("Find-ResumedSession"), "Task host must record a session baseline and bind only new/resumed sessions.");
             Assert(runner.Contains("CodexThreadId") && jobHost.Contains("same-turn-resume"), "Original Codex task identity or same-turn completion state is missing.");
             Assert(jobHost.Contains("UpdatedUtc=[DateTime]::UtcNow.ToString('o')") && jobHost.Contains("StartedUtc=$startedText") && jobHost.Contains("$startedText=$started.ToString('o')"), "Task host must write ISO 8601 UTC dates instead of the default PowerShell /Date(...)/ format.");
-            Assert(jobHost.Contains("bypassPermissions"), "Full permission mode must reach Reasonix.");
+            Assert(jobHost.Contains("'--permission-mode','auto'") && !jobHost.Contains("bypassPermissions"), "Full permission mode must use the Reasonix 1.19 compatible auto mode.");
+            Assert(jobHost.IndexOf("$runArgs += $permissionArgs", StringComparison.Ordinal) < jobHost.IndexOf("$runArgs+=@('--events-jsonl','--metrics',$metrics,$prompt)", StringComparison.Ordinal), "Reasonix options must be appended before the final task prompt.");
             Assert(!runner.Contains(" --model ", StringComparison.Ordinal), "Runner must dynamically use the current Reasonix default model.");
-            Assert(jobHost.Contains("'--profile',$script:planProfile") && jobHost.Contains("'--effort',$script:planEffort"), "Task host must pass the resolved execution profile and effort.");
+            Assert(jobHost.Contains("'--profile',$script:planProfile") && jobHost.Contains("$cliEffort=if($script:planEffort -eq 'medium'){'high'}else{$script:planEffort}") && jobHost.Contains("'--effort',$cliEffort"), "Task host must map unsupported medium effort to high before invoking Reasonix 1.19.x.");
             Assert(!jobHost.Contains("--profile delivery", StringComparison.Ordinal), "Task host must not hard-code the delivery profile.");
             Assert(jobHost.Contains("Do not auto-start review, security-review, or explore subagents"), "Fast/Standard must forbid automatic review subagents in the managed prompt.");
             Assert(jobHost.Contains("workerChecks") && jobHost.Contains("gptChecks") && jobHost.Contains("releaseChecks"), "Acceptance split (worker/gpt/release checks) must be described in the managed prompt.");
@@ -2464,7 +2465,7 @@ internal static class Program
             }
 
             var fullArgv = await RunAndGetArgvAsync("run-full", ReasonixPermissionMode.Full);
-            Assert(fullArgv.Contains("--permission-mode" + Environment.NewLine + "bypassPermissions", StringComparison.Ordinal), "Full 模式权限参数必须真实进入 CLI argv：" + fullArgv);
+            Assert(fullArgv.Contains("--permission-mode" + Environment.NewLine + "auto", StringComparison.Ordinal) && !fullArgv.Contains("bypassPermissions", StringComparison.Ordinal), "Full 模式必须使用兼容的 auto 权限参数进入 CLI argv：" + fullArgv);
 
             var safeArgv = await RunAndGetArgvAsync("run-safe", ReasonixPermissionMode.Safe);
             Assert(safeArgv.Contains("--permission-mode" + Environment.NewLine + "acceptEdits", StringComparison.Ordinal) && safeArgv.Contains("Bash(dotnet build:*)", StringComparison.Ordinal), "Safe 模式权限参数必须真实进入 CLI argv：" + safeArgv);

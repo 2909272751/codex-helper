@@ -915,7 +915,7 @@ Write-Output "Reasonix task finished: $taskId. GPT must now inspect REVIEW_PACKE
     private static string BuildJobHost(string executable, ReasonixPermissionMode permissionMode, string settingsPath)
     {
         var permissionArgs = permissionMode == ReasonixPermissionMode.Full
-            ? "$permissionArgs=@('--permission-mode','bypassPermissions')"
+            ? "$permissionArgs=@('--permission-mode','auto')"
             : "$permissionArgs=@('--permission-mode','acceptEdits','--allowed-tools','Bash(dotnet --info:*)','--allowed-tools','Bash(dotnet restore:*)','--allowed-tools','Bash(dotnet build:*)','--allowed-tools','Bash(dotnet test:*)','--allowed-tools','Bash(dotnet run:*)','--allowed-tools','Bash(dotnet publish:*)')";
         return $$$"""
 param([Parameter(Mandatory=$true)][string]$ProjectRoot,[Parameter(Mandatory=$true)][string]$TaskDirectory,[Parameter(Mandatory=$true)][string]$StatusPath,[string]$CodexThreadId='',[Parameter(Mandatory=$true)][string]$ReasonixHome)
@@ -1241,10 +1241,12 @@ try{
   'If actual steps exceed the estimate, converge to the remaining acceptance items; never create extra experiment projects and never run publish/package/build-release without explicit authorization.`n'+
   'Do not read old runs or events under .codex-helper/runs, do not recursively scan bin/obj, do not re-read unchanged files, and do not re-run commands that already passed.'
   {{{permissionArgs}}}
-  $runArgs=@('run','--dir',$project,'--profile',$script:planProfile,'--effort',$script:planEffort)
+  $cliEffort=if($script:planEffort -eq 'medium'){'high'}else{$script:planEffort}
+  $runArgs=@('run','--dir',$project,'--profile',$script:planProfile,'--effort',$cliEffort)
   if($null-ne$script:planMaxSteps){ $runArgs+=@('--max-steps',[string]$script:planMaxSteps) }
-  $runArgs+=@('--events-jsonl','--metrics',$metrics,$prompt)
   $runArgs += $permissionArgs
+  # Reasonix 1.19.x requires every option before the final task text.
+  $runArgs+=@('--events-jsonl','--metrics',$metrics,$prompt)
   & '{{{executable.Replace("'", "''")}}}' @runArgs 2>$helperErr | ForEach-Object {
     $line=$_.ToString()
     [IO.File]::AppendAllText($events,$line+[Environment]::NewLine,[Text.UTF8Encoding]::new($false))
@@ -1336,7 +1338,11 @@ GPT must read EXECUTION_REPORT.md, inspect actual changes, and independently rer
     if($script:modelRunFailed){ $script:failureKind='model-run-failed' }
     elseif($exit -ne 0){ $script:failureKind='cli-exit' }
     else { $script:failureKind='missing-report' }
-    $script:failureSummary="No EXECUTION_REPORT.md; last stage=$($script:lastStage), last event=$($script:lastEventKind), last tool=$($script:lastToolName)."
+    if($script:modelRunFailed -and $script:stepCount -eq 0 -and $script:tokenInput -eq 0){
+      $script:failureSummary="Reasonix ended before the first model turn (0 tokens). The installed CLI may not support the configured permission mode. Rescan the Reasonix CLI or switch to Safe mode, then retry."
+    } else {
+      $script:failureSummary="No EXECUTION_REPORT.md; last stage=$($script:lastStage), last event=$($script:lastEventKind), last tool=$($script:lastToolName)."
+    }
     Write-FailureReport $script:failureKind $script:failureSummary $exit
   }
   if($reportExists){

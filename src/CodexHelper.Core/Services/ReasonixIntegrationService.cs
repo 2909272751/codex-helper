@@ -150,6 +150,9 @@ public sealed class ReasonixIntegrationService
 {
     public const string GuidanceStart = "<!-- CODEX-HELPER-REASONIX-EXECUTOR-START -->";
     public const string GuidanceEnd = "<!-- CODEX-HELPER-REASONIX-EXECUTOR-END -->";
+    /// <summary>视觉验收职责边界：Reasonix 不截图/不看图/不作视觉结论，视觉验收归 GPT。</summary>
+    public const string VisualBoundaryRule =
+        "Reasonix must never take screenshots, view images, or draw visual conclusions (no desktop screenshot, PrintWindow, BitBlt, RenderTargetBitmap, off-screen render capture, or pixel analysis, and no swapping screen-capture approaches). All screenshots, DPI, layout, color, occlusion and visual acceptance belong to GPT; if GPT lacks image tools it must honestly mark \"visual not verified\" instead of returning the task to Reasonix for repeated attempts. GUI smoke testing runs at most once; if the environment blocks it, record the fact and continue — never do graphics-environment diagnosis. If workerChecks wrongly includes a screenshot or visual item, skip it and hand it to GPT.";
     private readonly string codexRoot;
     private readonly AppPaths paths;
     private readonly string skillDirectory;
@@ -852,6 +855,7 @@ public sealed class ReasonixIntegrationService
             var block = $$"""
 {{GuidanceStart}}
 For implementation tasks that change project files, GPT is the planner and judge and Reasonix is the executor. GPT must create a unique task directory under `<project>/.codex-helper/runs/run-<timestamp>-<guid>/` containing `SPEC.md`, `ACCEPTANCE.md`, `HANDOFF.md`, and `manifest.json`. Then invoke the `reasonix-executor` skill runner with only the absolute project root and task directory and **no command timeout** (the host waits indefinitely, without polling, until Reasonix exits; there is no task-duration limit). Do not configure a fixed one-hour or any other finite timeout for this command; only a user-initiated Stop in Codex Helper or closing Codex should end it. The same GPT turn resumes and performs acceptance after the runner returns. Do not poll the event log. Codex Helper shows a live event view; the session syncs to Reasonix Desktop once its session file appears. After the runner returns, inspect `REVIEW_PACKET.md`, the actual diff, and rerun acceptance checks. GPT owns visual acceptance and gptChecks/releaseChecks; Reasonix performs implementation and workerChecks only. Execution intensity (auto/fast/standard/strict) is declared in manifest.json or inferred from the contract scope; Fast/Standard never auto-start review subagents. The manifest.json budget fields are `budgetSteps` (soft budget) and `maxSteps` (hard cap); `estimatedSteps` is not supported. Do not use Codex native subagents. Pure questions and read-only reviews stay in GPT.
+{{VisualBoundaryRule}}
 {{GuidanceEnd}}
 """;
             AtomicFile.WriteAllText(path, string.IsNullOrWhiteSpace(existing) ? block + Environment.NewLine : existing + Environment.NewLine + Environment.NewLine + block + Environment.NewLine);
@@ -863,7 +867,7 @@ For implementation tasks that change project files, GPT is the planner and judge
         else AtomicFile.WriteAllText(path, existing + Environment.NewLine);
     }
 
-    private static string BuildSkill() => """
+    private static string BuildSkill() => $$"""
 ---
 name: reasonix-executor
 description: Execute an already planned implementation task through the managed Reasonix CLI runner. Use only after GPT has written SPEC.md, ACCEPTANCE.md, HANDOFF.md and manifest.json in a unique project-local run directory.
@@ -875,6 +879,7 @@ GPT remains planner and judge. This skill only launches Reasonix as the implemen
 
 Run `powershell.exe -NoProfile -ExecutionPolicy Bypass -File invoke-reasonix.ps1 -ProjectRoot <absolute project root> -TaskDirectory <absolute run directory>`. The runner binds the newest active user Codex task automatically; pass `-CodexThreadId <uuid>` when the current thread id is explicitly available.
 Never pass the task body as a command-line argument. Run the command with **no command timeout** (wait indefinitely; the host has no task-duration limit) and wait for it to return; this consumes no repeated GPT turns and must not be replaced by log polling. Do not configure a fixed one-hour or any other finite timeout for this command — only user-initiated Stop in Codex Helper or closing Codex should end it. Tell the user the task is visible in Codex Helper (live event view) and will be synced to Reasonix Desktop once its session file appears. After completion, read REVIEW_PACKET.md and EXECUTION_REPORT.md, inspect actual changed files, and independently rerun acceptance checks in this same GPT turn. GPT owns visual acceptance and gptChecks/releaseChecks; Reasonix performs implementation and workerChecks only. Execution intensity (auto/fast/standard/strict) comes from manifest.json or is inferred; Fast/Standard never auto-start review subagents. The manifest.json budget fields are `budgetSteps` (soft budget) and `maxSteps` (hard cap); `estimatedSteps` is not supported. Do not commit, push, reset, clean, delete important files, modify credentials, or install dependencies unless the user explicitly authorized it.
+{{VisualBoundaryRule}}
 """;
 
     private static string BuildRunner(string taskRegistry) => $$"""
@@ -1238,6 +1243,7 @@ try{
   'Run each workerCheck at most once; if a check already passed, do not re-run it. Do not iterate test/Release build back and forth.`n'+
   'gptChecks and releaseChecks (visual acceptance, full regression, packaging/release) belong to GPT or a later release phase; do not attempt them.`n'+
   $reviewLine+
+  '{{{VisualBoundaryRule}}}`n'+
   'If actual steps exceed the estimate, converge to the remaining acceptance items; never create extra experiment projects and never run publish/package/build-release without explicit authorization.`n'+
   'Do not read old runs or events under .codex-helper/runs, do not recursively scan bin/obj, do not re-read unchanged files, and do not re-run commands that already passed.'
   {{{permissionArgs}}}

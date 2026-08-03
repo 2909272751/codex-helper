@@ -2,7 +2,7 @@
 
 Codex Helper 是面向 Windows 10/11 的 Codex 专属工作台，统一管理官方账号、第三方 Responses API、重要项目、个人 Skills、Codex 配置、加密增量备份与批量迁移。
 
-当前开发版本：`3.3.1`
+当前开发版本：`3.3.2`
 
 ![Codex Helper Logo](assets/CodexHelper-256.png)
 
@@ -17,6 +17,8 @@ Codex Helper 是面向 Windows 10/11 的 Codex 专属工作台，统一管理官
 独立的“协作开发”页面（不在“连接中心”）管理 GPT + Reasonix 协作：GPT 负责规划与验收，Reasonix 独立执行项目文件修改，Codex 原生子智能体保持关闭。页面可管理 Reasonix 默认模型、权限、执行强度、最近任务（停止/重试/返回原任务）以及 DeepSeek 缓存统计。Reasonix App 会话可能延迟同步，Helper 显示实时任务状态。
 
 `3.3.1` 修复 Reasonix 1.19.x 在“完全权限”下因旧权限参数而于首轮模型调用前立即退出的问题；完全权限现在使用经实际写文件验证的兼容模式。
+
+`3.3.2` 收敛视觉验收职责：Reasonix 不截图、不看图、不作视觉结论（禁止 PrintWindow、BitBlt、离屏渲染与像素分析等），所有视觉验收归 GPT 独立完成；Reasonix 最多做一次“窗口能启动/响应/退出/无残留”的事实型 GUI 烟测，失败即记录并收敛，不再为截图反复诊断环境。
 
 ### Reasonix CLI 自动发现与手动选择
 

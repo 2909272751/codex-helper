@@ -1083,6 +1083,7 @@ internal static class Program
             var guidance = await File.ReadAllTextAsync(Path.Combine(codexRoot, "AGENTS.md"));
             var runner = await File.ReadAllTextAsync(Path.Combine(skillRoot, "invoke-reasonix.ps1"));
             var jobHost = await File.ReadAllTextAsync(Path.Combine(skillRoot, "run-reasonix-job.ps1"));
+            var skillDoc = await File.ReadAllTextAsync(Path.Combine(skillRoot, "SKILL.md"));
             await AssertPowerShellParsesAsync(Path.Combine(skillRoot, "invoke-reasonix.ps1"));
             await AssertPowerShellParsesAsync(Path.Combine(skillRoot, "run-reasonix-job.ps1"));
             Assert(service.IsEnabled(), "Reasonix integration should be enabled after installation.");
@@ -1105,6 +1106,10 @@ internal static class Program
             Assert(!jobHost.Contains("--profile delivery", StringComparison.Ordinal), "Task host must not hard-code the delivery profile.");
             Assert(jobHost.Contains("Do not auto-start review, security-review, or explore subagents"), "Fast/Standard must forbid automatic review subagents in the managed prompt.");
             Assert(jobHost.Contains("workerChecks") && jobHost.Contains("gptChecks") && jobHost.Contains("releaseChecks"), "Acceptance split (worker/gpt/release checks) must be described in the managed prompt.");
+            Assert(guidance.Contains(ReasonixIntegrationService.VisualBoundaryRule, StringComparison.Ordinal), "Managed AGENTS guidance must forbid Reasonix screenshots and defer visual acceptance to GPT.");
+            Assert(skillDoc.Contains(ReasonixIntegrationService.VisualBoundaryRule, StringComparison.Ordinal), "Managed SKILL must forbid Reasonix visual acceptance.");
+            Assert(jobHost.Contains(ReasonixIntegrationService.VisualBoundaryRule, StringComparison.Ordinal), "Managed task prompt must forbid Reasonix visual acceptance.");
+            Assert(jobHost.Contains("GUI smoke testing runs at most once", StringComparison.Ordinal) && jobHost.Contains("skip it and hand it to GPT", StringComparison.Ordinal) && jobHost.Contains("PrintWindow", StringComparison.Ordinal), "Task prompt must cap GUI smoke at one attempt, defer visual workerChecks to GPT, and name forbidden capture APIs.");
             Assert(jobHost.Contains("helper_budget_notice"), "Task host must emit a soft budget notice without aborting.");
             Assert(jobHost.Contains("ExecutionModel=$script:reasonixModel"), "Task host must persist the resolved execution model for DeepSeek stats.");
             Assert(jobHost.Contains("$script:reasonixModel=Get-ReasonixModel") && jobHost.Contains("default_model") && jobHost.Contains("config.toml"), "Task host must read the current Reasonix default model.");

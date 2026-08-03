@@ -59,7 +59,7 @@ public static class PortableSecretEnvelope
         var memoryKiB = BinaryPrimitives.ReadInt32LittleEndian(envelope.Slice(offset, 4)); offset += 4;
         var parallelism = BinaryPrimitives.ReadInt32LittleEndian(envelope.Slice(offset, 4)); offset += 4;
         var saltLength = BinaryPrimitives.ReadInt32LittleEndian(envelope.Slice(offset, 4)); offset += 4;
-        if (version != Version || saltLength != SaltLength || envelope.Length <= offset + saltLength)
+        if (version != Version || iterations != Iterations || memoryKiB != MemoryKiB || parallelism != Parallelism || saltLength != SaltLength || envelope.Length <= offset + saltLength)
             throw new InvalidDataException("不支持的连接档案加密格式。");
         var salt = envelope.Slice(offset, saltLength);
         var key = CryptoEnvelope.DerivePortableKey(password, salt, iterations, memoryKiB, parallelism);

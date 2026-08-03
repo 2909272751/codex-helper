@@ -2,9 +2,25 @@
 
 Codex Helper 是面向 Windows 10/11 的 Codex 专属工作台，统一管理官方账号、第三方 Responses API、重要项目、个人 Skills、Codex 配置、加密增量备份与批量迁移。
 
-当前正式版本：`2.1.0`
+当前正式版本：`3.2.0`
 
 ![Codex Helper Logo](assets/CodexHelper-256.png)
+
+## 连接中心与协作开发
+
+连接中心统一管理官方账号、原生 Responses API 与 Sub2API。Base URL 支持填写服务根地址、`/v1` 或完整的 `/responses` 地址；Helper 会去重后缀，并让 Codex 统一调用 `/responses`。第三方 Responses API 是普通主模型连接，不冒充 Codex 原生子智能体。
+
+旧版本的“Responses 子智能体”档案会显示为“旧版子智能体档案”；选中后点“修复旧 Responses 档案”可清理导致任务正文丢失的旧 provider/worker/强制委派规则，并把它转为普通 Responses API 档案，档案和 DPAPI 加密的 API Key 都会保留。
+
+### 协作开发：GPT + Reasonix
+
+独立的“协作开发”页面（不在“连接中心”）管理 GPT + Reasonix 协作：GPT 负责规划与验收，Reasonix 独立执行项目文件修改，Codex 原生子智能体保持关闭。页面可管理 Reasonix 默认模型、权限、执行强度、最近任务（停止/重试/返回原任务）以及 DeepSeek 缓存统计。Reasonix App 会话可能延迟同步，Helper 显示实时任务状态。
+
+### DeepSeek 作为普通主模型
+
+同一个官方 DeepSeek 档案也可以作为普通 Codex 主模型使用：当且仅当连接为官方 `api.deepseek.com` 且模型为 `deepseek-v4-flash` 时，Helper 会根据本机完整 Codex 模型模板生成临时合并目录，让 GPT 模型仍保留在模型列表中，并加入 text-only 的 DeepSeek 条目及自动上下文压缩参数。切回官方账号或其他 API 时会恢复接管前的目录引用；用户自有模型目录不会被修改。找不到完整模板时会在写配置前停止切换。
+
+当前适配边界以 DeepSeek 官方 Responses 实现为准：Helper 仅为 `deepseek-v4-flash` 启用此目录适配；`previous_response_id`、`conversation` 和 `truncation` 尚不支持，图片/文件输入不支持，reasoning 的 `encrypted_content` 也不支持，缓存由服务端自动处理。因此 DeepSeek 只能作为普通 Codex 主模型使用，不能伪装成接收加密任务正文的 Codex 原生 worker。
 
 ## 设计原则
 
@@ -56,6 +72,6 @@ powershell -ExecutionPolicy Bypass -File scripts\build.ps1
 powershell -ExecutionPolicy Bypass -File scripts\build-release.ps1
 ```
 
-完整发布构建输出到 `artifacts/v2.1.0/`，文件名均包含版本号。若需要制作精简安装包，运行 `powershell -ExecutionPolicy Bypass -File scripts\build-runtime-required-installer.ps1`，输出到 `artifacts/v2.1.0-runtime-required/`。
+完整发布构建输出到 `artifacts/v3.2.0/`，文件名均包含版本号。若需要制作精简安装包，运行 `powershell -ExecutionPolicy Bypass -File scripts\build-runtime-required-installer.ps1`，输出到 `artifacts/v3.2.0-runtime-required/`。
 
-`codex-helper-v2.1.0-setup.exe` 是约 2.5MB 的精简一键安装包：提供安装向导、可选桌面快捷方式、开始菜单入口和卸载项；它需要电脑已安装 **.NET 8 Desktop Runtime**，缺少时会一键打开微软官方下载页。`codex-helper-v2.1.0-setup-full.exe` 是内置运行时的完整离线安装包，适合未安装 .NET 8 Runtime 的电脑。`codex-helper-v2.1.0-windows-x64-portable.zip` 是免安装、内含运行时的完整包，解压即可使用。卸载不会删除 Codex 数据、账号保险库或备份目录。
+`codex-helper-v3.2.0-setup.exe` 是精简一键安装包：提供安装向导、可选桌面快捷方式、开始菜单入口和卸载项；它需要电脑已安装 **.NET 8 Desktop Runtime**，缺少时会一键打开微软官方下载页。`codex-helper-v3.2.0-setup-full.exe` 是内置运行时的完整离线安装包，适合未安装 .NET 8 Runtime 的电脑。`codex-helper-v3.2.0-windows-x64-portable.zip` 是免安装、内含运行时的完整包，解压即可使用。卸载不会删除 Codex 数据、账号保险库或备份目录。

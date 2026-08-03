@@ -9,11 +9,20 @@ namespace CodexHelper.Core.Services;
 
 public sealed class BundleService
 {
+    private const long MaxManifestBytes = 16L * 1024 * 1024;
+    private const int MaxManifestFiles = 250_000;
+    private const long MaxSingleFileBytes = 1L * 1024 * 1024 * 1024 * 1024;
+    private const long MaxManifestTotalBytes = 16L * 1024 * 1024 * 1024 * 1024;
+    private const long MaxVirtualFileBytes = 64L * 1024 * 1024;
+    private const long MaxVirtualTotalBytes = 256L * 1024 * 1024;
+    private const long DiskSafetyReserveBytes = 512L * 1024 * 1024;
     private readonly AppPaths paths;
+    private readonly Func<string, long> availableFreeSpace;
 
-    public BundleService(AppPaths paths)
+    public BundleService(AppPaths paths, Func<string, long>? availableFreeSpace = null)
     {
         this.paths = paths;
+        this.availableFreeSpace = availableFreeSpace ?? GetAvailableFreeSpace;
         paths.EnsureCreated();
     }
 
@@ -44,7 +53,7 @@ public sealed class BundleService
         try
         {
             var candidates = EnumerateItems(request.Items, manifest.Issues, cancellationToken).ToList();
-            var allIds = request.Items.Select(item => item.Id).Concat(virtualFiles.Select(item => item.ItemId)).ToList();
+            var allIds = request.Items.Select(item => item.Id).Concat(virtualFiles.Select(item => item.ItemId).Distinct(StringComparer.Ordinal)).ToList();
             if (allIds.Distinct(StringComparer.Ordinal).Count() != allIds.Count) throw new InvalidOperationException("批量导出项目标识重复。");
             await using (var zipStream = new FileStream(zipPath, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None, 1024 * 1024, FileOptions.Asynchronous))
             using (var archive = new ZipArchive(zipStream, ZipArchiveMode.Create, leaveOpen: false))
@@ -75,11 +84,17 @@ public sealed class BundleService
                     }
                 }
 
+                var virtualKeys = new HashSet<string>(StringComparer.Ordinal);
+                long virtualBytes = 0;
                 foreach (var virtualFile in virtualFiles)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     ValidateItemId(virtualFile.ItemId);
                     var relative = NormalizeEntryPath(virtualFile.RelativePath);
+                    if (!virtualKeys.Add(FileKey(virtualFile.ItemId, relative))) throw new InvalidOperationException("批量导出包含重复虚拟文件路径。");
+                    if (virtualFile.Content.LongLength > MaxVirtualFileBytes || virtualBytes > MaxVirtualTotalBytes - virtualFile.Content.LongLength)
+                        throw new InvalidOperationException("受保护的内存数据超过迁移包安全上限。");
+                    virtualBytes += virtualFile.Content.LongLength;
                     var entry = archive.CreateEntry($"payload/{virtualFile.ItemId}/{relative}", CompressionLevel.NoCompression);
                     entry.LastWriteTime = ClampZipTime(virtualFile.LastWriteTimeUtc);
                     await using var target = entry.Open();
@@ -135,6 +150,8 @@ public sealed class BundleService
             var manifest = ReadAndValidateManifest(zipPath);
             var items = manifest.Items.Where(item => string.Equals(item.Category, category, StringComparison.OrdinalIgnoreCase)).ToDictionary(item => item.Id, StringComparer.Ordinal);
             var files = manifest.Files.Where(file => items.ContainsKey(file.ItemId)).ToDictionary(file => FileKey(file.ItemId, file.RelativePath), StringComparer.Ordinal);
+            if (files.Values.Any(file => file.Length > MaxVirtualFileBytes) || files.Values.Sum(file => file.Length) > MaxVirtualTotalBytes)
+                throw new InvalidDataException("迁移包虚拟文件超过内存安全上限。");
             var result = new List<BundleVirtualContent>();
             using var archive = ZipFile.OpenRead(zipPath);
             foreach (var entry in archive.Entries.Where(entry => !string.IsNullOrEmpty(entry.Name) && entry.FullName.StartsWith("payload/", StringComparison.Ordinal)))
@@ -145,9 +162,10 @@ public sealed class BundleService
                 if (parts.Length != 3 || !items.TryGetValue(parts[1], out var item)) continue;
                 var relative = parts[2].Replace('/', Path.DirectorySeparatorChar);
                 if (!files.TryGetValue(FileKey(parts[1], relative), out var metadata)) throw new InvalidDataException("迁移包虚拟文件未登记。");
+                if (entry.Length != metadata.Length) throw new InvalidDataException("迁移包虚拟文件声明长度不匹配。");
                 await using var stream = entry.Open();
-                using var memory = new MemoryStream();
-                await stream.CopyToAsync(memory, cancellationToken);
+                using var memory = new MemoryStream(metadata.Length > int.MaxValue ? 0 : (int)metadata.Length);
+                await CopyBoundedAsync(stream, memory, metadata.Length, cancellationToken);
                 var content = memory.ToArray();
                 var hash = Convert.ToHexString(SHA256.HashData(content)).ToLowerInvariant();
                 if (content.LongLength != metadata.Length || hash != metadata.ContentHash)
@@ -197,19 +215,24 @@ public sealed class BundleService
 
         try
         {
+            EnsureInitialDecryptSpace(request.BundlePath, stageRoot);
             await ChunkedEncryptedFile.DecryptPortableAsync(request.BundlePath, zipPath, request.Password, cancellationToken);
             var manifest = ReadAndValidateManifest(zipPath);
             var selectedIds = request.SelectedItemIds is { Count: > 0 }
                 ? request.SelectedItemIds.ToHashSet(StringComparer.Ordinal)
                 : manifest.Items.Select(item => item.Id).ToHashSet(StringComparer.Ordinal);
+            var manifestIds = manifest.Items.Select(item => item.Id).ToHashSet(StringComparer.Ordinal);
+            if (!selectedIds.IsSubsetOf(manifestIds)) throw new InvalidDataException("选择的迁移项目不在清单中。");
             var expected = manifest.Files
                 .Where(file => selectedIds.Contains(file.ItemId))
                 .ToDictionary(file => FileKey(file.ItemId, file.RelativePath), StringComparer.Ordinal);
+            EnsureImportSpace(expected.Values.Sum(file => file.Length), stageRoot, destinationRoot);
 
             using (var archive = ZipFile.OpenRead(zipPath))
             {
                 var payloadEntries = archive.Entries.Where(entry => entry.FullName.StartsWith("payload/", StringComparison.Ordinal) && !string.IsNullOrEmpty(entry.Name)).ToList();
                 var staged = 0;
+                var stagedKeys = new HashSet<string>(StringComparer.Ordinal);
                 foreach (var entry in payloadEntries)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
@@ -219,13 +242,15 @@ public sealed class BundleService
                     var relative = parts[2].Replace('/', Path.DirectorySeparatorChar);
                     var key = FileKey(parts[1], relative);
                     if (!expected.TryGetValue(key, out var metadata)) throw new InvalidDataException($"迁移包包含未登记文件：{entry.FullName}");
+                    if (!stagedKeys.Add(key)) throw new InvalidDataException($"迁移包包含重复文件：{entry.FullName}");
+                    if (entry.Length != metadata.Length) throw new InvalidDataException($"迁移文件声明长度不匹配：{entry.FullName}");
                     var stagedPath = PathSafety.CombineWithin(stageRoot, Path.Combine(parts[1], relative));
                     Directory.CreateDirectory(Path.GetDirectoryName(stagedPath)!);
                     progress?.Report(new OperationProgress("验证", entry.FullName, staged, expected.Count, 0, "正在解密并校验批量导入内容"));
                     await using (var input = entry.Open())
                     await using (var output = new FileStream(stagedPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 1024 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan))
                     {
-                        await input.CopyToAsync(output, cancellationToken);
+                        await CopyBoundedAsync(input, output, metadata.Length, cancellationToken);
                     }
                     var info = new FileInfo(stagedPath);
                     if (info.Length != metadata.Length) throw new InvalidDataException($"迁移文件长度不匹配：{entry.FullName}");
@@ -294,7 +319,11 @@ public sealed class BundleService
     private static BundleManifest ReadAndValidateManifest(string zipPath)
     {
         using var archive = ZipFile.OpenRead(zipPath);
-        var entry = archive.GetEntry("manifest.json") ?? throw new InvalidDataException("迁移包缺少 manifest.json。");
+        var manifestEntries = archive.Entries.Where(candidate => string.Equals(candidate.FullName, "manifest.json", StringComparison.Ordinal)).ToList();
+        if (manifestEntries.Count != 1) throw new InvalidDataException("迁移包必须且只能包含一个 manifest.json。");
+        var entry = manifestEntries[0];
+        RejectSymlink(entry);
+        if (entry.Length <= 0 || entry.Length > MaxManifestBytes) throw new InvalidDataException("迁移清单大小无效。");
         using var stream = entry.Open();
         using var memory = new MemoryStream();
         stream.CopyTo(memory);
@@ -303,6 +332,27 @@ public sealed class BundleService
         if (manifest.Items.Select(item => item.Id).Distinct(StringComparer.Ordinal).Count() != manifest.Items.Count)
             throw new InvalidDataException("迁移清单存在重复项目标识。");
         foreach (var item in manifest.Items) ValidateItemId(item.Id);
+        if (manifest.Files.Count > MaxManifestFiles) throw new InvalidDataException("迁移清单文件数量超过安全上限。");
+        var itemIds = manifest.Items.Select(item => item.Id).ToHashSet(StringComparer.Ordinal);
+        var fileKeys = new HashSet<string>(StringComparer.Ordinal);
+        long totalBytes = 0;
+        foreach (var file in manifest.Files)
+        {
+            if (!itemIds.Contains(file.ItemId)) throw new InvalidDataException("迁移清单文件引用了不存在的项目。");
+            var key = FileKey(file.ItemId, file.RelativePath);
+            if (!fileKeys.Add(key)) throw new InvalidDataException("迁移清单存在重复文件路径。");
+            if (file.Length < 0 || file.Length > MaxSingleFileBytes || totalBytes > MaxManifestTotalBytes - file.Length)
+                throw new InvalidDataException("迁移清单文件大小超过安全上限。");
+            totalBytes += file.Length;
+            if (file.ContentHash.Length != 64 || file.ContentHash.Any(character => !Uri.IsHexDigit(character)))
+                throw new InvalidDataException("迁移清单包含无效的 SHA-256 哈希。");
+        }
+        foreach (var item in manifest.Items)
+        {
+            var files = manifest.Files.Where(file => string.Equals(file.ItemId, item.Id, StringComparison.Ordinal)).ToList();
+            if (item.FileCount != files.Count || item.TotalBytes != files.Sum(file => file.Length))
+                throw new InvalidDataException("迁移清单项目统计与文件明细不一致。");
+        }
         return manifest;
     }
 
@@ -356,6 +406,56 @@ public sealed class BundleService
     {
         await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 1024 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
         return await SHA256.HashDataAsync(stream, cancellationToken);
+    }
+
+    private static async Task CopyBoundedAsync(Stream input, Stream output, long expectedLength, CancellationToken cancellationToken)
+    {
+        var buffer = new byte[128 * 1024];
+        try
+        {
+            long copied = 0;
+            while (true)
+            {
+                var read = await input.ReadAsync(buffer, cancellationToken);
+                if (read == 0) break;
+                if (copied > expectedLength - read) throw new InvalidDataException("迁移文件解压后超过清单声明大小。");
+                await output.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
+                copied += read;
+            }
+            if (copied != expectedLength) throw new InvalidDataException("迁移文件解压后小于清单声明大小。");
+        }
+        finally { CryptographicOperations.ZeroMemory(buffer); }
+    }
+
+    private void EnsureInitialDecryptSpace(string bundlePath, string stageRoot)
+    {
+        var encryptedBytes = new FileInfo(Path.GetFullPath(bundlePath)).Length;
+        var required = CheckedAdd(encryptedBytes, DiskSafetyReserveBytes);
+        if (availableFreeSpace(stageRoot) < required)
+            throw new IOException("临时磁盘空间不足，无法安全解密迁移包。");
+    }
+
+    private void EnsureImportSpace(long selectedBytes, string stageRoot, string destinationRoot)
+    {
+        if (selectedBytes <= 0) return;
+        var sameVolume = string.Equals(Path.GetPathRoot(Path.GetFullPath(stageRoot)), Path.GetPathRoot(Path.GetFullPath(destinationRoot)), StringComparison.OrdinalIgnoreCase);
+        if (sameVolume)
+        {
+            var required = CheckedAdd(checked(selectedBytes * 2), DiskSafetyReserveBytes);
+            if (availableFreeSpace(stageRoot) < required) throw new IOException("磁盘空间不足：迁移暂存和目标写入需要额外安全余量。");
+            return;
+        }
+        var singleVolumeRequired = CheckedAdd(selectedBytes, DiskSafetyReserveBytes);
+        if (availableFreeSpace(stageRoot) < singleVolumeRequired) throw new IOException("临时磁盘空间不足，无法暂存所选迁移文件。");
+        if (availableFreeSpace(destinationRoot) < singleVolumeRequired) throw new IOException("目标磁盘空间不足，无法导入所选迁移文件。");
+    }
+
+    private static long CheckedAdd(long left, long right) => checked(left + right);
+    private static long GetAvailableFreeSpace(string path)
+    {
+        var root = Path.GetPathRoot(Path.GetFullPath(path));
+        if (string.IsNullOrWhiteSpace(root)) throw new IOException("无法确定目标磁盘。");
+        return new DriveInfo(root).AvailableFreeSpace;
     }
 
     private string CreateWorkDirectory(string purpose)

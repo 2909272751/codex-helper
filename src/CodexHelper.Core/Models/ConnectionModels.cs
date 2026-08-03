@@ -5,6 +5,7 @@ public enum ConnectionKind
     OfficialAccount,
     CustomApi,
     Sub2Api,
+    ResponsesSubagent,
     /// <summary>Read-only compatibility value left by an early dual-agent preview.</summary>
     LegacyAgentProfile
 }
@@ -30,6 +31,8 @@ public sealed class ConnectionProfile
     public DateTime UpdatedUtc { get; set; } = DateTime.UtcNow;
     public DateTime? LastVerifiedUtc { get; set; }
     public bool IsActive { get; set; }
+    public bool IsDefaultSubagent { get; set; }
+    public int AgentContextWindow { get; set; } = 128_000;
     public bool RequiresAttention { get; set; }
     public string StatusMessage { get; set; } = string.Empty;
     public string QuotaSummary { get; set; } = string.Empty;
@@ -40,6 +43,15 @@ public sealed class ConnectionProfile
     public DateTime? PrimaryResetsAtUtc { get; set; }
     public DateTime? SecondaryResetsAtUtc { get; set; }
     public string DisplayTarget => Kind == ConnectionKind.OfficialAccount ? IdentityHint : BaseUrl;
+    public string DisplayKind => Kind switch
+    {
+        ConnectionKind.OfficialAccount => "官方账号",
+        ConnectionKind.CustomApi => "原生 Responses API",
+        ConnectionKind.Sub2Api => "Sub2API",
+        ConnectionKind.ResponsesSubagent => "旧版子智能体档案",
+        ConnectionKind.LegacyAgentProfile => "旧版档案",
+        _ => Kind.ToString()
+    };
     public string DisplayQuota => string.IsNullOrWhiteSpace(QuotaSummary) ? "未查询" : QuotaSummary;
 }
 

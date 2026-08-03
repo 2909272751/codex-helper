@@ -5,6 +5,7 @@ using System.Reflection;
 using System.Text;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Threading;
 using Microsoft.Win32;
 using CodexHelper.Core.Infrastructure;
 using CodexHelper.Core.Models;
@@ -26,6 +27,9 @@ public partial class MainWindow : Window
     private CancellationTokenSource? operationCancellation;
     private WelcomeWindow? guideWindow;
     private bool operationRunning;
+    private ReasonixTaskStatus? latestReasonixTask;
+    private readonly DispatcherTimer reasonixTaskTimer = new() { Interval = TimeSpan.FromSeconds(2) };
+    private bool suppressCacheRangeSelection;
 
     public MainWindow()
     {
@@ -34,7 +38,10 @@ public partial class MainWindow : Window
         logger = new AppLogger(appPaths);
         settingsService = new SettingsService(appPaths);
         settings = settingsService.Load();
+        reasonixTaskTimer.Tick += (_, _) => RefreshReasonixTasks();
         Loaded += async (_, _) => await InitializeAsync();
+        Loaded += (_, _) => reasonixTaskTimer.Start();
+        Closed += (_, _) => reasonixTaskTimer.Stop();
     }
 
     private async Task InitializeAsync()
@@ -53,6 +60,8 @@ public partial class MainWindow : Window
         IncludeSessionsCheck.IsChecked = settings.IncludeSessions;
         IncludeAttachmentsCheck.IsChecked = settings.IncludeAttachments;
         IncludeGeneratedCheck.IsChecked = settings.IncludeGeneratedImages;
+        SelectReasonixIntensity(settings.ReasonixExecutionIntensity);
+        SelectDeepSeekCacheRange(settings.DeepSeekCacheRange);
     }
 
     private async Task RefreshAllAsync()
@@ -79,6 +88,7 @@ public partial class MainWindow : Window
             var service = new OfficialAccountService(settings.CodexRoot, appPaths, processService);
             ConnectionsGrid.ItemsSource = service.LoadIndex().Profiles.OrderByDescending(item => item.IsActive).ThenBy(item => item.Label).ToList();
             RefreshAccountHealthDetail();
+            RefreshSubagentSettings();
         }
         catch
         {
@@ -87,6 +97,189 @@ public partial class MainWindow : Window
     }
 
     private void ConnectionsGrid_SelectionChanged(object sender, SelectionChangedEventArgs e) => RefreshAccountHealthDetail();
+
+    private async void RefreshSubagentSettings()
+    {
+        if (SubagentSettingsActionButton is null) return;
+        try
+        {
+            var service = new ReasonixIntegrationService(settings.CodexRoot, appPaths);
+            service.RefreshManagedScripts();
+            var status = await service.DiagnoseAsync();
+            SubagentSettingsActionButton.Content = status.IntegrationEnabled ? "关闭协作编码" : "开启协作编码";
+            SubagentSettingsActionButton.IsEnabled = status.Installed;
+            SubagentSettingsStatusText.Text = status.Installed
+                ? $"Reasonix {status.Version} · 模型 {status.DefaultModel} · {(status.CredentialReady ? "凭据已保存" : "缺少凭据")} · {(status.IntegrationEnabled ? "协作已开启" : "协作已关闭")}\n{status.CredentialMessage}"
+                : status.CredentialMessage;
+            SelectReasonixPermissionMode(service.GetPermissionMode());
+            var models = await service.GetAvailableModelsAsync();
+            ReasonixDefaultModelBox.ItemsSource = models;
+            ReasonixDefaultModelBox.SelectedItem = models.FirstOrDefault(item => string.Equals(item.Id, status.DefaultModel, StringComparison.OrdinalIgnoreCase));
+            RefreshReasonixTasks();
+        }
+        catch (Exception ex)
+        {
+            SubagentSettingsActionButton.IsEnabled = false;
+            SubagentSettingsStatusText.Text = "Reasonix 检查失败：" + ex.Message;
+        }
+    }
+
+    private async void SubagentSettingsActionButton_Click(object sender, RoutedEventArgs e)
+    {
+        var service = new ReasonixIntegrationService(settings.CodexRoot, appPaths);
+        var status = await service.DiagnoseAsync();
+        var enabled = status.IntegrationEnabled;
+        var action = enabled ? "关闭协作编码" : "开启协作编码";
+        var explanation = enabled
+            ? "将删除 Helper 管理的 Reasonix Skill 和协作规则，GPT 恢复独立开发。不会删除 Reasonix、模型凭据、项目或其他 Skills。"
+            : "将安装 Helper 管理的 Reasonix 执行 Skill。GPT 负责规划和验收，Reasonix 负责修改项目；Codex 原生子智能体保持关闭。";
+        if (MessageBox.Show(explanation + "\n\n需要先安全退出 Codex，继续吗？", action, MessageBoxButton.YesNo, MessageBoxImage.Information) != MessageBoxResult.Yes) return;
+        if (!await EnsureCodexStoppedAsync()) return;
+        var permissionMode = SelectedReasonixPermissionMode();
+        var success = await RunOperationAsync(action, cancellationToken => Task.Run(() =>
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (enabled) service.Disable();
+            else service.Enable(status.ExecutablePath, status.DefaultModel, permissionMode);
+        }, cancellationToken), showProgress: false);
+        RefreshSubagentSettings();
+        if (success) MessageBox.Show(enabled ? "已关闭。GPT 将独立完成任务。" : "已开启。重新打开 Codex 后，新任务将由 GPT 规划、Reasonix 编码、GPT 验收。", "设置完成", MessageBoxButton.OK, MessageBoxImage.Information);
+    }
+
+    private async void TestReasonixConnection_Click(object sender, RoutedEventArgs e)
+    {
+        var success = await RunOperationAsync("测试 Reasonix 连接", async cancellationToken =>
+        {
+            var result = await new ReasonixIntegrationService(settings.CodexRoot, appPaths).TestConnectionAsync(cancellationToken);
+            await Dispatcher.InvokeAsync(() => MessageBox.Show(result, "Reasonix 连接正常", MessageBoxButton.OK, MessageBoxImage.Information));
+        }, showProgress: false);
+        RefreshSubagentSettings();
+    }
+
+    private async void ApplyReasonixDefaultModel_Click(object sender, RoutedEventArgs e)
+    {
+        if (ReasonixDefaultModelBox.SelectedItem is not ReasonixModelOption selected) return;
+        var success = await RunOperationAsync("设置 Reasonix 默认模型", async cancellationToken =>
+        {
+            var service = new ReasonixIntegrationService(settings.CodexRoot, appPaths);
+            await service.SetDefaultModelAsync(selected.Id, cancellationToken);
+            var result = await service.TestConnectionAsync(cancellationToken);
+            await Dispatcher.InvokeAsync(() => MessageBox.Show($"默认模型已切换为 {selected.Id}，并通过最小连接测试。\n\n{result}", "模型已应用", MessageBoxButton.OK, MessageBoxImage.Information));
+        }, showProgress: false);
+        if (success) RefreshSubagentSettings();
+    }
+
+    private ReasonixPermissionMode SelectedReasonixPermissionMode() =>
+        Enum.TryParse<ReasonixPermissionMode>((ReasonixPermissionModeBox.SelectedItem as ComboBoxItem)?.Tag?.ToString(), out var mode) ? mode : ReasonixPermissionMode.Full;
+
+    private void SelectReasonixPermissionMode(ReasonixPermissionMode mode)
+    {
+        foreach (var item in ReasonixPermissionModeBox.Items.OfType<ComboBoxItem>())
+            if (string.Equals(item.Tag?.ToString(), mode.ToString(), StringComparison.OrdinalIgnoreCase)) { ReasonixPermissionModeBox.SelectedItem = item; return; }
+    }
+
+    private void ApplyReasonixPermissionMode_Click(object sender, RoutedEventArgs e)
+    {
+        var mode = SelectedReasonixPermissionMode();
+        if (mode == ReasonixPermissionMode.Full && MessageBox.Show("完全权限会让 Reasonix 跳过全部工具审批，并可执行任意命令。任务合同、项目锁和日志仍保留。确认启用吗？", "启用完全权限", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
+        try
+        {
+            new ReasonixIntegrationService(settings.CodexRoot, appPaths).SetPermissionMode(mode);
+            MessageBox.Show(mode == ReasonixPermissionMode.Full ? "已启用完全权限。之后提交的 Reasonix 任务会跳过工具审批。" : "已切换为安全开发模式。", "权限已保存", MessageBoxButton.OK, MessageBoxImage.Information);
+            RefreshSubagentSettings();
+        }
+        catch (Exception ex) { ShowError(ex); }
+    }
+
+    private void RefreshReasonixTasks_Click(object sender, RoutedEventArgs e) => RefreshReasonixTasks();
+
+    private void RefreshReasonixTasks()
+    {
+        try
+        {
+            var snapshot = new ReasonixIntegrationService(settings.CodexRoot, appPaths).GetRecentTasks(1);
+            latestReasonixTask = snapshot.Tasks.FirstOrDefault();
+            var errorSummary = snapshot.Diagnostics.Count == 0 ? string.Empty
+                : $"\n⚠ {snapshot.Diagnostics.Count} 个状态文件无法读取：{string.Join("、", snapshot.Diagnostics.Take(3).Select(diagnostic => diagnostic.FileName))}{(snapshot.Diagnostics.Count > 3 ? " 等" : string.Empty)}（{snapshot.Diagnostics.First().Reason}）";
+            if (latestReasonixTask is null)
+            {
+                ReasonixLatestTaskText.Text = snapshot.Diagnostics.Count == 0
+                    ? "暂无由新版临时 TaskHost 提交的任务。"
+                    : "暂无可读取的任务。\n" + errorSummary.TrimStart();
+                StopReasonixTaskButton.IsEnabled = false;
+                RetryReasonixTaskButton.IsEnabled = false;
+                ReturnToCodexTaskButton.IsEnabled = false;
+                return;
+            }
+            ReasonixLatestTaskText.Text = ReasonixUiText.SummaryText(latestReasonixTask) + errorSummary;
+            var reasonixService = new ReasonixIntegrationService(settings.CodexRoot, appPaths);
+            StopReasonixTaskButton.IsEnabled = latestReasonixTask.IsRunning;
+            RetryReasonixTaskButton.IsEnabled = reasonixService.RetryBlockReason(latestReasonixTask) is null;
+            ReturnToCodexTaskButton.IsEnabled = CodexThreadUri.Build(latestReasonixTask.ReturnUri, latestReasonixTask.CodexThreadId) is not null;
+        }
+        catch (Exception ex)
+        {
+            // 2 秒定时刷新与按钮刷新都必须安全运行：任何读取失败只显示错误，不得让 UI 崩溃。
+            latestReasonixTask = null;
+            ReasonixLatestTaskText.Text = "Reasonix 任务状态读取失败：" + ex.Message;
+            StopReasonixTaskButton.IsEnabled = false;
+            RetryReasonixTaskButton.IsEnabled = false;
+            ReturnToCodexTaskButton.IsEnabled = false;
+        }
+    }
+
+    private void ApplyReasonixIntensity_Click(object sender, RoutedEventArgs e)
+    {
+        var intensity = SelectedReasonixIntensity();
+        settings.ReasonixExecutionIntensity = intensity;
+        settingsService.Save(settings);
+        MessageBox.Show($"已保存默认执行强度 {intensity}。manifest.json 显式声明优先；未声明时按此默认值并结合合同范围推断。新任务在 Codex Helper 中会显示实际采用的策略。", "执行强度已保存", MessageBoxButton.OK, MessageBoxImage.Information);
+    }
+
+    private string SelectedReasonixIntensity() => (ReasonixIntensityBox.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "auto";
+
+    private void SelectReasonixIntensity(string intensity)
+    {
+        foreach (var item in ReasonixIntensityBox.Items.OfType<ComboBoxItem>())
+            if (string.Equals(item.Tag?.ToString(), intensity, StringComparison.OrdinalIgnoreCase)) { ReasonixIntensityBox.SelectedItem = item; return; }
+    }
+
+    private void StopReasonixTask_Click(object sender, RoutedEventArgs e)
+    {
+        if (latestReasonixTask is null || !latestReasonixTask.IsRunning) return;
+        if (MessageBox.Show("将终止临时 TaskHost 及其 Reasonix 子进程。已写入的项目文件不会删除，继续吗？", "停止 Reasonix 任务", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
+        new ReasonixIntegrationService(settings.CodexRoot, appPaths).StopTask(latestReasonixTask);
+        RefreshReasonixTasks();
+    }
+
+    private async void ApplyDeepSeekReasoningEffortButton_Click(object sender, RoutedEventArgs e)
+    {
+        var effort = SelectedDeepSeekReasoningEffort();
+        if (MessageBox.Show("将更新 DeepSeek 子智能体的思考强度。需要先安全退出 Codex；设置只影响之后新建的子智能体，继续吗？", "应用思考强度", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
+        if (!await EnsureCodexStoppedAsync()) return;
+        var success = await RunOperationAsync("应用 DeepSeek 思考强度", cancellationToken => Task.Run(() =>
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            new ApiProviderService(settings.CodexRoot, appPaths, processService).UpdateDeepSeekPlanWorkerReasoningEffort(effort);
+        }, cancellationToken), showProgress: false);
+        RefreshSubagentSettings();
+        if (success) MessageBox.Show("已保存。请重新打开 Codex，新建的 DeepSeek 子智能体将使用所选强度。", "设置完成", MessageBoxButton.OK, MessageBoxImage.Information);
+    }
+
+    private string SelectedDeepSeekReasoningEffort() => (DeepSeekReasoningEffortBox.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "high";
+
+    private void SelectDeepSeekReasoningEffort(string effort)
+    {
+        foreach (var item in DeepSeekReasoningEffortBox.Items.OfType<ComboBoxItem>())
+        {
+            if (string.Equals(item.Tag?.ToString(), effort, StringComparison.OrdinalIgnoreCase))
+            {
+                DeepSeekReasoningEffortBox.SelectedItem = item;
+                return;
+            }
+        }
+        DeepSeekReasoningEffortBox.SelectedIndex = 2;
+    }
 
     private void RefreshAccountHealthDetail()
     {
@@ -142,6 +335,7 @@ public partial class MainWindow : Window
         {
             ["Dashboard"] = DashboardPage,
             ["Connections"] = ConnectionsPage,
+            ["Collaboration"] = CollaborationPage,
             ["Projects"] = ProjectsPage,
             ["Snapshots"] = SnapshotsPage,
             ["Migration"] = MigrationPage,
@@ -153,6 +347,7 @@ public partial class MainWindow : Window
         {
             ["Dashboard"] = DashboardNav,
             ["Connections"] = ConnectionsNav,
+            ["Collaboration"] = CollaborationNav,
             ["Projects"] = ProjectsNav,
             ["Snapshots"] = SnapshotsNav,
             ["Migration"] = MigrationNav,
@@ -280,9 +475,10 @@ public partial class MainWindow : Window
         {
             var tag = (ApiKindBox.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "CustomApi";
             var kind = Enum.Parse<ConnectionKind>(tag);
+            if (kind == ConnectionKind.ResponsesSubagent) kind = ConnectionKind.CustomApi;
             new ApiProviderService(settings.CodexRoot, appPaths, processService).SaveProfile(ApiLabelBox.Text, kind, ApiUrlBox.Text, ApiModelBox.Text, ApiKeyBox.Password);
             ApiKeyBox.Clear(); RefreshConnections(); RefreshDashboard();
-            MessageBox.Show("API 档案已使用 DPAPI 加密保存。", "保存完成", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show("API 档案已使用 DPAPI 加密保存。切换后将作为 Codex 主模型使用。", "保存完成", MessageBoxButton.OK, MessageBoxImage.Information);
         }
         catch (Exception ex) { ShowError(ex); }
     }
@@ -290,6 +486,11 @@ public partial class MainWindow : Window
     private async void SwitchConnection_Click(object sender, RoutedEventArgs e)
     {
         if (ConnectionsGrid.SelectedItem is not ConnectionProfile profile) { MessageBox.Show("请选择一个连接档案。"); return; }
+        if (profile.Kind == ConnectionKind.ResponsesSubagent)
+        {
+            MessageBox.Show("这是旧版本遗留的子智能体档案。请先点“修复旧 Responses 档案”，修复后可作为普通 Responses API 主模型使用。", "旧版档案", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
         if (MessageBox.Show($"切换到“{profile.Label}”？切换前将安全退出 Codex。", "确认切换", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
         if (!await EnsureCodexStoppedAsync()) return;
         var success = await RunOperationAsync("安全切换", cancellationToken => Task.Run(() =>
@@ -308,12 +509,71 @@ public partial class MainWindow : Window
 
     private async void TestApi_Click(object sender, RoutedEventArgs e)
     {
-        if (ConnectionsGrid.SelectedItem is not ConnectionProfile { Kind: ConnectionKind.CustomApi or ConnectionKind.Sub2Api } profile) { MessageBox.Show("请选择普通 API 或 Sub2API 档案。"); return; }
+        if (ConnectionsGrid.SelectedItem is not ConnectionProfile { Kind: ConnectionKind.CustomApi or ConnectionKind.Sub2Api or ConnectionKind.ResponsesSubagent } profile) { MessageBox.Show("请选择 API 档案；旧版 Responses 档案也可以先进行连通性检测。"); return; }
         await RunOperationAsync("测试 API", async cancellationToken =>
         {
             var message = await new ApiProviderService(settings.CodexRoot, appPaths, processService).TestAsync(profile.Id, cancellationToken);
             await Dispatcher.InvokeAsync(() => { RefreshConnections(); MessageBox.Show(message, "检测通过", MessageBoxButton.OK, MessageBoxImage.Information); });
         });
+    }
+
+    private async void EnableDeepSeekPlanWorker_Click(object sender, RoutedEventArgs e)
+    {
+        if (ConnectionsGrid.SelectedItem is not ConnectionProfile { Kind: ConnectionKind.CustomApi } profile)
+        {
+            MessageBox.Show("请选择一个 DeepSeek 官方 Responses API 档案。它只会成为编码子智能体，不会切换 GPT 主模型。", "启用 DeepSeek 开发协作", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        const string explanation = "将保留当前 GPT 主模型，并创建一个只负责编码的 DeepSeek 子智能体。GPT 会先选择明确的交接根目录，把完整任务和唯一指针写到该目录，校验后再用任务 ID 和指针绝对路径唤醒 DeepSeek 实施；这避免依赖可能丢失的子任务正文或错误的子工作区。启用前会安全备份 config、模型目录、子智能体配置和协作规则。";
+        if (MessageBox.Show(explanation + "\n\n需要先安全退出 Codex，继续吗？", "启用 DeepSeek 开发协作", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
+        if (!await EnsureCodexStoppedAsync()) return;
+        var succeeded = await RunOperationAsync("启用 DeepSeek 开发协作", cancellationToken => Task.Run(() =>
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            new ApiProviderService(settings.CodexRoot, appPaths, processService).EnableDeepSeekPlanWorker(profile.Id, FindCredentialHelper());
+        }, cancellationToken), showProgress: false);
+        if (succeeded) MessageBox.Show("已启用。重新打开 Codex 后，GPT 主线程会规划与验收，DeepSeek 编码子智能体通过每次唯一指针的绝对路径读取任务并实施。", "设置完成", MessageBoxButton.OK, MessageBoxImage.Information);
+    }
+
+    private async void DisableDeepSeekPlanWorker_Click(object sender, RoutedEventArgs e)
+    {
+        var service = new ApiProviderService(settings.CodexRoot, appPaths, processService);
+        if (!service.IsDeepSeekPlanWorkerEnabled())
+        {
+            MessageBox.Show("当前没有启用由 Codex Helper 管理的 DeepSeek 开发协作。", "关闭 DeepSeek 开发协作", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        if (MessageBox.Show("将只移除 Helper 创建的 DeepSeek 编码子智能体、其 provider 和协作规则；不会删除 API 档案、账号、项目或其他 Skills。需要先安全退出 Codex，继续吗？", "关闭 DeepSeek 开发协作", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
+        if (!await EnsureCodexStoppedAsync()) return;
+        var succeeded = await RunOperationAsync("关闭 DeepSeek 开发协作", cancellationToken => Task.Run(() =>
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            new ApiProviderService(settings.CodexRoot, appPaths, processService).DisableDeepSeekPlanWorker();
+        }, cancellationToken), showProgress: false);
+        if (succeeded) MessageBox.Show("已关闭 DeepSeek 开发协作，GPT 主模型和 API 档案均未改变。", "设置完成", MessageBoxButton.OK, MessageBoxImage.Information);
+    }
+
+    private async void RepairLegacyResponses_Click(object sender, RoutedEventArgs e)
+    {
+        if (ConnectionsGrid.SelectedItem is ConnectionProfile { Kind: ConnectionKind.ResponsesSubagent } cleanupProfile)
+        {
+            const string explanation = "旧版本曾把第三方 Responses API 配置为 Codex 原生子智能体，可能导致任务正文无法送达。此操作会清理旧配置，并把所选档案转换为普通 Responses API 档案；API Key 和档案都会保留，也不会自动切换主模型。";
+            if (MessageBox.Show(explanation + "\n\n继续修复吗？", "修复旧 Responses 档案", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
+            if (!await EnsureCodexStoppedAsync()) return;
+            string? report = null;
+            var cleaned = await RunOperationAsync("修复旧 Responses 档案", cancellationToken => Task.Run(() =>
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                report = new ApiProviderService(settings.CodexRoot, appPaths, processService).CleanUnsupportedNativeSubagent(cleanupProfile.Id);
+            }, cancellationToken), showProgress: false);
+            if (cleaned)
+            {
+                RefreshConnections();
+                MessageBox.Show(report ?? explanation, "修复完成", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+            return;
+        }
+        MessageBox.Show("请选择列表中标记为“旧版子智能体档案”的连接。普通 API 档案不需要修复。", "修复旧 Responses 档案", MessageBoxButton.OK, MessageBoxImage.Information);
     }
 
     private async void VerifyOfficialAccount_Click(object sender, RoutedEventArgs e)
@@ -389,6 +649,93 @@ public partial class MainWindow : Window
     }
 
     private async void StopCodex_Click(object sender, RoutedEventArgs e) => await EnsureCodexStoppedAsync(reportWhenAlreadyStopped: true);
+
+    private async void RefreshDeepSeekCacheStats_Click(object sender, RoutedEventArgs e)
+    {
+        await RunOperationAsync("刷新 DeepSeek 缓存统计", async cancellationToken =>
+        {
+            var lookback = DeepSeekCacheRangeToLookback(SelectedDeepSeekCacheRange());
+            var stats = await new DeepSeekCacheStatsService(settings.CodexRoot, appPaths.ReasonixTasksDirectory).ReadAsync(lookback, cancellationToken);
+            await Dispatcher.InvokeAsync(() => DeepSeekCacheStatsText.Text = stats.ToDisplayText());
+        }, showProgress: false);
+    }
+
+    private string SelectedDeepSeekCacheRange() => (DeepSeekCacheRangeBox.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "14d";
+
+    private void SelectDeepSeekCacheRange(string range)
+    {
+        // 程序化设置选中项会触发 SelectionChanged；抑制它，避免初始化意外改写已保存的缓存范围。
+        suppressCacheRangeSelection = true;
+        try
+        {
+            foreach (var item in DeepSeekCacheRangeBox.Items.OfType<ComboBoxItem>())
+                if (string.Equals(item.Tag?.ToString(), range, StringComparison.OrdinalIgnoreCase)) { DeepSeekCacheRangeBox.SelectedItem = item; return; }
+            DeepSeekCacheRangeBox.SelectedItem = DeepSeekCacheRangeBox.Items.OfType<ComboBoxItem>().FirstOrDefault(item => string.Equals(item.Tag?.ToString(), "14d", StringComparison.OrdinalIgnoreCase));
+        }
+        finally
+        {
+            suppressCacheRangeSelection = false;
+        }
+    }
+
+    /// <summary>范围 → lookback；all 返回 null（全量）；非法值回退 14 天。</summary>
+    private static TimeSpan? DeepSeekCacheRangeToLookback(string range) => range switch
+    {
+        "24h" => TimeSpan.FromHours(24),
+        "7d" => TimeSpan.FromDays(7),
+        "30d" => TimeSpan.FromDays(30),
+        "all" => null,
+        _ => TimeSpan.FromDays(14)
+    };
+
+    private void DeepSeekCacheRangeBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        // XAML 构造默认选中项时 settings 尚未就绪且不应持久化；初始化设置选中项时同样不保存。
+        // 仅当窗口已加载且为用户实际切换时才持久化，避免构造期 NullReferenceException。
+        if (settings is null || !IsLoaded || suppressCacheRangeSelection) return;
+        settings.DeepSeekCacheRange = SelectedDeepSeekCacheRange();
+        settingsService.Save(settings);
+    }
+
+    private async void BackfillReasonixStats_Click(object sender, RoutedEventArgs e)
+    {
+        var confirm = MessageBox.Show("修复历史统计只采用严格证据（session 模型、manifest executionModel/model、Review Packet 独立 Model 行）补写旧 Reasonix 状态模型；报告正文、当前默认模型、项目名、任务名不作为证据；无法确认会安全跳过，已补写会幂等跳过。继续吗？", "修复历史统计", MessageBoxButton.YesNo, MessageBoxImage.Information);
+        if (confirm != MessageBoxResult.Yes) return;
+        await RunOperationAsync("修复历史统计", async cancellationToken =>
+        {
+            var service = new DeepSeekCacheStatsService(settings.CodexRoot, appPaths.ReasonixTasksDirectory);
+            var backfill = await Task.Run(() => service.BackfillReasonixExecutionModel(cancellationToken), cancellationToken);
+            var stats = await service.ReadAsync(DeepSeekCacheRangeToLookback(SelectedDeepSeekCacheRange()), cancellationToken);
+            await Dispatcher.InvokeAsync(() =>
+            {
+                BackfillResultText.Text = backfill.ToDisplayText();
+                BackfillResultText.Visibility = Visibility.Visible;
+                DeepSeekCacheStatsText.Text = stats.ToDisplayText();
+            });
+        }, showProgress: false);
+    }
+
+    private async void RetryReasonixTask_Click(object sender, RoutedEventArgs e)
+    {
+        if (latestReasonixTask is null) return;
+        var service = new ReasonixIntegrationService(settings.CodexRoot, appPaths);
+        var blockReason = service.RetryBlockReason(latestReasonixTask);
+        if (blockReason is not null) { MessageBox.Show(blockReason, "无法重试", MessageBoxButton.OK, MessageBoxImage.Warning); return; }
+        var confirm = MessageBox.Show("将保留旧尝试证据并归档到 attempts/，从当前源码继续收尾；项目改动不会回滚。由 Helper 启动的重试无法自动唤醒既有 GPT 轮次，完成后请返回原 Codex 任务继续验收。继续吗？", "重试未完成任务", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+        if (confirm != MessageBoxResult.Yes) return;
+        var result = await service.RetryTaskAsync(latestReasonixTask);
+        RefreshReasonixTasks();
+        MessageBox.Show(result.Message, result.Success ? "已启动重试" : "无法重试", MessageBoxButton.OK, result.Success ? MessageBoxImage.Information : MessageBoxImage.Warning);
+    }
+
+    private void ReturnToCodexTask_Click(object sender, RoutedEventArgs e)
+    {
+        if (latestReasonixTask is null) return;
+        var uri = CodexThreadUri.Build(latestReasonixTask.ReturnUri, latestReasonixTask.CodexThreadId);
+        if (uri is null) { MessageBox.Show("没有可用的原 Codex 任务 URI。", "返回原 Codex 任务", MessageBoxButton.OK, MessageBoxImage.Information); return; }
+        try { Process.Start(new ProcessStartInfo(uri) { UseShellExecute = true }); }
+        catch (Exception ex) { ShowError(ex); }
+    }
 
     private async Task<bool> EnsureCodexStoppedAsync(bool reportWhenAlreadyStopped = false)
     {

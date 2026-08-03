@@ -53,6 +53,8 @@ public static class ChunkedEncryptedFile
         var parallelism = reader.ReadInt32();
         var salt = reader.ReadBytes(16);
         if (salt.Length != 16) throw new InvalidDataException("迁移包盐值损坏。");
+        if (iterations != PortableKdfIterations || memoryKiB != PortableKdfMemoryKiB || parallelism != PortableKdfParallelism)
+            throw new InvalidDataException("迁移包 KDF 参数不受支持。");
         var key = CryptoEnvelope.DerivePortableKey(password, salt, iterations, memoryKiB, parallelism);
         try
         {
@@ -93,23 +95,26 @@ public static class ChunkedEncryptedFile
         }
 
         var plain = new byte[DefaultChunkSize];
-        using var aes = new AesGcm(key.Span, TagSize);
-        while (true)
+        try
         {
-            var read = await input.ReadAsync(plain, cancellationToken);
-            if (read == 0) break;
-            var nonce = RandomNumberGenerator.GetBytes(NonceSize);
-            var tag = new byte[TagSize];
-            var cipher = new byte[read];
-            aes.Encrypt(nonce, plain.AsSpan(0, read), cipher, tag);
-            writer.Write(read);
-            writer.Write(nonce);
-            writer.Write(tag);
-            await output.WriteAsync(cipher, cancellationToken);
+            using var aes = new AesGcm(key.Span, TagSize);
+            while (true)
+            {
+                var read = await input.ReadAsync(plain, cancellationToken);
+                if (read == 0) break;
+                var nonce = RandomNumberGenerator.GetBytes(NonceSize);
+                var tag = new byte[TagSize];
+                var cipher = new byte[read];
+                aes.Encrypt(nonce, plain.AsSpan(0, read), cipher, tag);
+                writer.Write(read);
+                writer.Write(nonce);
+                writer.Write(tag);
+                await output.WriteAsync(cipher, cancellationToken);
+            }
+            writer.Write(0);
+            await output.FlushAsync(cancellationToken);
         }
-        writer.Write(0);
-        await output.FlushAsync(cancellationToken);
-        CryptographicOperations.ZeroMemory(plain);
+        finally { CryptographicOperations.ZeroMemory(plain); }
     }
 
     private static async Task DecryptCoreAsync(
@@ -135,25 +140,39 @@ public static class ChunkedEncryptedFile
         if (chunkSize < 4096 || chunkSize > 64 * 1024 * 1024) throw new InvalidDataException("加密块大小无效。");
         var directory = Path.GetDirectoryName(Path.GetFullPath(destinationPath))!;
         Directory.CreateDirectory(directory);
-        await using var output = new FileStream(destinationPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, chunkSize, FileOptions.Asynchronous | FileOptions.SequentialScan);
-        using var reader = new BinaryReader(input, Encoding.UTF8, leaveOpen: true);
-        using var aes = new AesGcm(key.Span, TagSize);
-        while (true)
+        var destinationCreated = false;
+        try
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            var length = reader.ReadInt32();
-            if (length == 0) break;
-            if (length < 0 || length > chunkSize) throw new InvalidDataException("加密块长度无效。");
-            var nonce = reader.ReadBytes(NonceSize);
-            var tag = reader.ReadBytes(TagSize);
-            var cipher = reader.ReadBytes(length);
-            if (nonce.Length != NonceSize || tag.Length != TagSize || cipher.Length != length)
-                throw new EndOfStreamException("加密文件被截断。");
-            var plain = new byte[length];
-            aes.Decrypt(nonce, cipher, tag, plain);
-            await output.WriteAsync(plain, cancellationToken);
-            CryptographicOperations.ZeroMemory(plain);
+            await using var output = new FileStream(destinationPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, chunkSize, FileOptions.Asynchronous | FileOptions.SequentialScan);
+            destinationCreated = true;
+            using var reader = new BinaryReader(input, Encoding.UTF8, leaveOpen: true);
+            using var aes = new AesGcm(key.Span, TagSize);
+            while (true)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var length = reader.ReadInt32();
+                if (length == 0) break;
+                if (length < 0 || length > chunkSize) throw new InvalidDataException("加密块长度无效。");
+                var nonce = reader.ReadBytes(NonceSize);
+                var tag = reader.ReadBytes(TagSize);
+                var cipher = reader.ReadBytes(length);
+                if (nonce.Length != NonceSize || tag.Length != TagSize || cipher.Length != length)
+                    throw new EndOfStreamException("加密文件被截断。");
+                var plain = new byte[length];
+                try
+                {
+                    aes.Decrypt(nonce, cipher, tag, plain);
+                    await output.WriteAsync(plain, cancellationToken);
+                }
+                finally { CryptographicOperations.ZeroMemory(plain); }
+            }
+            await output.FlushAsync(cancellationToken);
         }
-        await output.FlushAsync(cancellationToken);
+        catch
+        {
+            try { if (destinationCreated && File.Exists(destinationPath)) File.Delete(destinationPath); }
+            catch { /* Preserve the original authentication or format failure. */ }
+            throw;
+        }
     }
 }

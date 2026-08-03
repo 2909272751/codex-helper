@@ -71,6 +71,48 @@ C:\实用软件开发\codex-helper\.git\backup  ← 更不能选
 - **准备登录新账号**：先安全保存现有账号，再让 Codex 回到未登录状态；重新打开 Codex 后登录另一个账号，再回来“保存当前登录”。
 - **保存 API 档案**：填写名称、Base URL、模型和 API Key。Key 不会写进 `config.toml`。
 - **切换连接**：先关闭 Codex。软件会检查进程、备份并同步需要的配置/会话元数据，然后再切换。
+- **修复旧 Responses 档案**：如果连接类型显示“旧版子智能体档案”，先选中它，再点击“修复旧 Responses 档案”。修复会清理旧 provider/worker/强制委派规则并把它改为普通 Responses API 档案，档案和加密 Key 都会保留；之后可用“切换到所选连接”把它作为主模型使用。
+
+## 协作开发：GPT + Reasonix
+
+独立的“协作开发”页面（不在“连接中心”）集中管理 GPT + Reasonix 协作。在此页开启“协作编码”后，GPT 负责规划与验收，Reasonix 作为实现执行端，在任务期间由临时进程运行，任务结束后自动退出。Codex 原生子智能体保持关闭，Reasonix 是独立执行器。页面可管理 Reasonix 默认模型、权限（安全开发/完全权限）、执行强度、最近任务（刷新进度、停止、重试、返回原 Codex 任务）以及 DeepSeek 缓存统计。
+
+- **阶段与进度**：Helper 在无外部 PROGRESS 时按安全事实推导基础阶段（分析中 → 实现中 → 整理交付 → 已完成/受阻）；标准 PROGRESS 可把阶段提升到测试/交付，界面会标注“Helper 推断”或“Reasonix 报告”。
+- **软预算不是上限**：manifest 的 `budgetSteps` 是软预算（估算步数），达到时仅提示“已接近/已超过软预算”，**不会终止任务**；只有显式 `maxSteps` 才会传给 CLI 形成硬上限。
+- **失败诊断**：失败时界面给出准确失败类型（模型运行失败 / CLI 退出异常 / 缺少交付报告 / 宿主异常 / 用户停止 / 中断），无交付报告时自动生成脱敏的 `FAILURE_REPORT.md`（不含命令、正文与秘密）。
+- **安全原地重试**：失败任务可点“重试未完成任务”。旧尝试证据会归档到 `attempts/`，合同保持不变、项目改动不回滚，尝试编号递增，同一时间只允许一个任务宿主；无合同、进程仍在运行、存在任务锁或路径越界时会阻止并给出原因。由 Helper 启动的重试**无法自动唤醒既有 GPT 轮次**，完成后请回到原 Codex 任务继续验收；有原任务 URI 时可点“返回原 Codex 任务”。
+- **Reasonix App 延迟同步**：Reasonix CLI 在任务运行期间不实时落盘会话，Helper 只显示实时事件视图；Reasonix App 需等任务结束产生会话文件后才会同步。若结束仍无新会话文件，会明确提示“本次未产生可同步会话”，不会绑定旧会话，也不会声称已解决上游限制。
+
+### DeepSeek v4 flash
+
+保存官方 DeepSeek 连接时可填写：
+
+```text
+Base URL: https://api.deepseek.com
+模型: deepseek-v4-flash
+```
+
+切换后，DeepSeek 是 Codex 的主模型，不是隐藏的 worker。Helper 会临时合并本机 Codex 模型目录，所以模型列表仍保留 GPT，同时增加 DeepSeek；切回官方账号或其他 API 后会自动恢复原目录。用户自己配置的模型目录只会被读取和备份，不会被改写。若本机还没有完整模型模板，请先用官方模型正常启动一次 Codex，再回来切换。
+
+目前只适配官方 `deepseek-v4-flash` 的 Responses 接口。需要注意以下限制：
+
+- 不支持 `previous_response_id`、`conversation` 和 `truncation`。
+- 不支持图片或文件输入，只能处理文字。
+- 不支持 reasoning 的 `encrypted_content`，所以 DeepSeek 只作为普通 Codex 主模型使用，不能伪装成接收加密任务正文的 Codex 原生子智能体。
+- 缓存由 DeepSeek 服务端自动处理，Helper 的“缓存与诊断”卡片同时读取本机 Codex 会话用量与 Helper 的 Reasonix 任务统计，不读取密钥、不拦截请求。
+
+### 缓存命中统计会统计哪些来源
+
+协作开发页面的“缓存与诊断”卡片用统计范围下拉框选择最近 **24 小时 / 7 天 / 14 天（默认）/ 30 天 / 全部**；选择会保存，重启后保持，非法旧值回退 14 天。刷新在后台执行且可取消，重复点击不会并发扫描；“全部”会扫描所有符合的数据文件。
+
+统计读取所选范围两个来源的 DeepSeek 用量：
+
+- **Codex 会话**：本机 `sessions` 下的 JSONL 会话日志中，能确认使用 DeepSeek 的会话用量（如 `deepseek-v4-flash`、`deepseek-v4-pro`）。DeepSeek 无需设为 Codex 主模型，只要实际使用过即可被统计。
+- **Reasonix 任务**：Helper 自己记录的 Reasonix 任务统计，仅纳入能确认使用 DeepSeek 的任务（例如默认模型为 `opencode/deepseek-v4-flash`）；旧任务缺少模型信息时会安全跳过并在诊断中说明。
+
+统计只在后台执行，单个损坏、半写或暂时锁定的文件会被自动忽略，不会影响整体结果；页面只显示数量级诊断，不展示文件路径、对话正文或任何秘密。
+
+**修复历史统计**只采用严格证据补写旧 Reasonix 状态模型：关联 Reasonix 会话文件或 meta 中的模型、manifest 的 `executionModel`/`model`、Review Packet 中独立的 `Model:` 行明确为 DeepSeek 时才补写；报告正文、当前默认模型、项目名、任务名都不作为证据。明确为非 DeepSeek 或证据冲突时会安全跳过，已补写会幂等跳过；完成后自动刷新缓存统计。
 
 ## 官方账号 JSON：与官方客户端互通
 

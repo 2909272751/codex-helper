@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "codexRoot": "C:\\实用软件开发\\codex-helper\\tests\\fixtures\\gui-smoke\\codex",
+  "backupRepositoryPath": "",
+  "workspaceRoots": [],
+  "protectedProjectPaths": [],
+  "includeSessions": true,
+  "includeAttachments": true,
+  "includeGeneratedImages": false,
+  "closeToTray": false,
+  "useDarkTheme": false,
+  "hasCompletedOnboarding": true,
+  "lastSelectedPage": "Collaboration",
+  "lastOfficialModel": "gpt-test"
+}

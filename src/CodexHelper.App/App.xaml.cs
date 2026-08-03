@@ -8,7 +8,9 @@ public partial class App : Application
 
     protected override void OnStartup(StartupEventArgs e)
     {
-        singleInstanceMutex = new System.Threading.Mutex(true, "Local\\CodexHelper.Main.0.1", out var created);
+        var smokeTest = e.Args.Contains("--smoke-test", StringComparer.OrdinalIgnoreCase);
+        var mutexName = smokeTest ? $"Local\\CodexHelper.Smoke.{Environment.ProcessId}" : "Local\\CodexHelper.Main.0.1";
+        singleInstanceMutex = new System.Threading.Mutex(true, mutexName, out var created);
         if (!created)
         {
             MessageBox.Show("Codex Helper 已经在运行。", "Codex Helper", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -24,4 +26,3 @@ public partial class App : Application
         base.OnExit(e);
     }
 }
-

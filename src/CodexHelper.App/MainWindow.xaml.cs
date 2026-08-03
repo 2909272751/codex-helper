@@ -5,6 +5,7 @@ using System.Reflection;
 using System.Text;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Media;
 using System.Windows.Threading;
 using Microsoft.Win32;
 using CodexHelper.Core.Infrastructure;
@@ -98,21 +99,25 @@ public partial class MainWindow : Window
 
     private void ConnectionsGrid_SelectionChanged(object sender, SelectionChangedEventArgs e) => RefreshAccountHealthDetail();
 
-    private async void RefreshSubagentSettings()
+    private async void RefreshSubagentSettings(ReasonixCliSelection? precomputedSelection = null)
     {
         if (SubagentSettingsActionButton is null) return;
         try
         {
             var service = new ReasonixIntegrationService(settings.CodexRoot, appPaths);
-            service.RefreshManagedScripts();
-            var status = await service.DiagnoseAsync();
+            // 单次刷新只做一次候选探测：预计算 selection 提供时直接复用其版本与 doctor 结果，
+            // 诊断与模型读取都不再启动进程。
+            var selection = precomputedSelection ?? await service.DiscoverBestAsync();
+            await Task.Run(() => service.RefreshManagedScripts(selection.Best?.Path));
+            var status = await service.DiagnoseAsync(precomputedSelection: selection);
             SubagentSettingsActionButton.Content = status.IntegrationEnabled ? "关闭协作编码" : "开启协作编码";
             SubagentSettingsActionButton.IsEnabled = status.Installed;
             SubagentSettingsStatusText.Text = status.Installed
                 ? $"Reasonix {status.Version} · 模型 {status.DefaultModel} · {(status.CredentialReady ? "凭据已保存" : "缺少凭据")} · {(status.IntegrationEnabled ? "协作已开启" : "协作已关闭")}\n{status.CredentialMessage}"
                 : status.CredentialMessage;
+            UpdateReasonixEnvironment(selection, status);
             SelectReasonixPermissionMode(service.GetPermissionMode());
-            var models = await service.GetAvailableModelsAsync();
+            var models = await service.GetAvailableModelsAsync(precomputedSelection: selection);
             ReasonixDefaultModelBox.ItemsSource = models;
             ReasonixDefaultModelBox.SelectedItem = models.FirstOrDefault(item => string.Equals(item.Id, status.DefaultModel, StringComparison.OrdinalIgnoreCase));
             RefreshReasonixTasks();
@@ -122,6 +127,63 @@ public partial class MainWindow : Window
             SubagentSettingsActionButton.IsEnabled = false;
             SubagentSettingsStatusText.Text = "Reasonix 检查失败：" + ex.Message;
         }
+    }
+
+    /// <summary>执行环境行：当前实际 CLI 路径、版本、来源与协议兼容性；多候选/迁移说明一并展示。</summary>
+    private void UpdateReasonixEnvironment(ReasonixCliSelection selection, ReasonixStatus status)
+    {
+        if (ReasonixEnvironmentText is null) return;
+        var best = selection.Best;
+        if (best is null)
+        {
+            ReasonixEnvironmentText.Text = "未找到 Reasonix CLI。" + (selection.DiscoveryNote is null ? string.Empty : " " + selection.DiscoveryNote);
+            ReasonixEnvironmentText.ToolTip = null;
+            return;
+        }
+        var compatibility = status.ProtocolCompatibility switch
+        {
+            "compatible" => "协议兼容",
+            "legacy" => "协议不兼容（旧版）",
+            _ => "协议未知"
+        };
+        var line = $"CLI：{best.Path} · 版本 {(string.IsNullOrWhiteSpace(best.Version) ? "未知" : best.Version)} · 来源 {ReasonixCliProbe.DescribeSource(best.Source)} · {compatibility}";
+        var notes = new List<string>();
+        if (!string.IsNullOrWhiteSpace(status.DoctorWarning)) notes.Add(status.DoctorWarning);
+        if (!string.IsNullOrWhiteSpace(status.DiscoveryNote)) notes.Add(status.DiscoveryNote);
+        ReasonixEnvironmentText.Text = notes.Count == 0 ? line : line + Environment.NewLine + string.Join(Environment.NewLine, notes);
+        ReasonixEnvironmentText.ToolTip = ReasonixEnvironmentText.Text;
+    }
+
+    private async void ReasonixRescan_Click(object sender, RoutedEventArgs e)
+    {
+        ReasonixCliSelection? selection = null;
+        var success = await RunOperationAsync("重新扫描 Reasonix CLI", async cancellationToken =>
+        {
+            // 探测在 DiscoverBestAsync 内完成（含超时）；结果直接复用于一次刷新，不重复全套探测。
+            selection = await new ReasonixIntegrationService(settings.CodexRoot, appPaths).DiscoverBestAsync(cancellationToken);
+        }, showProgress: false);
+        if (success) RefreshSubagentSettings(selection);
+    }
+
+    private async void ReasonixSelectCli_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = new OpenFileDialog
+        {
+            Title = "选择 Reasonix CLI",
+            Filter = "Reasonix CLI (*.exe;*.cmd;*.bat)|*.exe;*.cmd;*.bat|所有文件 (*.*)|*.*",
+            CheckFileExists = true,
+            Multiselect = false
+        };
+        if (dialog.ShowDialog() != true) return; // 取消：不改状态
+        ReasonixCliSelection? selection = null;
+        var success = await RunOperationAsync("选择 Reasonix CLI", async cancellationToken =>
+        {
+            var service = new ReasonixIntegrationService(settings.CodexRoot, appPaths);
+            selection = await service.SelectCliAsync(dialog.FileName, cancellationToken);
+            var status = await service.DiagnoseAsync(precomputedSelection: selection, cancellationToken: cancellationToken);
+            await Dispatcher.InvokeAsync(() => UpdateReasonixEnvironment(selection, status));
+        }, showProgress: false);
+        if (success) RefreshSubagentSettings(selection);
     }
 
     private async void SubagentSettingsActionButton_Click(object sender, RoutedEventArgs e)
@@ -178,17 +240,19 @@ public partial class MainWindow : Window
             if (string.Equals(item.Tag?.ToString(), mode.ToString(), StringComparison.OrdinalIgnoreCase)) { ReasonixPermissionModeBox.SelectedItem = item; return; }
     }
 
-    private void ApplyReasonixPermissionMode_Click(object sender, RoutedEventArgs e)
+    private async void ApplyReasonixPermissionMode_Click(object sender, RoutedEventArgs e)
     {
         var mode = SelectedReasonixPermissionMode();
         if (mode == ReasonixPermissionMode.Full && MessageBox.Show("完全权限会让 Reasonix 跳过全部工具审批，并可执行任意命令。任务合同、项目锁和日志仍保留。确认启用吗？", "启用完全权限", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
-        try
+        var success = await RunOperationAsync("应用 Reasonix 权限", async cancellationToken =>
         {
-            new ReasonixIntegrationService(settings.CodexRoot, appPaths).SetPermissionMode(mode);
+            await Task.Run(() => new ReasonixIntegrationService(settings.CodexRoot, appPaths).SetPermissionMode(mode), cancellationToken);
+        }, showProgress: false);
+        if (success)
+        {
             MessageBox.Show(mode == ReasonixPermissionMode.Full ? "已启用完全权限。之后提交的 Reasonix 任务会跳过工具审批。" : "已切换为安全开发模式。", "权限已保存", MessageBoxButton.OK, MessageBoxImage.Information);
             RefreshSubagentSettings();
         }
-        catch (Exception ex) { ShowError(ex); }
     }
 
     private void RefreshReasonixTasks_Click(object sender, RoutedEventArgs e) => RefreshReasonixTasks();
@@ -206,25 +270,68 @@ public partial class MainWindow : Window
                 ReasonixLatestTaskText.Text = snapshot.Diagnostics.Count == 0
                     ? "暂无由新版临时 TaskHost 提交的任务。"
                     : "暂无可读取的任务。\n" + errorSummary.TrimStart();
+                ReasonixLatestTaskText.Foreground = (Brush)FindResource("SecondaryTextBrush");
                 StopReasonixTaskButton.IsEnabled = false;
                 RetryReasonixTaskButton.IsEnabled = false;
                 ReturnToCodexTaskButton.IsEnabled = false;
+                CopyReasonixTaskIdButton.IsEnabled = false;
+                OpenReasonixTaskDirectoryButton.IsEnabled = false;
+                RenderReasonixSteps(null);
                 return;
             }
             ReasonixLatestTaskText.Text = ReasonixUiText.SummaryText(latestReasonixTask) + errorSummary;
+            ReasonixLatestTaskText.Foreground = StatusBrush(ReasonixUiText.StateColorKey(latestReasonixTask));
             var reasonixService = new ReasonixIntegrationService(settings.CodexRoot, appPaths);
             StopReasonixTaskButton.IsEnabled = latestReasonixTask.IsRunning;
             RetryReasonixTaskButton.IsEnabled = reasonixService.RetryBlockReason(latestReasonixTask) is null;
             ReturnToCodexTaskButton.IsEnabled = CodexThreadUri.Build(latestReasonixTask.ReturnUri, latestReasonixTask.CodexThreadId) is not null;
+            CopyReasonixTaskIdButton.IsEnabled = true;
+            OpenReasonixTaskDirectoryButton.IsEnabled = !string.IsNullOrWhiteSpace(latestReasonixTask.TaskDirectory);
+            RenderReasonixSteps(ReasonixUiText.BuildWorkerSteps(latestReasonixTask, reasonixService.ReadWorkerChecks(latestReasonixTask)));
         }
         catch (Exception ex)
         {
             // 2 秒定时刷新与按钮刷新都必须安全运行：任何读取失败只显示错误，不得让 UI 崩溃。
             latestReasonixTask = null;
             ReasonixLatestTaskText.Text = "Reasonix 任务状态读取失败：" + ex.Message;
+            ReasonixLatestTaskText.Foreground = (Brush)FindResource("SecondaryTextBrush");
             StopReasonixTaskButton.IsEnabled = false;
             RetryReasonixTaskButton.IsEnabled = false;
             ReturnToCodexTaskButton.IsEnabled = false;
+            CopyReasonixTaskIdButton.IsEnabled = false;
+            OpenReasonixTaskDirectoryButton.IsEnabled = false;
+            RenderReasonixSteps(null);
+        }
+    }
+
+    /// <summary>在“最近 Reasonix 任务”卡片摘要下逐项渲染 workerChecks 步骤（完成绿/当前蓝/待执行灰/失败红）。</summary>
+    private void RenderReasonixSteps(IReadOnlyList<ReasonixWorkerStep>? steps)
+    {
+        ReasonixStepsPanel.Children.Clear();
+        if (steps is null || steps.Count == 0) { ReasonixStepsPanel.Visibility = Visibility.Collapsed; return; }
+        ReasonixStepsPanel.Visibility = Visibility.Visible;
+        foreach (var step in steps)
+        {
+            var marker = new TextBlock
+            {
+                Text = "•",
+                Width = 18,
+                FontSize = 12,
+                VerticalAlignment = VerticalAlignment.Center,
+                Foreground = StatusBrush(step.State)
+            };
+            var text = new TextBlock
+            {
+                Text = step.Check,
+                FontSize = 12,
+                TextWrapping = TextWrapping.Wrap,
+                VerticalAlignment = VerticalAlignment.Center,
+                Foreground = StatusBrush(step.State)
+            };
+            var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 1, 0, 1) };
+            row.Children.Add(marker);
+            row.Children.Add(text);
+            ReasonixStepsPanel.Children.Add(row);
         }
     }
 
@@ -736,6 +843,40 @@ public partial class MainWindow : Window
         try { Process.Start(new ProcessStartInfo(uri) { UseShellExecute = true }); }
         catch (Exception ex) { ShowError(ex); }
     }
+
+    private void CopyReasonixTaskId_Click(object sender, RoutedEventArgs e)
+    {
+        if (latestReasonixTask is null) return;
+        try
+        {
+            Clipboard.SetText(latestReasonixTask.TaskId);
+            MessageBox.Show($"已复制任务 ID：{latestReasonixTask.TaskId}", "已复制", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        catch (Exception ex) { ShowError(ex); }
+    }
+
+    private void OpenReasonixTaskDirectory_Click(object sender, RoutedEventArgs e)
+    {
+        if (latestReasonixTask is null || string.IsNullOrWhiteSpace(latestReasonixTask.TaskDirectory)) return;
+        try
+        {
+            if (Directory.Exists(latestReasonixTask.TaskDirectory))
+                Process.Start(new ProcessStartInfo { FileName = latestReasonixTask.TaskDirectory, UseShellExecute = true });
+            else
+                MessageBox.Show("任务目录不存在：" + latestReasonixTask.TaskDirectory, "无法打开", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        catch (Exception ex) { ShowError(ex); }
+    }
+
+    /// <summary>状态 → 颜色：完成绿 / 执行中蓝 / 待开始灰 / 失败红 / 其他默认。</summary>
+    private Brush StatusBrush(string key) => key switch
+    {
+        "completed" => new SolidColorBrush(Color.FromRgb(0x2E, 0x7D, 0x32)),
+        "running" => new SolidColorBrush(Color.FromRgb(0x15, 0x65, 0xC0)),
+        "pending" => new SolidColorBrush(Color.FromRgb(0x9E, 0x9E, 0x9E)),
+        "failed" => new SolidColorBrush(Color.FromRgb(0xC6, 0x28, 0x28)),
+        _ => (Brush)FindResource("SecondaryTextBrush")
+    };
 
     private async Task<bool> EnsureCodexStoppedAsync(bool reportWhenAlreadyStopped = false)
     {

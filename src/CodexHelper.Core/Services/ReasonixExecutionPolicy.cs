@@ -20,17 +20,40 @@ public sealed record ReasonixManifestPolicy(
     public static ReasonixManifestPolicy FromManifest(JsonElement root)
     {
         if (root.ValueKind != JsonValueKind.Object) return new(null, null, null, null, null, null, null, null, null);
-        string? ReadString(string name) => root.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
-        int? ReadInt(string name) => root.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var number) ? number : null;
-        IReadOnlyList<string>? ReadStrings(string name)
+        // 新字段优先；缺失时回退旧 execution* 别名，保证旧 manifest 继续兼容。
+        string? ReadString(string name, params string[] legacy)
         {
-            if (!root.TryGetProperty(name, out var value) || value.ValueKind != JsonValueKind.Array) return null;
+            if (root.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String) return value.GetString();
+            foreach (var alt in legacy)
+                if (root.TryGetProperty(alt, out value) && value.ValueKind == JsonValueKind.String) return value.GetString();
+            return null;
+        }
+        int? ReadInt(string name, params string[] legacy)
+        {
+            if (root.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var number)) return number;
+            foreach (var alt in legacy)
+                if (root.TryGetProperty(alt, out value) && value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out number)) return number;
+            return null;
+        }
+        IReadOnlyList<string>? ReadStrings(string name, params string[] legacy)
+        {
+            if (!root.TryGetProperty(name, out var value)) value = default;
+            if (value.ValueKind != JsonValueKind.Array)
+                foreach (var alt in legacy)
+                {
+                    if (!root.TryGetProperty(alt, out value)) continue;
+                    if (value.ValueKind == JsonValueKind.Array) break;
+                }
+            if (value.ValueKind != JsonValueKind.Array) return null;
             var result = new List<string>();
             foreach (var item in value.EnumerateArray())
                 if (item.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(item.GetString())) result.Add(item.GetString()!);
             return result.Count == 0 ? null : result;
         }
-        return new(ReadString("complexity"), ReadString("profile"), ReadString("effort"), ReadString("intensity"), ReadInt("maxSteps"), ReadInt("budgetSteps"), ReadStrings("workerChecks"), ReadStrings("gptChecks"), ReadStrings("releaseChecks"));
+        return new(
+            ReadString("complexity", "executionComplexity"), ReadString("profile", "executionProfile"), ReadString("effort", "executionEffort"),
+            ReadString("intensity", "executionIntensity"), ReadInt("maxSteps", "executionMaxSteps"), ReadInt("budgetSteps", "executionBudgetSteps"),
+            ReadStrings("workerChecks", "executionWorkerChecks"), ReadStrings("gptChecks", "executionGptChecks"), ReadStrings("releaseChecks", "executionReleaseChecks"));
     }
 }
 

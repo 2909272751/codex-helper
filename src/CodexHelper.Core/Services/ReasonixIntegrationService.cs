@@ -14,7 +14,11 @@ public sealed record ReasonixStatus(
     string DefaultModel,
     bool CredentialReady,
     string CredentialMessage,
-    bool IntegrationEnabled);
+    bool IntegrationEnabled,
+    string Source = "",
+    string ProtocolCompatibility = "",
+    string? DoctorWarning = null,
+    string? DiscoveryNote = null);
 
 public sealed record ReasonixModelOption(string Id, string Provider, string Model);
 
@@ -151,6 +155,12 @@ public sealed class ReasonixIntegrationService
     private readonly string skillDirectory;
     private readonly string statePath;
 
+    /// <summary>候选发现器工厂（测试注入用）；默认真实发现。</summary>
+    public Func<ReasonixCliDiscovery>? DiscoveryFactory { get; init; }
+
+    /// <summary>能力探测器工厂（测试注入用）；默认真实探测。</summary>
+    public Func<ReasonixCliProbe>? ProbeFactory { get; init; }
+
     public ReasonixIntegrationService(string codexRoot, AppPaths paths)
     {
         this.codexRoot = Path.GetFullPath(codexRoot);
@@ -159,41 +169,170 @@ public sealed class ReasonixIntegrationService
         statePath = Path.Combine(paths.BaseDirectory, "reasonix-integration.json");
     }
 
+    /// <summary>发现并择优选择 Reasonix CLI（同步包装；探测有超时上限，损坏候选不阻断其他候选）。</summary>
     public string FindExecutable()
+        => DiscoverBestAsync(CancellationToken.None).GetAwaiter().GetResult().Best?.Path ?? string.Empty;
+
+    /// <summary>
+    /// 多来源候选发现 + 能力探测 + 评分选优。Saved 路径有效（探测可用且兼容）时优先；
+    /// 已保存路径被删除或不再兼容时自动重新发现并迁移，诊断中说明；npm shim 永远兜底。
+    /// 迁移仅在“保存路径确实应被替换且新候选兼容”时原子持久化（保留 Enabled/DefaultModel/
+    /// PermissionMode），启用协作时把托管脚本刷新到新 CLI，且绝不递归触发再次探测；
+    /// 无可用兼容候选时保持旧状态不变。
+    /// </summary>
+    public async Task<ReasonixCliSelection> DiscoverBestAsync(CancellationToken cancellationToken = default)
     {
-        var configured = LoadState().ExecutablePath;
-        var candidates = new[]
-        {
-            configured,
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "Reasonix", "reasonix-cli.exe"),
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "npm", "reasonix.cmd")
-        };
-        return candidates.FirstOrDefault(path => !string.IsNullOrWhiteSpace(path) && File.Exists(path)) ?? string.Empty;
+        var discovery = DiscoveryFactory?.Invoke() ?? new ReasonixCliDiscovery();
+        var probe = ProbeFactory?.Invoke() ?? new ReasonixCliProbe();
+        var state = LoadState();
+        var savedPath = state.ExecutablePath;
+        var candidates = discovery.Discover(savedPath);
+        var selection = await probe.SelectBestAsync(candidates, savedPath, cancellationToken);
+        PersistMigratedPathIfNeeded(selection, state);
+        return selection;
     }
 
-    public async Task<ReasonixStatus> DiagnoseAsync(CancellationToken cancellationToken = default)
+    /// <summary>
+    /// 保存路径应被替换时原子更新 ExecutablePath。判定规则（与择优迁移注释一致）：仅当
+    /// 保存路径被删除、探测完全失败（损坏）或保存的是 npm 旧版 shim 时，才迁移到更兼容的候选。
+    /// 无可用兼容候选时绝不改变旧状态。迁移后若协作已启用，把托管脚本刷新到新 CLI。
+    /// </summary>
+    private void PersistMigratedPathIfNeeded(ReasonixCliSelection selection, IntegrationState state)
     {
-        var executable = FindExecutable();
+        var savedPath = state.ExecutablePath;
+        if (!ShouldMigrateSavedPath(selection, savedPath)) return;
+        var newPath = selection.Best!.Path;
+        paths.EnsureCreated();
+        AtomicFile.WriteAllText(statePath, JsonSerializer.Serialize(state with { ExecutablePath = newPath }, new JsonSerializerOptions { WriteIndented = true }));
+        if (state.Enabled) RefreshManagedScripts(newPath);
+    }
+
+    /// <summary>保存路径确实应被替换（非空、已切换到不同候选、且新候选兼容）且存在触发条件。</summary>
+    private static bool ShouldMigrateSavedPath(ReasonixCliSelection selection, string? savedPath)
+    {
+        if (string.IsNullOrWhiteSpace(savedPath)) return false;
+        var best = selection.Best;
+        if (best is null || !best.ProbeOk || !best.HasConfig || !best.HasProviders) return false;
+        if (string.Equals(PathUtil.GetFullPathSafe(best.Path), PathUtil.GetFullPathSafe(savedPath), StringComparison.OrdinalIgnoreCase)) return false;
+        if (selection.SavedPathMissing) return true;
+        var saved = selection.Candidates.FirstOrDefault(c => string.Equals(PathUtil.GetFullPathSafe(c.Path), PathUtil.GetFullPathSafe(savedPath), StringComparison.OrdinalIgnoreCase));
+        if (saved is null) return false;
+        return !saved.ProbeOk || saved.Source == ReasonixCliSource.Npm;
+    }
+
+    public async Task<ReasonixStatus> DiagnoseAsync(CancellationToken cancellationToken = default, ReasonixCliSelection? precomputedSelection = null)
+    {
+        var selection = precomputedSelection ?? await DiscoverBestAsync(cancellationToken);
+        var executable = selection.Best?.Path;
+        var integrationEnabled = IsEnabled();
         if (string.IsNullOrWhiteSpace(executable))
-            return new(false, string.Empty, string.Empty, string.Empty, false, "未找到 Reasonix CLI。", IsEnabled());
+        {
+            var reason = selection.SavedPathMissing
+                ? "已保存的 Reasonix CLI 路径不存在，且未发现其他可用候选。"
+                : "未找到 Reasonix CLI。请安装 Reasonix Desktop，或在协作开发页手动选择 CLI 文件。";
+            return new(false, string.Empty, string.Empty, string.Empty, false, reason, integrationEnabled, DiscoveryNote: selection.DiscoveryNote);
+        }
 
-        var version = (await RunAsync(executable, ["--version"], cancellationToken)).StdOut.Trim();
-        var doctor = await RunAsync(executable, ["doctor", "--json"], cancellationToken, allowFailure: true);
-        if (doctor.ExitCode != 0)
-            return new(true, executable, version, string.Empty, false, "Reasonix 诊断失败：" + FirstUsefulLine(doctor.StdErr), IsEnabled());
+        var source = selection.Best!.Source;
+        var version = selection.Best.Version;
+        // 复用预计算 selection 中已探测的 doctor 结果，绝不再次启动进程（UI 一次刷新收敛到一次探测）。
+        var precomputed = precomputedSelection is not null && precomputedSelection.Best is not null;
+        var doctorJson = string.Empty;
+        var doctorExitCode = 0;
+        var doctorOutputSummary = string.Empty;
+        if (precomputed)
+        {
+            doctorJson = selection.Best!.DoctorJson ?? string.Empty;
+            doctorExitCode = selection.Best.DoctorExitCode;
+        }
+        else
+        {
+            var doctor = await RunAsync(executable, ["doctor", "--json"], cancellationToken, allowFailure: true, timeout: TimeSpan.FromSeconds(10));
+            doctorJson = ReasonixCliProbe.CleanDoctorOutput(doctor.StdOut);
+            doctorExitCode = doctor.ExitCode;
+            doctorOutputSummary = DescribeOutputSummary(doctor);
+        }
+        using var json = ReasonixCliProbe.TryParseJson(doctorJson);
+        var hasConfig = json is not null && json.RootElement.ValueKind == JsonValueKind.Object && json.RootElement.TryGetProperty("config", out _);
+        var hasProviders = json is not null && json.RootElement.ValueKind == JsonValueKind.Object && json.RootElement.TryGetProperty("providers", out var providers) && providers.ValueKind == JsonValueKind.Array;
 
-        using var json = ParseLenientWindowsJson(doctor.StdOut);
-        var config = json.RootElement.GetProperty("config");
-        var defaultModel = config.TryGetProperty("default_model", out var model) ? model.GetString() ?? string.Empty : string.Empty;
-        var providers = json.RootElement.TryGetProperty("providers", out var providerArray) ? providerArray.EnumerateArray().ToList() : [];
+        // 即使 exit code 非零，也先尝试解析 stdout 中的有效 JSON；config/providers 可用则继续。
+        if (json is null)
+        {
+            var error = BuildDoctorError(executable, version, doctorExitCode, doctorOutputSummary);
+            return new(true, executable, version, string.Empty, false, error, integrationEnabled, ReasonixCliProbe.DescribeSource(source), "unknown", DiscoveryNote: selection.DiscoveryNote);
+        }
+
+        var defaultModel = string.Empty;
+        var credentialReady = false;
+        var message = string.Empty;
+        if (hasConfig)
+        {
+            defaultModel = json.RootElement.GetProperty("config").TryGetProperty("default_model", out var model)
+                ? model.GetString() ?? string.Empty
+                : string.Empty;
+        }
         var providerName = defaultModel.Split('/', 2)[0];
-        var activeProvider = providers.FirstOrDefault(item => string.Equals(item.GetProperty("name").GetString(), providerName, StringComparison.OrdinalIgnoreCase));
-        var ready = activeProvider.ValueKind != JsonValueKind.Undefined && activeProvider.TryGetProperty("key_present", out var present) && present.GetBoolean();
-        var message = ready
-            ? "默认模型凭据已保存；是否有效请以“测试 Reasonix 连接”的结果为准。"
-            : $"默认模型 {defaultModel} 缺少凭据，请先在 Reasonix 中重新配置。";
-        return new(true, executable, version, defaultModel, ready, message, IsEnabled());
+        if (hasProviders)
+        {
+            var activeProvider = json.RootElement.GetProperty("providers").EnumerateArray()
+                .FirstOrDefault(item => item.TryGetProperty("name", out var name)
+                    && string.Equals(name.GetString(), providerName, StringComparison.OrdinalIgnoreCase));
+            credentialReady = activeProvider.ValueKind != JsonValueKind.Undefined
+                && activeProvider.TryGetProperty("key_present", out var present)
+                && present.ValueKind == JsonValueKind.True;
+            message = credentialReady
+                ? "默认模型凭据已保存；是否有效请以“测试 Reasonix 连接”的结果为准。"
+                : $"默认模型 {defaultModel} 缺少凭据，请先在 Reasonix 中重新配置。";
+        }
+        else
+        {
+            // 旧版 doctor JSON 不含 providers：给出明确不兼容提示，而不是空白错误。
+            message = string.IsNullOrWhiteSpace(defaultModel)
+                ? "Reasonix 诊断返回的 JSON 不含 providers，协议不兼容（疑似旧版 Reasonix）。请改用 Reasonix Desktop。"
+                : $"Reasonix 诊断返回的 JSON 不含 providers，协议不兼容（疑似旧版 Reasonix）；当前默认模型 {defaultModel} 无法核对凭据。请改用 Reasonix Desktop。";
+        }
+
+        var doctorWarning = doctorExitCode != 0
+            ? $"doctor 以退出码 {doctorExitCode} 结束，但诊断 JSON 仍可用；{doctorOutputSummary}"
+            : null;
+        return new(true, executable, version, defaultModel, credentialReady, message, integrationEnabled,
+            ReasonixCliProbe.DescribeSource(source),
+            hasConfig && hasProviders ? "compatible" : "legacy",
+            doctorWarning,
+            selection.DiscoveryNote);
     }
+
+    /// <summary>doctor 完全不可用时的非空错误：含路径、版本（可得时）、退出码与脱敏输出摘要。</summary>
+    private static string BuildDoctorError(string executable, string version, int doctorExitCode, string outputSummary)
+    {
+        var versionText = string.IsNullOrWhiteSpace(version) ? string.Empty : $"，版本 {version}";
+        return $"Reasonix 诊断失败：{executable}{versionText}（退出码 {doctorExitCode}）{outputSummary}。";
+    }
+
+    /// <summary>stdout/stderr 脱敏摘要；两者皆空时给出明确说明，绝不返回空白错误。</summary>
+    private static string DescribeOutputSummary(ProcessResult doctor)
+    {
+        var stdout = RedactSecrets(doctor.StdOut).Trim();
+        var stderr = RedactSecrets(doctor.StdErr).Trim();
+        var stdoutSummary = string.IsNullOrWhiteSpace(stdout) ? string.Empty : " 输出：" + Truncate(stdout, 160);
+        var stderrSummary = string.IsNullOrWhiteSpace(stderr) ? string.Empty : " 错误：" + Truncate(stderr, 160);
+        return stdoutSummary + stderrSummary;
+    }
+
+    private static string Truncate(string text, int maxLength)
+        => text.Length <= maxLength ? text : text[..maxLength] + "…";
+
+    /// <summary>诊断文本脱敏：替换 API Key、JWT、token、密码等疑似敏感字段，避免泄露凭据。</summary>
+    public static string RedactSecrets(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return text;
+        return SecretRegex.Replace(text, "***");
+    }
+
+    private static readonly System.Text.RegularExpressions.Regex SecretRegex = new(
+        @"(sk-[A-Za-z0-9_-]{8,}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}|(?:api[_-]?key|token|password|secret|authorization)\s*[:=]\s*(?:[""'][^""']{4,}[""']|[^\s""',;]{8,})|Bearer\s+[A-Za-z0-9._~+/=-]{8,})",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Compiled);
 
     public async Task<string> TestConnectionAsync(CancellationToken cancellationToken = default)
     {
@@ -210,14 +349,37 @@ public sealed class ReasonixIntegrationService
         return $"Reasonix 连接正常。\n模型：{status.DefaultModel}\n最小生成测试已通过。";
     }
 
-    public async Task<IReadOnlyList<ReasonixModelOption>> GetAvailableModelsAsync(CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<ReasonixModelOption>> GetAvailableModelsAsync(CancellationToken cancellationToken = default, ReasonixCliSelection? precomputedSelection = null)
     {
-        var executable = FindExecutable();
-        if (string.IsNullOrWhiteSpace(executable)) throw new FileNotFoundException("Reasonix CLI 不存在。");
-        var doctor = await RunAsync(executable, ["doctor", "--json"], cancellationToken, allowFailure: true);
-        if (doctor.ExitCode != 0) throw new InvalidOperationException("无法读取 Reasonix 模型列表：" + FirstUsefulLine(doctor.StdErr));
-        using var json = ParseLenientWindowsJson(doctor.StdOut);
-        if (!json.RootElement.TryGetProperty("providers", out var providers)) return [];
+        var selection = precomputedSelection ?? await DiscoverBestAsync(cancellationToken);
+        var executable = selection.Best?.Path;
+        if (string.IsNullOrWhiteSpace(executable))
+            throw new FileNotFoundException("未找到 Reasonix CLI。" + (selection.DiscoveryNote is null ? string.Empty : selection.DiscoveryNote));
+        // 复用预计算 selection 中已探测的 doctor 结果，绝不再次启动进程（UI 一次刷新收敛到一次探测）。
+        string doctorJson;
+        int doctorExitCode;
+        string outputSummary;
+        if (precomputedSelection is not null)
+        {
+            doctorJson = selection.Best!.DoctorJson ?? string.Empty;
+            doctorExitCode = selection.Best.DoctorExitCode;
+            outputSummary = string.Empty;
+        }
+        else
+        {
+            var doctor = await RunAsync(executable, ["doctor", "--json"], cancellationToken, allowFailure: true, timeout: TimeSpan.FromSeconds(10));
+            doctorJson = ReasonixCliProbe.CleanDoctorOutput(doctor.StdOut);
+            doctorExitCode = doctor.ExitCode;
+            outputSummary = DescribeOutputSummary(doctor);
+        }
+        // 即使 exit code 非零，也先尝试解析 stdout 中的有效 JSON；providers 可用则返回模型。
+        using var json = ReasonixCliProbe.TryParseJson(doctorJson);
+        if (json is null || !json.RootElement.TryGetProperty("providers", out var providers) || providers.ValueKind != JsonValueKind.Array)
+        {
+            var version = selection.Best!.Version;
+            var versionText = string.IsNullOrWhiteSpace(version) ? string.Empty : $"，版本 {version}";
+            throw new InvalidOperationException($"无法读取 Reasonix 模型列表：{executable}{versionText}（退出码 {doctorExitCode}）{outputSummary}。Reasonix 协议不兼容或 doctor 输出无效。");
+        }
         var result = new List<ReasonixModelOption>();
         foreach (var provider in providers.EnumerateArray())
         {
@@ -235,6 +397,36 @@ public sealed class ReasonixIntegrationService
             }
         }
         return result.DistinctBy(item => item.Id, StringComparer.OrdinalIgnoreCase).OrderBy(item => item.Id).ToList();
+    }
+
+    /// <summary>
+    /// 手动选择 CLI：先验证（文件存在 + 版本/doctor 探测），成功后才持久化；
+    /// 验证失败抛可恢复异常（含路径与原因），不改变任何状态。启用状态下切换后
+    /// 立即刷新托管脚本到新路径。
+    /// </summary>
+    public async Task<ReasonixCliSelection> SelectCliAsync(string executablePath, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(executablePath)) throw new ArgumentException("请选择 Reasonix CLI 文件。", nameof(executablePath));
+        var fullPath = Path.GetFullPath(executablePath);
+        if (!File.Exists(fullPath)) throw new FileNotFoundException("所选文件不存在，请重新选择。", fullPath);
+        if (!string.Equals(Path.GetExtension(fullPath), ".exe", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(Path.GetExtension(fullPath), ".cmd", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(Path.GetExtension(fullPath), ".bat", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException("所选文件不是可执行的 Reasonix CLI（请选择 .exe、.cmd 或 .bat 文件）。");
+
+        var probe = ProbeFactory?.Invoke() ?? new ReasonixCliProbe();
+        var result = await probe.ProbeAsync(new ReasonixCliCandidate(fullPath, ReasonixCliSource.Saved), cancellationToken);
+        if (!result.ProbeOk)
+            throw new InvalidOperationException($"所选文件无法作为 Reasonix CLI 使用：{fullPath}。{result.Error}");
+
+        // 验证通过后持久化（原子写），取消/失败不改状态。
+        var state = LoadState();
+        paths.EnsureCreated();
+        AtomicFile.WriteAllText(statePath, JsonSerializer.Serialize(state with { ExecutablePath = fullPath }, new JsonSerializerOptions { WriteIndented = true }));
+        if (state.Enabled) RefreshManagedScripts();
+
+        var selection = new ReasonixCliSelection(result, [result], fullPath, false, "已手动指定 CLI：" + fullPath);
+        return selection;
     }
 
     public async Task SetDefaultModelAsync(string modelId, CancellationToken cancellationToken = default)
@@ -289,11 +481,13 @@ public sealed class ReasonixIntegrationService
 
     public ReasonixPermissionMode GetPermissionMode() => LoadState().PermissionMode ?? ReasonixPermissionMode.Full;
 
-    public void RefreshManagedScripts()
+    public void RefreshManagedScripts(string? executable = null)
     {
         var state = LoadState();
         if (!state.Enabled) return;
-        var executable = FindExecutable();
+        // 传入已算好的 CLI 路径时不重新探测（迁移/UI 复用场景避免递归探测）；
+        // 未提供时才回退到 FindExecutable（保持既有无参语义）。
+        if (string.IsNullOrWhiteSpace(executable)) executable = FindExecutable();
         if (string.IsNullOrWhiteSpace(executable)) return;
         WriteManagedScripts(executable, state.PermissionMode ?? ReasonixPermissionMode.Full);
         UpdateGuidance(true);
@@ -351,6 +545,37 @@ public sealed class ReasonixIntegrationService
             }
         }
         return new ReasonixTasksSnapshot(tasks.OrderByDescending(item => item.UpdatedUtc).ToList(), diagnostics);
+    }
+
+    /// <summary>
+    /// 从任务目录的 manifest.json 安全读取 workerChecks 步骤列表（仅字符串项，按声明顺序）。
+    /// manifest 缺失、损坏、无 workerChecks、非数组、越界或无权限时一律安全降级为空列表，
+    /// 绝不抛异常，也不影响既有任务摘要。
+    /// </summary>
+    public IReadOnlyList<string> ReadWorkerChecks(ReasonixTaskStatus task)
+    {
+        if (task is null || string.IsNullOrWhiteSpace(task.TaskDirectory) || string.IsNullOrWhiteSpace(task.ProjectRoot)) return [];
+        try
+        {
+            var project = Path.GetFullPath(task.ProjectRoot);
+            var taskDir = Path.GetFullPath(task.TaskDirectory);
+            var runs = Path.Combine(project, ".codex-helper", "runs");
+            if (!PathSafety.IsWithin(taskDir, runs)) return [];
+            var manifestPath = Path.Combine(taskDir, "manifest.json");
+            if (!File.Exists(manifestPath)) return [];
+            using var document = JsonDocument.Parse(
+                File.ReadAllText(manifestPath, Encoding.UTF8),
+                new JsonDocumentOptions { CommentHandling = JsonCommentHandling.Skip, AllowTrailingCommas = true });
+            if (document.RootElement.ValueKind != JsonValueKind.Object) return [];
+            if (!document.RootElement.TryGetProperty("workerChecks", out var checks)) return [];
+            if (checks.ValueKind != JsonValueKind.Array) return [];
+            return checks.EnumerateArray()
+                .Select(item => item.ValueKind == JsonValueKind.String ? item.GetString() : null)
+                .Where(text => !string.IsNullOrWhiteSpace(text))
+                .Select(text => text!.Trim())
+                .ToList();
+        }
+        catch { return []; }
     }
 
     private static bool IsProcessAlive(int processId)
@@ -855,14 +1080,22 @@ function Resolve-ExecutionPlan {
   $script:reasonixModel=Get-ReasonixModel
   if([IO.File]::Exists($manifestPath)){ try { $manifest=[IO.File]::ReadAllText($manifestPath,[Text.Encoding]::UTF8) | ConvertFrom-Json } catch { $manifest=$null; $script:manifestDiagnostic='manifest.json 无法解析，已安全回退合同推断' } }
   if($null-ne$manifest){
-    if($manifest.PSObject.Properties['intensity'] -and @('auto','fast','standard','strict') -contains ([string]$manifest.intensity).ToLowerInvariant()){ $intensity=([string]$manifest.intensity).ToLowerInvariant(); $declared=$true }
-    if($manifest.PSObject.Properties['complexity'] -and @('small','medium','major') -contains ([string]$manifest.complexity).ToLowerInvariant()){ $complexity=([string]$manifest.complexity).ToLowerInvariant(); $declared=$true }
-    if($manifest.PSObject.Properties['profile'] -and @('economy','balanced','delivery') -contains ([string]$manifest.profile).ToLowerInvariant()){ $profile=([string]$manifest.profile).ToLowerInvariant(); $declared=$true }
-    if($manifest.PSObject.Properties['effort'] -and @('low','medium','high','max') -contains ([string]$manifest.effort).ToLowerInvariant()){ $effort=([string]$manifest.effort).ToLowerInvariant(); $declared=$true }
-    $n=0; if($manifest.PSObject.Properties['maxSteps'] -and [int]::TryParse([string]$manifest.maxSteps,[ref]$n) -and $n -gt 0){ $maxSteps=$n }
-    $b=0; if($manifest.PSObject.Properties['budgetSteps'] -and [int]::TryParse([string]$manifest.budgetSteps,[ref]$b) -and $b -gt 0){ $budget=$b }
-    if($manifest.PSObject.Properties['estimatedSteps'] -and -not $manifest.PSObject.Properties['budgetSteps'] -and -not $manifest.PSObject.Properties['maxSteps']){ $script:manifestDiagnostic='manifest.json 使用了不支持的 estimatedSteps 字段，预算按推断处理（请改用 budgetSteps）' }
-    if($manifest.PSObject.Properties['workerChecks'] -and $manifest.workerChecks -is [System.Array]){ $checks=@($manifest.workerChecks | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }) }
+    # 新字段优先，缺失时回退旧 execution* 别名，保证旧 manifest 继续兼容。
+    $intensityRaw=if($manifest.PSObject.Properties['intensity']){$manifest.intensity}elseif($manifest.PSObject.Properties['executionIntensity']){$manifest.executionIntensity}else{$null}
+    if($intensityRaw -and @('auto','fast','standard','strict') -contains ([string]$intensityRaw).ToLowerInvariant()){ $intensity=([string]$intensityRaw).ToLowerInvariant(); $declared=$true }
+    $complexityRaw=if($manifest.PSObject.Properties['complexity']){$manifest.complexity}elseif($manifest.PSObject.Properties['executionComplexity']){$manifest.executionComplexity}else{$null}
+    if($complexityRaw -and @('small','medium','major') -contains ([string]$complexityRaw).ToLowerInvariant()){ $complexity=([string]$complexityRaw).ToLowerInvariant(); $declared=$true }
+    $profileRaw=if($manifest.PSObject.Properties['profile']){$manifest.profile}elseif($manifest.PSObject.Properties['executionProfile']){$manifest.executionProfile}else{$null}
+    if($profileRaw -and @('economy','balanced','delivery') -contains ([string]$profileRaw).ToLowerInvariant()){ $profile=([string]$profileRaw).ToLowerInvariant(); $declared=$true }
+    $effortRaw=if($manifest.PSObject.Properties['effort']){$manifest.effort}elseif($manifest.PSObject.Properties['executionEffort']){$manifest.executionEffort}else{$null}
+    if($effortRaw -and @('low','medium','high','max') -contains ([string]$effortRaw).ToLowerInvariant()){ $effort=([string]$effortRaw).ToLowerInvariant(); $declared=$true }
+    $maxStepsRaw=if($manifest.PSObject.Properties['maxSteps']){$manifest.maxSteps}elseif($manifest.PSObject.Properties['executionMaxSteps']){$manifest.executionMaxSteps}else{$null}
+    $n=0; if($maxStepsRaw -and [int]::TryParse([string]$maxStepsRaw,[ref]$n) -and $n -gt 0){ $maxSteps=$n }
+    $budgetRaw=if($manifest.PSObject.Properties['budgetSteps']){$manifest.budgetSteps}elseif($manifest.PSObject.Properties['executionBudgetSteps']){$manifest.executionBudgetSteps}else{$null}
+    $b=0; if($budgetRaw -and [int]::TryParse([string]$budgetRaw,[ref]$b) -and $b -gt 0){ $budget=$b }
+    if($manifest.PSObject.Properties['estimatedSteps'] -and -not $manifest.PSObject.Properties['budgetSteps'] -and -not $manifest.PSObject.Properties['executionBudgetSteps'] -and -not $manifest.PSObject.Properties['maxSteps'] -and -not $manifest.PSObject.Properties['executionMaxSteps']){ $script:manifestDiagnostic='manifest.json 使用了不支持的 estimatedSteps 字段，预算按推断处理（请改用 budgetSteps）' }
+    $checksRaw=if($manifest.PSObject.Properties['workerChecks']){$manifest.workerChecks}elseif($manifest.PSObject.Properties['executionWorkerChecks']){$manifest.executionWorkerChecks}else{$null}
+    if($checksRaw -and $checksRaw -is [System.Array]){ $checks=@($checksRaw | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }) }
   }
   if(-not $intensity){
     $default='auto'
@@ -1177,7 +1410,7 @@ finally{ if($null-ne$stream){$stream.Dispose()} }
         }
     }
 
-    private static async Task<ProcessResult> RunAsync(string executable, IReadOnlyList<string> arguments, CancellationToken cancellationToken, bool allowFailure = false)
+    private static async Task<ProcessResult> RunAsync(string executable, IReadOnlyList<string> arguments, CancellationToken cancellationToken, bool allowFailure = false, TimeSpan? timeout = null)
     {
         var start = new ProcessStartInfo(executable)
         {
@@ -1193,7 +1426,33 @@ finally{ if($null-ne$stream){$stream.Dispose()} }
         process.Start();
         var stdout = process.StandardOutput.ReadToEndAsync(cancellationToken);
         var stderr = process.StandardError.ReadToEndAsync(cancellationToken);
-        await process.WaitForExitAsync(cancellationToken);
+        var exitTask = process.WaitForExitAsync(cancellationToken);
+        if (timeout is not null)
+        {
+            // 诊断探测超时保护：CLI 挂起时终止进程树，避免 UI 操作被永久锁住。
+            var timeoutTask = Task.Delay(timeout.Value, cancellationToken);
+            Task completed;
+            try { completed = await Task.WhenAny(exitTask, timeoutTask); }
+            catch (OperationCanceledException)
+            {
+                try { process.Kill(entireProcessTree: true); } catch { }
+                throw;
+            }
+            finally
+            {
+                if (!exitTask.IsCompleted) try { process.Kill(entireProcessTree: true); } catch { }
+            }
+            if (completed != exitTask)
+            {
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    try { process.Kill(entireProcessTree: true); } catch { }
+                    cancellationToken.ThrowIfCancellationRequested();
+                }
+                return new ProcessResult(-1, string.Empty, $"命令超时（{timeout.Value.TotalSeconds:0} 秒）后已终止。");
+            }
+        }
+        else await exitTask;
         var result = new ProcessResult(process.ExitCode, await stdout, await stderr);
         if (!allowFailure && result.ExitCode != 0) throw new InvalidOperationException(FirstUsefulLine(result.StdErr));
         return result;

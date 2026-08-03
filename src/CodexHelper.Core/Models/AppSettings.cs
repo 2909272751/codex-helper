@@ -15,7 +15,7 @@ public sealed class AppSettings
     public bool HasCompletedOnboarding { get; set; }
     public string LastSelectedPage { get; set; } = "Dashboard";
     public string LastOfficialModel { get; set; } = string.Empty;
-    public string ReasonixExecutionIntensity { get; set; } = "auto";
+    public string ReasonixExecutionIntensity { get; set; } = "standard";
     /// <summary>DeepSeek 缓存统计时间范围（24h/7d/14d/30d/all）；非法值回退 14 天。</summary>
     public string DeepSeekCacheRange { get; set; } = "14d";
 }

@@ -40,9 +40,16 @@ internal static class Program
         ("Reasonix 实时会话变体（预算/退出异常/双项目隔离）", TestReasonixLiveSessionVariantsAsync),
         ("Reasonix 执行强度策略解析与回退", TestReasonixExecutionPolicyAsync),
         ("Reasonix 状态文案与统计展示", TestReasonixUiTextAsync),
+        ("Reasonix workerChecks 步骤映射与 manifest 降级", TestReasonixWorkerStepsAsync),
         ("Reasonix 返回原任务 URI 严格校验", TestCodexThreadUriAsync),
         ("Reasonix Windows 诊断 JSON 兼容", TestReasonixWindowsJsonAsync),
         ("Reasonix 最近任务旧日期/ISO/损坏隔离与排序", TestReasonixRecentTasksAsync),
+        ("Reasonix CLI 多来源发现与择优（默认/注册表/双版本/去重/迁移）", TestReasonixCliDiscoveryAsync),
+        ("Reasonix doctor 容错与诊断脱敏（exit1/空输出/旧版/BOM/ANSI/噪声）", TestReasonixDoctorCompatibilityAsync),
+        ("Reasonix 手动选择 CLI（合法/非法/失败不改状态/启用刷新）", TestReasonixManualSelectAsync),
+        ("Reasonix 自动迁移持久化（保留字段/启用刷新脚本）", TestReasonixMigrationPersistsAsync),
+        ("Reasonix 无兼容候选不改状态", TestReasonixNoMigrationWhenNoCandidateAsync),
+        ("Reasonix 单次刷新仅一次探测且预计算复用", TestReasonixRefreshReuseProbeAsync),
         ("Reasonix 中文 manifest UTF-8 解析进入命令", TestReasonixChineseManifestUtf8Async),
         ("Reasonix PROGRESS 阶段协议与损坏安全处理", TestReasonixProgressStagesAsync),
         ("Reasonix 完成后实际步骤取自 metrics", TestReasonixFinalStepsMetricsAsync),
@@ -1374,6 +1381,73 @@ internal static class Program
         return Task.CompletedTask;
     }
 
+    private static async Task TestReasonixWorkerStepsAsync()
+    {
+        const string c1 = "dotnet build CodexHelper.sln -c Debug --no-restore";
+        const string c2 = "dotnet test --no-build";
+
+        // ---- 步骤状态映射：完成全绿、运行中蓝+灰、失败最后一步红 ----
+        var baseTask = new ReasonixTaskStatus("run-w", @"C:\proj", @"C:\proj\.codex-helper\runs\run-w", "running", "executing", "Full", DateTime.UtcNow, DateTime.UtcNow, 42, 0, "working");
+
+        var completed = ReasonixUiText.BuildWorkerSteps(baseTask with { State = "completed" }, [c1, c2]);
+        Assert(completed.Count == 2 && completed.All(step => step.State == "completed"), "完成态所有步骤应绿色 completed。" + string.Join("|", completed.Select(s => s.State)));
+
+        var running = ReasonixUiText.BuildWorkerSteps(baseTask, [c1, c2]);
+        Assert(running[0].State == "running" && running[1].State == "pending", "运行中无进度映射时第一步应蓝、其余灰：" + string.Join("|", running.Select(s => s.State)));
+
+        // 运行中且 TotalChecks 与 workerChecks 数量一致：已完成绿、当前蓝、待执行灰。
+        var runningMapped = ReasonixUiText.BuildWorkerSteps(baseTask with { CompletedChecks = 1, TotalChecks = 2 }, [c1, c2]);
+        Assert(runningMapped[0].State == "completed" && runningMapped[1].State == "running", "运行中步骤 1 应绿、步骤 2 应蓝：" + string.Join("|", runningMapped.Select(s => s.State)));
+
+        // 失败：已完成绿、失败步骤红、之后待执行灰；不把普通待执行标红。
+        var failed = ReasonixUiText.BuildWorkerSteps(baseTask with { State = "failed", CompletedChecks = 1, TotalChecks = 2 }, [c1, c2]);
+        Assert(failed[0].State == "completed" && failed[1].State == "failed", "失败态步骤 1 应绿、步骤 2 应红：" + string.Join("|", failed.Select(s => s.State)));
+        var failedThree = ReasonixUiText.BuildWorkerSteps(baseTask with { State = "failed", CompletedChecks = 1, TotalChecks = 3 }, [c1, c2, c2]);
+        Assert(failedThree[0].State == "completed" && failedThree[1].State == "failed" && failedThree[2].State == "pending", "失败态第三步应保持灰待执行：" + string.Join("|", failedThree.Select(s => s.State)));
+
+        // 失败但无进度映射：保守全部待执行，绝不猜测失败位置而误标红。
+        var failedNoMap = ReasonixUiText.BuildWorkerSteps(baseTask with { State = "failed" }, [c1, c2]);
+        Assert(failedNoMap.All(step => step.State == "pending"), "失败无映射时不应标红任何步骤：" + string.Join("|", failedNoMap.Select(s => s.State)));
+
+        // 空清单：稳定返回空列表。
+        Assert(ReasonixUiText.BuildWorkerSteps(baseTask, []).Count == 0, "无 workerChecks 时不应返回任何步骤。");
+
+        // ---- manifest 读取与损坏降级 ----
+        await WithTempDirectoryAsync("reasonix-worker-steps", async root =>
+        {
+            var project = Path.Combine(root, "proj");
+            var runs = Path.Combine(project, ".codex-helper", "runs");
+            var taskDir = Path.Combine(runs, "run-ws");
+            Directory.CreateDirectory(taskDir);
+            var app = new AppPaths(Path.Combine(root, "app"));
+            var service = new ReasonixIntegrationService(project, app);
+            var status = baseTask with { ProjectRoot = project, TaskDirectory = taskDir };
+
+            // 无 manifest：空列表且不抛异常。
+            Assert(service.ReadWorkerChecks(status).Count == 0, "缺失 manifest 应返回空列表。");
+
+            // 有效 manifest：按声明顺序返回字符串步骤。
+            await File.WriteAllTextAsync(Path.Combine(taskDir, "manifest.json"),
+                "{\"taskId\":\"run-ws\",\"workerChecks\":[\"" + c1 + "\",\" \", \"" + c2 + "\"]}", new System.Text.UTF8Encoding(false));
+            var checks = service.ReadWorkerChecks(status);
+            Assert(checks.Count == 2 && checks[0] == c1 && checks[1] == c2, "应跳过空项并按声明顺序返回步骤：" + string.Join("|", checks));
+
+            // 损坏 manifest：空列表且不抛异常。
+            await File.WriteAllTextAsync(Path.Combine(taskDir, "manifest.json"), "{ not valid json", new System.Text.UTF8Encoding(false));
+            Assert(service.ReadWorkerChecks(status).Count == 0, "损坏 manifest 应安全降级为空列表。");
+
+            // workerChecks 非数组：空列表。
+            await File.WriteAllTextAsync(Path.Combine(taskDir, "manifest.json"), "{\"workerChecks\":\"nope\"}", new System.Text.UTF8Encoding(false));
+            Assert(service.ReadWorkerChecks(status).Count == 0, "workerChecks 非数组应安全降级。");
+
+            // 路径越界（TaskDirectory 不在项目 runs 下）：拒绝读取，返回空。
+            var outside = baseTask with { ProjectRoot = project, TaskDirectory = Path.Combine(root, "outside") };
+            Directory.CreateDirectory(Path.Combine(root, "outside"));
+            await File.WriteAllTextAsync(Path.Combine(root, "outside", "manifest.json"), "{\"workerChecks\":[\"x\"]}", new System.Text.UTF8Encoding(false));
+            Assert(service.ReadWorkerChecks(outside).Count == 0, "越界 TaskDirectory 应拒绝读取 manifest。");
+        });
+    }
+
     private static async Task TestReasonixLiveSessionVariantsAsync()
     {
         var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
@@ -1502,6 +1576,441 @@ internal static class Program
         Assert(document.RootElement.GetProperty("slash").GetString() == @"a\b", "Escaped backslashes must be preserved.");
         Assert(Encoding.UTF8.GetString(Encoding.UTF8.GetBytes("· 中文")) == "· 中文", "Reasonix terminal text must remain UTF-8.");
         return Task.CompletedTask;
+    }
+
+    private static string NewDoctorJson(string model = "opencode/deepseek-v4-flash") =>
+        $$"""{"config":{"default_model":"{{model}}"},"providers":[{"name":"opencode","key_present":true,"models":["deepseek-v4-flash"]}]}""";
+
+    private static string LegacyDoctorJson(string model = "opencode/old-model") =>
+        $$"""{"config":{"default_model":"{{model}}"},"version":"0.53.2"}""";
+
+    /// <summary>cmd 中输出 JSON 的辅助：JSON 不含 & | &lt; &gt; ^ % 等特殊字符时可直接 echo。</summary>
+    private static string EchoLine(string text) => text.Replace("%", "%%");
+
+    private static async Task TestReasonixCliDiscoveryAsync()
+    {
+        await WithTempDirectoryAsync("reasonix-cli-discovery", async root =>
+        {
+            var localAppData = Path.Combine(root, "local");
+            var appData = Path.Combine(root, "appdata");
+            var programFiles = Path.Combine(root, "pf");
+            Func<Environment.SpecialFolder, string> folders = folder => folder switch
+            {
+                Environment.SpecialFolder.LocalApplicationData => localAppData,
+                Environment.SpecialFolder.ApplicationData => appData,
+                Environment.SpecialFolder.ProgramFiles => programFiles,
+                Environment.SpecialFolder.ProgramFilesX86 => Path.Combine(programFiles, "x86"),
+                _ => root
+            };
+            var noOtherSources = new ReasonixCliDiscovery
+            {
+                SpecialFolder = folders,
+                RegistryReader = () => Array.Empty<string>(),
+                RunningProcessReader = () => Array.Empty<string>(),
+                PathDirectoryReader = () => Array.Empty<string>()
+            };
+
+            // 1) 仅默认 Desktop 路径
+            var defaultCli = Path.Combine(localAppData, "Programs", "Reasonix", "reasonix-cli.exe");
+            Directory.CreateDirectory(Path.GetDirectoryName(defaultCli)!);
+            await File.WriteAllTextAsync(defaultCli, "fake");
+            var probe = new ReasonixCliProbe
+            {
+                ProcessRunner = (path, args) => args.Contains("--version")
+                    ? new ReasonixProcessResult(0, "1.19.3", "")
+                    : new ReasonixProcessResult(0, NewDoctorJson(), "")
+            };
+            var selection = await probe.SelectBestAsync(noOtherSources.Discover(null), null);
+            Assert(selection.Best is not null && string.Equals(selection.Best.Path, defaultCli, StringComparison.OrdinalIgnoreCase)
+                && selection.Best.Source == ReasonixCliSource.CommonLocation, "仅默认 Desktop 路径应被发现。");
+
+            // 2) 自定义 D 盘注册表安装（InstallLocation 推导 + versions 版本目录）
+            var dDriveCli = @"D:\reasonix\reasonix-cli.exe";
+            var versionsCli = @"D:\reasonix\versions\v1.19.3\reasonix-cli.exe";
+            var registryDiscovery = new ReasonixCliDiscovery
+            {
+                SpecialFolder = folders,
+                FileExists = path => path == dDriveCli || path == versionsCli,
+                RegistryReader = () => new[] { @"D:\reasonix" },
+                RunningProcessReader = () => Array.Empty<string>(),
+                PathDirectoryReader = () => Array.Empty<string>(),
+                SubdirectoryReader = dir => string.Equals(dir, @"D:\reasonix\versions", StringComparison.OrdinalIgnoreCase)
+                    ? new[] { @"D:\reasonix\versions\v1.19.3" }
+                    : Array.Empty<string>()
+            };
+            var registrySelection = await probe.SelectBestAsync(registryDiscovery.Discover(null), null);
+            Assert(registrySelection.Best is not null && string.Equals(registrySelection.Best.Path, dDriveCli, StringComparison.OrdinalIgnoreCase)
+                && registrySelection.Best.Source == ReasonixCliSource.Registry, "自定义 D 盘注册表安装应被发现。");
+            var versionCandidateFound = registryDiscovery.Discover(null).Any(c => string.Equals(c.Path, versionsCli, StringComparison.OrdinalIgnoreCase));
+            Assert(versionCandidateFound, "注册表安装的 versions\\vX.Y.Z 版本目录应作为候选。");
+
+            // 注册表值格式异常（引号包裹、图标 ,0 索引）不得崩溃
+            var weirdRegistry = new ReasonixCliDiscovery
+            {
+                SpecialFolder = folders,
+                FileExists = path => path == dDriveCli,
+                RegistryReader = () => new[] { "\"D:\\reasonix\"" },
+                RunningProcessReader = () => Array.Empty<string>(),
+                PathDirectoryReader = () => Array.Empty<string>()
+            };
+            var weirdSelection = await probe.SelectBestAsync(weirdRegistry.Discover(null), null);
+            Assert(weirdSelection.Best is not null && string.Equals(weirdSelection.Best.Path, dDriveCli, StringComparison.OrdinalIgnoreCase), "注册表值格式异常（引号）应容错。");
+
+            // 3) Desktop 1.19.3 与 npm 0.53.2 并存时选 Desktop
+            var npmPath = Path.Combine(appData, "npm", "reasonix.cmd");
+            Directory.CreateDirectory(Path.GetDirectoryName(npmPath)!);
+            await File.WriteAllTextAsync(npmPath, "@echo off\r\nexit /b 0\r\n");
+            var mixedDiscovery = new ReasonixCliDiscovery
+            {
+                SpecialFolder = folders,
+                FileExists = path => path == dDriveCli || File.Exists(path),
+                RegistryReader = () => new[] { @"D:\reasonix" },
+                RunningProcessReader = () => Array.Empty<string>(),
+                PathDirectoryReader = () => Array.Empty<string>()
+            };
+            var mixedProbe = new ReasonixCliProbe
+            {
+                FileExists = path => string.Equals(path, dDriveCli, StringComparison.OrdinalIgnoreCase) || File.Exists(path),
+                ProcessRunner = (path, args) =>
+                {
+                    var isNpm = path.EndsWith("reasonix.cmd", StringComparison.OrdinalIgnoreCase);
+                    if (args.Contains("--version")) return new ReasonixProcessResult(0, isNpm ? "0.53.2" : "1.19.3", "");
+                    return new ReasonixProcessResult(0, isNpm ? LegacyDoctorJson() : NewDoctorJson(), "");
+                }
+            };
+            var mixed = await mixedProbe.SelectBestAsync(mixedDiscovery.Discover(null), null);
+            Assert(mixed.Best is not null && string.Equals(mixed.Best.Path, dDriveCli, StringComparison.OrdinalIgnoreCase)
+                && mixed.Best.Version == "1.19.3", "Desktop 1.19.3 与 npm 0.53.2 并存时应选 Desktop，不得选 npm 旧版。");
+
+            // 4) 保存路径有效时优先；删除后自动恢复；保存的 npm 旧版迁移到 Desktop
+            var savedSelection = await mixedProbe.SelectBestAsync(mixedDiscovery.Discover(dDriveCli), dDriveCli);
+            Assert(savedSelection.Best is not null && string.Equals(savedSelection.Best.Path, dDriveCli, StringComparison.OrdinalIgnoreCase)
+                && !savedSelection.SavedPathMissing, "保存路径有效时应优先。Best=" + (savedSelection.Best?.Path ?? "null") + " savedMissing=" + savedSelection.SavedPathMissing + " candidates=" + string.Join(";", savedSelection.Candidates.Select(c => c.Path)));
+
+            var goneCli = Path.Combine(root, "gone", "reasonix-cli.exe"); // 已删除的保存路径
+            var deletedProbe = new ReasonixCliProbe
+            {
+                FileExists = path => !string.Equals(path, goneCli, StringComparison.OrdinalIgnoreCase)
+                    && (string.Equals(path, dDriveCli, StringComparison.OrdinalIgnoreCase) || File.Exists(path)),
+                ProcessRunner = mixedProbe.ProcessRunner
+            };
+            var deletedDiscovery = new ReasonixCliDiscovery
+            {
+                SpecialFolder = folders,
+                FileExists = path => path == dDriveCli || File.Exists(path),
+                RegistryReader = () => new[] { @"D:\reasonix" },
+                RunningProcessReader = () => Array.Empty<string>(),
+                PathDirectoryReader = () => Array.Empty<string>()
+            };
+            var deleted = await deletedProbe.SelectBestAsync(deletedDiscovery.Discover(goneCli), goneCli);
+            Assert(deleted.SavedPathMissing, "已保存路径被删除应标记失效。");
+            Assert(deleted.Best is not null && string.Equals(deleted.Best.Path, dDriveCli, StringComparison.OrdinalIgnoreCase), "删除后应自动恢复其他可用候选。");
+            Assert(deleted.DiscoveryNote is not null && deleted.DiscoveryNote.Contains("已自动重新发现", StringComparison.Ordinal), "自动恢复必须在诊断中说明。");
+
+            var npmSaved = await mixedProbe.SelectBestAsync(mixedDiscovery.Discover(npmPath), npmPath);
+            Assert(npmSaved.Best is not null && string.Equals(npmSaved.Best.Path, dDriveCli, StringComparison.OrdinalIgnoreCase), "保存的 npm 旧版应安全迁移到更兼容的 Desktop。");
+
+            // 5) 候选重复路径去重（注册表与 PATH 指向同一路径）
+            var dupDiscovery = new ReasonixCliDiscovery
+            {
+                SpecialFolder = folders,
+                FileExists = path => path == dDriveCli,
+                RegistryReader = () => new[] { @"D:\reasonix" },
+                RunningProcessReader = () => Array.Empty<string>(),
+                PathDirectoryReader = () => new[] { @"D:\reasonix" }
+            };
+            var dupCandidates = dupDiscovery.Discover(null);
+            Assert(dupCandidates.Count(c => string.Equals(c.Path, dDriveCli, StringComparison.OrdinalIgnoreCase)) == 1, "重复路径应去重。");
+        });
+    }
+
+    private static async Task TestReasonixDoctorCompatibilityAsync()
+    {
+        await WithTempDirectoryAsync("reasonix-doctor", async root =>
+        {
+            var codexRoot = Path.Combine(root, "codex");
+            Directory.CreateDirectory(codexRoot);
+            await File.WriteAllTextAsync(Path.Combine(codexRoot, "AGENTS.md"), "keep\n");
+            var app = new AppPaths(Path.Combine(root, "app"));
+            var service = new ReasonixIntegrationService(codexRoot, app);
+
+            // 6) doctor exit 1 + stdout 有新版有效 JSON → 模型仍可用并保留警告
+            var exit1Cli = Path.Combine(root, "reasonix-exit1.cmd");
+            await File.WriteAllTextAsync(exit1Cli, "@echo off\r\necho " + EchoLine(NewDoctorJson()) + "\r\nexit /b 1\r\n");
+            service.Enable(exit1Cli, "opencode/deepseek-v4-flash", ReasonixPermissionMode.Full);
+            var exit1Status = await service.DiagnoseAsync();
+            Assert(exit1Status.Installed && exit1Status.DefaultModel == "opencode/deepseek-v4-flash" && exit1Status.CredentialReady, "exit 1 + 有效 JSON 应仍能读取状态与凭据。");
+            Assert(exit1Status.DoctorWarning is not null && exit1Status.DoctorWarning.Contains("退出码 1", StringComparison.Ordinal), "应保留 doctor 失败警告。");
+            var models = await service.GetAvailableModelsAsync();
+            Assert(models.Any(m => m.Id == "opencode/deepseek-v4-flash"), "exit 1 + 有效 JSON 应仍返回模型列表。");
+
+            // 7) stdout 空、stderr 空 → 错误信息仍非空且含路径/退出码
+            var silentCli = Path.Combine(root, "reasonix-silent.cmd");
+            await File.WriteAllTextAsync(silentCli, "@echo off\r\nif \"%1\"==\"--version\" ( echo 1.19.3 & exit /b 0 )\r\nif \"%1\"==\"doctor\" ( exit /b 1 )\r\nexit /b 0\r\n");
+            service.Enable(silentCli, string.Empty, ReasonixPermissionMode.Full);
+            var silentStatus = await service.DiagnoseAsync();
+            Assert(silentStatus.Installed && string.Equals(silentStatus.ExecutablePath, silentCli, StringComparison.OrdinalIgnoreCase), "CLI 存在但 doctor 无输出时仍应选中它（不得伪装为未安装）。");
+            Assert(!string.IsNullOrWhiteSpace(silentStatus.CredentialMessage)
+                && silentStatus.CredentialMessage.Contains("退出码 1", StringComparison.Ordinal)
+                && silentStatus.CredentialMessage.Contains(silentCli, StringComparison.Ordinal), "stdout/stderr 均空时错误必须非空且含路径与退出码：" + silentStatus.CredentialMessage);
+
+            // 8) 旧版 doctor JSON 不含 providers → 明确不兼容提示
+            var legacyCli = Path.Combine(root, "reasonix-legacy.cmd");
+            await File.WriteAllTextAsync(legacyCli, "@echo off\r\necho " + EchoLine(LegacyDoctorJson()) + "\r\nexit /b 0\r\n");
+            service.Enable(legacyCli, "opencode/old-model", ReasonixPermissionMode.Full);
+            var legacyStatus = await service.DiagnoseAsync();
+            Assert(legacyStatus.ProtocolCompatibility == "legacy", "旧版 JSON 应标记协议不兼容。");
+            Assert(legacyStatus.CredentialMessage.Contains("不兼容", StringComparison.Ordinal), "旧版 JSON 应给出明确不兼容提示。");
+            await AssertThrowsAsync<InvalidOperationException>(() => service.GetAvailableModelsAsync());
+
+            // 9) stdout 含 BOM/ANSI/前后噪声仍可解析
+            var noiseFile = Path.Combine(root, "noise.json");
+            await File.WriteAllTextAsync(noiseFile, "\u001B[31m\uFEFF" + NewDoctorJson("opencode/bom-model") + "\r\nhelper log noise", new UTF8Encoding(false));
+            var noisyCli = Path.Combine(root, "reasonix-noisy.cmd");
+            await File.WriteAllTextAsync(noisyCli, "@echo off\r\ntype \"" + noiseFile + "\"\r\nexit /b 0\r\n");
+            service.Enable(noisyCli, "opencode/bom-model", ReasonixPermissionMode.Full);
+            var noisyStatus = await service.DiagnoseAsync();
+            Assert(noisyStatus.Installed && noisyStatus.DefaultModel == "opencode/bom-model" && noisyStatus.CredentialReady, "BOM/ANSI/噪声输出应仍可解析 doctor JSON。");
+            Assert(noisyStatus.DoctorWarning is null, "exit 0 时不应有 doctor 警告。");
+
+            // 10) 敏感字段在诊断中脱敏
+            var redacted = ReasonixIntegrationService.RedactSecrets("apiKey: \"sk-abc123def456xyz\", jwt eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abcdefghijklmnopqrstuvwxyz, password=\"hunter2secret\", token=0123456789abcdef, Bearer ghijklmnopqrstuvwxyz123456");
+            Assert(!redacted.Contains("sk-abc123def456xyz", StringComparison.Ordinal)
+                && !redacted.Contains("hunter2secret", StringComparison.Ordinal)
+                && !redacted.Contains("eyJhbGciOiJIUzI1NiJ9", StringComparison.Ordinal)
+                && !redacted.Contains("0123456789abcdef", StringComparison.Ordinal)
+                && !redacted.Contains("ghijklmnopqrstuvwxyz123456", StringComparison.Ordinal), "诊断文本中的敏感字段应被脱敏：" + redacted);
+            var leakyCli = Path.Combine(root, "reasonix-leaky.cmd");
+            await File.WriteAllTextAsync(leakyCli, "@echo off\r\nif \"%1\"==\"--version\" ( echo 1.19.3 & exit /b 0 )\r\necho sk-abc123def456xyz 1>&2\r\nexit /b 1\r\n");
+            service.Enable(leakyCli, string.Empty, ReasonixPermissionMode.Full);
+            var leakyStatus = await service.DiagnoseAsync();
+            Assert(!leakyStatus.CredentialMessage.Contains("sk-abc123def456xyz", StringComparison.Ordinal), "doctor stderr 中的凭据不得出现在诊断中：" + leakyStatus.CredentialMessage);
+
+            service.Disable();
+        });
+    }
+
+    private static async Task TestReasonixManualSelectAsync()
+    {
+        await WithTempDirectoryAsync("reasonix-select", async root =>
+        {
+            var codexRoot = Path.Combine(root, "codex");
+            Directory.CreateDirectory(codexRoot);
+            await File.WriteAllTextAsync(Path.Combine(codexRoot, "AGENTS.md"), "keep\n");
+            var app = new AppPaths(Path.Combine(root, "app"));
+            var service = new ReasonixIntegrationService(codexRoot, app);
+
+            var oldCli = Path.Combine(root, "old.cmd");
+            var goodCli = Path.Combine(root, "good.cmd");
+            var badCli = Path.Combine(root, "bad.cmd");
+            var txtFile = Path.Combine(root, "note.txt");
+            await File.WriteAllTextAsync(oldCli, "@echo off\r\nif \"%1\"==\"--version\" ( echo 1.19.3 & exit /b 0 )\r\nif \"%1\"==\"doctor\" ( echo " + EchoLine(NewDoctorJson()) + " & exit /b 0 )\r\nexit /b 0\r\n");
+            await File.WriteAllTextAsync(goodCli, "@echo off\r\nif \"%1\"==\"--version\" ( echo 1.19.3 & exit /b 0 )\r\nif \"%1\"==\"doctor\" ( echo " + EchoLine(NewDoctorJson()) + " & exit /b 0 )\r\nexit /b 0\r\n");
+            await File.WriteAllTextAsync(badCli, "@echo off\r\nexit /b 1\r\n");
+            await File.WriteAllTextAsync(txtFile, "not a cli");
+
+            service.Enable(oldCli, "opencode/deepseek-v4-flash", ReasonixPermissionMode.Full);
+            var skillRoot = Path.Combine(codexRoot, "skills", "reasonix-executor");
+            var before = await File.ReadAllTextAsync(Path.Combine(skillRoot, "run-reasonix-job.ps1"));
+            Assert(before.Contains(oldCli, StringComparison.Ordinal), "启用后托管脚本应引用当前 CLI。");
+
+            // 非法：文件不存在
+            await AssertThrowsAsync<FileNotFoundException>(() => service.SelectCliAsync(Path.Combine(root, "missing.exe")));
+            // 非法：非可执行扩展名
+            await AssertThrowsAsync<InvalidDataException>(() => service.SelectCliAsync(txtFile));
+            // 非法：探测失败（无输出且退出非零）
+            await AssertThrowsAsync<InvalidOperationException>(() => service.SelectCliAsync(badCli));
+            // 失败不改状态：已保存路径仍为旧 CLI
+            Assert(string.Equals(service.FindExecutable(), oldCli, StringComparison.OrdinalIgnoreCase), "选择失败不得改变已保存路径。");
+
+            // 合法：验证成功后持久化，启用状态下托管脚本刷新到新路径
+            await service.SelectCliAsync(goodCli);
+            Assert(string.Equals(service.FindExecutable(), goodCli, StringComparison.OrdinalIgnoreCase), "合法选择应持久化新路径。");
+            var after = await File.ReadAllTextAsync(Path.Combine(skillRoot, "run-reasonix-job.ps1"));
+            Assert(after.Contains(goodCli, StringComparison.Ordinal) && !after.Contains(oldCli, StringComparison.Ordinal), "启用状态切换 CLI 后托管脚本应刷新到新路径。");
+            var models = await service.GetAvailableModelsAsync();
+            Assert(models.Any(m => m.Id == "opencode/deepseek-v4-flash"), "手动选择后可读取模型列表。");
+
+            service.Disable();
+        });
+    }
+
+
+    private static async Task TestReasonixMigrationPersistsAsync()
+    {
+        await WithTempDirectoryAsync("reasonix-migrate", async root =>
+        {
+            var codexRoot = Path.Combine(root, "codex");
+            Directory.CreateDirectory(codexRoot);
+            await File.WriteAllTextAsync(Path.Combine(codexRoot, "AGENTS.md"), "keep\n");
+            var app = new AppPaths(Path.Combine(root, "app"));
+            var statePath = Path.Combine(app.BaseDirectory, "reasonix-integration.json");
+            var savedCli = Path.Combine(root, "deleted.cmd");
+            var goodCli = Path.Combine(root, "good.cmd");
+            Directory.CreateDirectory(app.BaseDirectory);
+
+            // 协作已启用，但保存路径已失效；存在一个兼容新 CLI（来自运行中进程候选）。
+            await File.WriteAllTextAsync(statePath, JsonSerializer.Serialize(new
+            {
+                Enabled = true,
+                ExecutablePath = savedCli,
+                DefaultModel = "opencode/deepseek-v4-flash",
+                PermissionMode = (int)ReasonixPermissionMode.Safe
+            }, new JsonSerializerOptions { WriteIndented = true }));
+
+            var versionCalls = 0;
+            var doctorCalls = 0;
+            var service = new ReasonixIntegrationService(codexRoot, app)
+            {
+                DiscoveryFactory = () => new ReasonixCliDiscovery
+                {
+                    FileExists = path => string.Equals(path, goodCli, StringComparison.OrdinalIgnoreCase),
+                    SpecialFolder = _ => Path.Combine(root, "none"),
+                    RegistryReader = () => Array.Empty<string>(),
+                    RunningProcessReader = () => new[] { goodCli },
+                    PathDirectoryReader = () => Array.Empty<string>(),
+                    SubdirectoryReader = _ => Array.Empty<string>()
+                },
+                ProbeFactory = () => new ReasonixCliProbe
+                {
+                    FileExists = path => string.Equals(path, goodCli, StringComparison.OrdinalIgnoreCase),
+                    ProcessRunner = (path, args) =>
+                    {
+                        if (args.Contains("--version")) { versionCalls++; return new ReasonixProcessResult(0, "1.19.3", ""); }
+                        if (args.Contains("doctor")) { doctorCalls++; return new ReasonixProcessResult(0, NewDoctorJson(), ""); }
+                        return new ReasonixProcessResult(0, "", "");
+                    }
+                }
+            };
+
+            var selection = await service.DiscoverBestAsync();
+            Assert(selection.Best is not null && string.Equals(selection.Best.Path, goodCli, StringComparison.OrdinalIgnoreCase), "迁移后应选中新兼容 CLI。");
+
+            var persisted = JsonSerializer.Deserialize<JsonObject>(await File.ReadAllTextAsync(statePath))!;
+            Assert(string.Equals((string?)persisted["ExecutablePath"], goodCli, StringComparison.OrdinalIgnoreCase), "自动迁移必须真正写入新 ExecutablePath。");
+            Assert((bool?)persisted["Enabled"] == true, "迁移必须保留 Enabled。");
+            Assert((string?)persisted["DefaultModel"] == "opencode/deepseek-v4-flash", "迁移必须保留 DefaultModel。");
+            Assert((int?)persisted["PermissionMode"] == (int)ReasonixPermissionMode.Safe, "迁移必须保留 PermissionMode。");
+
+            var jobHost = await File.ReadAllTextAsync(Path.Combine(codexRoot, "skills", "reasonix-executor", "run-reasonix-job.ps1"));
+            Assert(jobHost.Contains(goodCli, StringComparison.Ordinal), "启用协作时迁移后托管脚本应使用新 CLI。");
+
+            Assert(versionCalls == 1 && doctorCalls == 1, $"迁移探测应恰好一次：version={versionCalls}, doctor={doctorCalls}。");
+
+            service.Disable();
+        });
+    }
+
+    private static async Task TestReasonixNoMigrationWhenNoCandidateAsync()
+    {
+        await WithTempDirectoryAsync("reasonix-nomigrate", async root =>
+        {
+            var codexRoot = Path.Combine(root, "codex");
+            Directory.CreateDirectory(codexRoot);
+            await File.WriteAllTextAsync(Path.Combine(codexRoot, "AGENTS.md"), "keep\n");
+            var app = new AppPaths(Path.Combine(root, "app"));
+            var statePath = Path.Combine(app.BaseDirectory, "reasonix-integration.json");
+            var savedCli = Path.Combine(root, "deleted.cmd");
+            var legacyCli = Path.Combine(root, "legacy.cmd");
+            Directory.CreateDirectory(app.BaseDirectory);
+            await File.WriteAllTextAsync(statePath, JsonSerializer.Serialize(new
+            {
+                Enabled = false,
+                ExecutablePath = savedCli,
+                DefaultModel = string.Empty,
+                PermissionMode = (int)ReasonixPermissionMode.Full
+            }, new JsonSerializerOptions { WriteIndented = true }));
+
+            // 只有旧协议（无 providers）候选 → 无兼容替代，不得修改旧状态。
+            var legacyService = new ReasonixIntegrationService(codexRoot, app)
+            {
+                DiscoveryFactory = () => new ReasonixCliDiscovery
+                {
+                    FileExists = path => string.Equals(path, legacyCli, StringComparison.OrdinalIgnoreCase),
+                    SpecialFolder = _ => Path.Combine(root, "none"),
+                    RegistryReader = () => Array.Empty<string>(),
+                    RunningProcessReader = () => new[] { legacyCli },
+                    PathDirectoryReader = () => Array.Empty<string>(),
+                    SubdirectoryReader = _ => Array.Empty<string>()
+                },
+                ProbeFactory = () => new ReasonixCliProbe
+                {
+                    FileExists = path => string.Equals(path, legacyCli, StringComparison.OrdinalIgnoreCase),
+                    ProcessRunner = (path, args) =>
+                        args.Contains("--version")
+                            ? new ReasonixProcessResult(0, "0.53.2", "")
+                            : new ReasonixProcessResult(0, LegacyDoctorJson(), "")
+                }
+            };
+            await legacyService.DiscoverBestAsync();
+            var persisted = JsonSerializer.Deserialize<JsonObject>(await File.ReadAllTextAsync(statePath))!;
+            Assert(string.Equals((string?)persisted["ExecutablePath"], savedCli, StringComparison.OrdinalIgnoreCase), "无兼容候选时不得修改旧 ExecutablePath。");
+
+            // 彻底无候选 → 同样不修改旧状态。
+            var emptyService = new ReasonixIntegrationService(codexRoot, app)
+            {
+                DiscoveryFactory = () => new ReasonixCliDiscovery
+                {
+                    FileExists = _ => false,
+                    SpecialFolder = _ => Path.Combine(root, "none"),
+                    RegistryReader = () => Array.Empty<string>(),
+                    RunningProcessReader = () => Array.Empty<string>(),
+                    PathDirectoryReader = () => Array.Empty<string>(),
+                    SubdirectoryReader = _ => Array.Empty<string>()
+                },
+                ProbeFactory = () => new ReasonixCliProbe { FileExists = _ => false }
+            };
+            var emptySelection = await emptyService.DiscoverBestAsync();
+            Assert(emptySelection.Best is null, "无候选时不应选中任何 CLI。");
+            persisted = JsonSerializer.Deserialize<JsonObject>(await File.ReadAllTextAsync(statePath))!;
+            Assert(string.Equals((string?)persisted["ExecutablePath"], savedCli, StringComparison.OrdinalIgnoreCase), "彻底无候选时也不得修改旧 ExecutablePath。");
+        });
+    }
+
+    private static async Task TestReasonixRefreshReuseProbeAsync()
+    {
+        await WithTempDirectoryAsync("reasonix-reuse", async root =>
+        {
+            var codexRoot = Path.Combine(root, "codex");
+            Directory.CreateDirectory(codexRoot);
+            await File.WriteAllTextAsync(Path.Combine(codexRoot, "AGENTS.md"), "keep\n");
+            var app = new AppPaths(Path.Combine(root, "app"));
+            var cli = Path.Combine(root, "cli.cmd");
+            var versionCalls = 0;
+            var doctorCalls = 0;
+            var service = new ReasonixIntegrationService(codexRoot, app)
+            {
+                DiscoveryFactory = () => new ReasonixCliDiscovery
+                {
+                    FileExists = path => string.Equals(path, cli, StringComparison.OrdinalIgnoreCase),
+                    SpecialFolder = _ => Path.Combine(root, "none"),
+                    RegistryReader = () => Array.Empty<string>(),
+                    RunningProcessReader = () => new[] { cli },
+                    PathDirectoryReader = () => Array.Empty<string>(),
+                    SubdirectoryReader = _ => Array.Empty<string>()
+                },
+                ProbeFactory = () => new ReasonixCliProbe
+                {
+                    FileExists = path => string.Equals(path, cli, StringComparison.OrdinalIgnoreCase),
+                    ProcessRunner = (path, args) =>
+                    {
+                        if (args.Contains("--version")) { versionCalls++; return new ReasonixProcessResult(0, "1.19.3", ""); }
+                        if (args.Contains("doctor")) { doctorCalls++; return new ReasonixProcessResult(0, NewDoctorJson(), ""); }
+                        return new ReasonixProcessResult(0, "", "");
+                    }
+                }
+            };
+
+            // UI 一次刷新所用服务序列：一次候选探测 + 复用 selection 的诊断/脚本/模型读取。
+            var selection = await service.DiscoverBestAsync();
+            service.RefreshManagedScripts(selection.Best?.Path);
+            var status = await service.DiagnoseAsync(precomputedSelection: selection);
+            var models = await service.GetAvailableModelsAsync(precomputedSelection: selection);
+
+            Assert(status.Installed && status.DefaultModel == "opencode/deepseek-v4-flash", "预计算 selection 的诊断应正常复用。");
+            Assert(models.Any(m => m.Id == "opencode/deepseek-v4-flash"), "预计算 selection 的模型读取应正常复用。");
+            Assert(versionCalls == 1 && doctorCalls == 1, $"单次刷新应只探测一次：version={versionCalls}, doctor={doctorCalls}。");
+        });
     }
 
     private static async Task TestReasonixRecentTasksAsync()
@@ -1934,7 +2443,11 @@ internal static class Program
             await File.WriteAllTextAsync(Path.Combine(codexRoot, "AGENTS.md"), "keep\n");
             var app = new AppPaths(Path.Combine(root, "app"));
             var executable = Path.Combine(root, "reasonix-cli.ps1");
-            await File.WriteAllTextAsync(executable, "[IO.File]::WriteAllText((Join-Path $env:CODEX_HELPER_TEST_TASK 'argv.txt'), ($args -join [Environment]::NewLine), [Text.UTF8Encoding]::new($false))");
+            await File.WriteAllTextAsync(executable, """
+                if($args -contains '--version'){ '1.19.3'; exit 0 }
+                if($args -contains 'doctor'){ '{"config":{"default_model":"opencode/deepseek-v4-flash"},"providers":[{"name":"opencode","key_present":true,"models":["deepseek-v4-flash"]}]}'; exit 0 }
+                [IO.File]::WriteAllText((Join-Path $env:CODEX_HELPER_TEST_TASK 'argv.txt'), ($args -join [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
+                """);
             var service = new ReasonixIntegrationService(codexRoot, app);
             service.Enable(executable, "opencode/deepseek-v4-flash", ReasonixPermissionMode.Full);
 

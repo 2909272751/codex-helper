@@ -77,6 +77,24 @@ C:\实用软件开发\codex-helper\.git\backup  ← 更不能选
 
 独立的“协作开发”页面（不在“连接中心”）集中管理 GPT + Reasonix 协作。在此页开启“协作编码”后，GPT 负责规划与验收，Reasonix 作为实现执行端，在任务期间由临时进程运行，任务结束后自动退出。Codex 原生子智能体保持关闭，Reasonix 是独立执行器。页面可管理 Reasonix 默认模型、权限（安全开发/完全权限）、执行强度、最近任务（刷新进度、停止、重试、返回原 Codex 任务）以及 DeepSeek 缓存统计。
 
+### Reasonix CLI 自动发现与手动选择
+
+Helper 会从多个来源自动发现 Reasonix CLI，不进行全盘递归扫描：
+
+- 已保存且仍存在的用户选择；
+- Reasonix Windows 卸载注册表的 `InstallLocation`/`DisplayIcon`/`UninstallString` 推导安装目录（HKCU/HKLM、32/64 位视图），支持任意自定义磁盘目录（如 `D:\Apps\Reasonix`）与 `versions\vX.Y.Z` 版本目录，注册表值格式异常时自动容错；
+- 正在运行的 `reasonix-desktop.exe`/`Reasonix.exe` 所在安装根或版本目录（无需管理员权限）；
+- 常见位置：`%LOCALAPPDATA%\Programs\Reasonix`、`%LOCALAPPDATA%\reasonix`、`%ProgramFiles%\Reasonix` 等；
+- PATH 中的 `reasonix-cli.exe`/`reasonix.exe`；
+- npm `reasonix.cmd` 最后兜底。
+
+对每个候选做快速能力探测（版本与 `doctor --json`）后去重择优：兼容新诊断结构的 Desktop/正式 CLI 优先于 npm 旧版，版本较新者优先；单个损坏候选不会阻断其他候选。已保存路径被删除或不再兼容时自动重新发现并迁移，并在诊断中说明。
+
+页面主状态区域显示当前实际 CLI 路径、版本、来源与协议兼容性；“重新扫描”立即重新探测；“选择 CLI 文件”可手动指定（先验证、成功后才持久化；取消不改状态；无效文件给出可恢复错误；启用状态下切换后托管脚本自动刷新到新路径）。
+
+- **doctor 容错**：`doctor` 退出码非零时仍先尝试解析 stdout 中的有效 JSON，`config/providers` 可用则模型列表照常读取并保留警告；JSON 容忍 BOM、ANSI 转义与前后噪声。错误信息始终包含原因、实际 CLI 路径、版本（可得时）与退出码，凭据类敏感字段自动脱敏。
+- **状态拆分**：诊断区分为 CLI 发现、版本/协议兼容、模型配置、凭据/API 健康；API 或某个 Provider 失败不会伪装成“未安装”，读取本地模型列表不会发起额外模型生成请求。
+
 - **阶段与进度**：Helper 在无外部 PROGRESS 时按安全事实推导基础阶段（分析中 → 实现中 → 整理交付 → 已完成/受阻）；标准 PROGRESS 可把阶段提升到测试/交付，界面会标注“Helper 推断”或“Reasonix 报告”。
 - **软预算不是上限**：manifest 的 `budgetSteps` 是软预算（估算步数），达到时仅提示“已接近/已超过软预算”，**不会终止任务**；只有显式 `maxSteps` 才会传给 CLI 形成硬上限。
 - **失败诊断**：失败时界面给出准确失败类型（模型运行失败 / CLI 退出异常 / 缺少交付报告 / 宿主异常 / 用户停止 / 中断），无交付报告时自动生成脱敏的 `FAILURE_REPORT.md`（不含命令、正文与秘密）。

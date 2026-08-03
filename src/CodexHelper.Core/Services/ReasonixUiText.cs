@@ -60,8 +60,50 @@ public static class ReasonixUiText
         var budget = DescribeBudget(task);
         var failure = DescribeFailure(task);
         var attempt = task.AttemptNumber is > 0 ? $"\n尝试：第 {task.AttemptNumber} 次" : string.Empty;
-        return $"{task.TaskId} · {DescribeState(task)} · {task.Phase}\n项目：{task.ProjectRoot}\n活动：{ActivitySummary(task)}\nReasonix：{DesktopStateText(task)}\nCodex：{ReturnStateText(task)}\n事件：{task.EventCount:N0} · 更新：{task.UpdatedUtc.ToLocalTime():HH:mm:ss}\n{OutcomeLine(task)}" + budget + failure + attempt + strategy + ProgressLine(task) + (reportExists ? "\n已生成 EXECUTION_REPORT.md" : string.Empty);
+        return $"{task.TaskId} · {DescribeState(task)} · {task.Phase}\n项目：{task.ProjectRoot}\n活动：{ActivitySummary(task)}\nReasonix：{DesktopStateText(task)}\nCodex：{ReturnStateText(task)}\n事件：{task.EventCount:N0} · 更新：{task.UpdatedUtc.ToLocalTime():HH:mm:ss}\n时间：{TimeLine(task)}\n{OutcomeLine(task)}" + budget + failure + attempt + strategy + ProgressLine(task) + (reportExists ? "\n已生成 EXECUTION_REPORT.md" : string.Empty);
     }
+
+    /// <summary>时间行：开始 / 已运行 / 保守 ETA / 完成总耗时。运行中用保守估算，绝不伪装精确。</summary>
+    public static string TimeLine(ReasonixTaskStatus task)
+    {
+        var startedText = task.StartedUtc.ToLocalTime().ToString("HH:mm:ss");
+        if (task.IsRunning)
+        {
+            var elapsed = DateTime.UtcNow - task.StartedUtc;
+            if (elapsed < TimeSpan.Zero) elapsed = TimeSpan.Zero;
+            var eta = ConservativeEta(task, elapsed);
+            return $"开始 {startedText} · 已运行 {FormatDuration(elapsed)} · 保守 ETA {(eta is null ? "估算中" : eta.Value.ToLocalTime().ToString("HH:mm:ss"))}";
+        }
+        var total = task.UpdatedUtc - task.StartedUtc;
+        if (total < TimeSpan.Zero) total = TimeSpan.Zero;
+        return $"开始 {startedText} · 完成总耗时 {FormatDuration(total)}";
+    }
+
+    /// <summary>保守 ETA：按已完成进度（模型轮次/软预算）线性外推，进度钳制在 5%~95% 以避免极端值。</summary>
+    private static DateTime? ConservativeEta(ReasonixTaskStatus task, TimeSpan elapsed)
+    {
+        var budget = task.EstimatedSteps is > 0 ? task.EstimatedSteps.Value : 0;
+        var completed = task.ModelTurnCount > 0 ? task.ModelTurnCount : task.StepCount;
+        if (budget <= 0 || completed <= 0) return null;
+        var progress = Math.Clamp((double)completed / budget, 0.05, 0.95);
+        var remaining = TimeSpan.FromSeconds(elapsed.TotalSeconds * ((1.0 / progress) - 1.0));
+        return DateTime.UtcNow + remaining;
+    }
+
+    private static string FormatDuration(TimeSpan span)
+        => span.TotalMinutes < 1 ? $"{(int)span.TotalSeconds} 秒"
+        : span.TotalHours < 1 ? $"{(int)span.TotalMinutes} 分 {span.Seconds} 秒"
+        : $"{(int)span.TotalHours} 小时 {span.Minutes} 分";
+
+    /// <summary>状态颜色键，供 UI 着色：完成绿 / 执行中蓝 / 待开始灰 / 失败红 / 其他默认。</summary>
+    public static string StateColorKey(ReasonixTaskStatus task) => task.State.ToLowerInvariant() switch
+    {
+        "completed" => "completed",
+        "running" => "running",
+        "starting" => "pending",
+        "failed" or "cancelled" or "interrupted" => "failed",
+        _ => "other"
+    };
 
     /// <summary>软预算展示：只称“已超过软预算”，绝不称作超时；预算从不终止任务。
     /// 运行中只按模型轮次给出估计提醒，明确标注最终以 metrics 为准。</summary>
@@ -163,7 +205,42 @@ public static class ReasonixUiText
         >= 1_000 => $"{tokens / 1_000m:0.#}k",
         _ => tokens.ToString("N0")
     };
+
+    /// <summary>
+    /// 根据现有任务状态、检查计数与步骤位置推导每个 workerCheck 的显示状态：
+    /// 完成绿(completed)、当前执行蓝(running)、待执行灰(pending)、失败步骤红(failed)。
+    /// 已完成步骤绝不再变红；无法确认“哪一步失败”时保守标为待执行，不误标普通待执行步骤。
+    /// </summary>
+    public static IReadOnlyList<ReasonixWorkerStep> BuildWorkerSteps(ReasonixTaskStatus task, IReadOnlyList<string> checks)
+    {
+        var count = checks.Count;
+        if (count == 0) return Array.Empty<ReasonixWorkerStep>();
+        var normalized = task.State.ToLowerInvariant();
+        var isFailed = normalized is "failed" or "interrupted" or "cancelled";
+        var isRunning = task.IsRunning;
+
+        // 已完成进度：仅当 TotalChecks 与 workerChecks 数量一致时才可信；完成态视为全部完成。
+        int completed;
+        if (normalized == "completed") completed = count;
+        else if (task.TotalChecks == count && task.CompletedChecks is { } completedChecks) completed = Math.Clamp(completedChecks, 0, count);
+        else if (isRunning) completed = 0;        // 运行中且无进度映射：从第一步开始展示当前执行。
+        else completed = -1;                      // 失败/未知且无映射：不猜测失败位置，全部保守待执行。
+
+        var steps = new List<ReasonixWorkerStep>(count);
+        for (var index = 1; index <= count; index++)
+        {
+            string state;
+            if (completed >= index) state = "completed";
+            else if (completed == index - 1) state = isFailed ? "failed" : "running";
+            else state = "pending";
+            steps.Add(new(index, checks[index - 1], state));
+        }
+        return steps;
+    }
 }
+
+/// <summary>单个 workerCheck 步骤的展示模型：序号、命令文本与语义色键（completed/running/pending/failed）。</summary>
+public sealed record ReasonixWorkerStep(int Index, string Check, string State);
 
 /// <summary>构建“返回原 Codex 任务”的严格 URI：只接受 `codex://threads/&lt;UUID&gt;`。
 /// ReturnUri 非法时忽略并用合法 CodexThreadId 重建；两者均无效返回 null（按钮禁用）。</summary>

@@ -18,6 +18,27 @@ param(
 . (Join-Path $PSScriptRoot 'common.ps1')
 
 $ErrorActionPreference = 'Stop'
+
+# Clean up the smoke process: returns whether the target has exited.
+# Extracted to a plain function so it can be safely called inside finally
+# (finally forbids break/continue/return) and to avoid StrictMode complaints
+# about loop-condition variables referenced inside finally.
+function Test-SmokeProcessExited([System.Diagnostics.Process]$Target) {
+    $Target.Refresh()
+    if ($Target.HasExited) { return $true }
+    # Kill only while the target is alive; if the GUI already exited on its own
+    # (the normal race after the smoke test passes) we do not fail cleanup.
+    & taskkill /PID $Target.Id /T /F 2>$null | Out-Null
+    # Poll until the process exits (up to ~10 seconds).
+    for ($attempt = 0; $attempt -lt 50; $attempt++) {
+        Start-Sleep -Milliseconds 200
+        $Target.Refresh()
+        if ($Target.HasExited) { return $true }
+    }
+    $Target.Refresh()
+    return $Target.HasExited
+}
+
 $root = Get-RepositoryRoot
 $dotnet = Get-DotNetExecutable
 
@@ -90,12 +111,17 @@ try {
     Write-Host "GUI smoke OK: collaboration page opened under isolated data home, main window stayed alive and responding for 2s."
 }
 finally {
-    if ($process -and -not $process.HasExited) {
-        # Kill the whole tree and wait briefly.
-        & taskkill /PID $process.Id /T /F 2>$null | Out-Null
-        $process.WaitForExit(5000) | Out-Null
+    $processAlive = $false
+    if ($process) {
+        $processAlive = -not (Test-SmokeProcessExited -Target $process)
     }
     if (Test-Path -LiteralPath $dataHome) {
-        Remove-Item -Recurse -Force -LiteralPath $dataHome
+        try { Remove-Item -Recurse -Force -LiteralPath $dataHome }
+        catch {
+            # A real cleanup failure only fails the test while the process is still alive;
+            # once it has exited, ignore any leftover temp directory.
+            if ($processAlive) { throw }
+        }
     }
+    if ($processAlive) { throw 'Failed to terminate smoke GUI process; it is still alive.' }
 }

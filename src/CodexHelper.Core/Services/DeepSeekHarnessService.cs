@@ -40,6 +40,8 @@ public sealed record DeepSeekHarnessStatus(
     string NodeFingerprint = "",
     string DshFingerprint = "");
 
+public sealed record HarnessHostReadyResult(bool Ready, bool Started, int ProcessId, string Message, DeepSeekHarnessStatus Status);
+
 /// <summary>
 /// DeepSeek Harness 环境诊断、Web Host 生命周期（启动/停止/重新检测）与中继能力探测。
 /// 只做发现、诊断、引导与在用户已有环境中的启动；不安装 Node/npm 包/Harness。
@@ -60,7 +62,7 @@ public sealed class DeepSeekHarnessService
     public Func<string, string>? DshVersionReader { get; init; }
     /// <summary>Web Host 端口探测（默认本机 GET；测试可注入）。</summary>
     public Func<string, int, CancellationToken, Task<bool>>? WebHostPortProbe { get; init; }
-    /// <summary>中继能力探测（默认未确认降级；测试可注入确认）。</summary>
+    /// <summary>中继能力探测（默认 rc.6 原生协议真实探测：提交/事件流/取消；测试可注入确定实现）。</summary>
     public Func<IDeepSeekHarnessRelay>? RelayFactory { get; init; }
     /// <summary>Web Host 启动器（默认通过绝对 node.exe + dsh 入口；测试可注入）。</summary>
     public Func<string, string, Process?>? WebHostLauncher { get; init; }
@@ -76,9 +78,17 @@ public sealed class DeepSeekHarnessService
         this.webUrl = string.IsNullOrWhiteSpace(webUrl) ? DeepSeekHarnessVersions.WebHostDefaultUrl : webUrl;
     }
 
+    /// <summary>外部诊断命令（node --version / dsh --help）的短超时：损坏环境不得让检测无限挂起。
+    /// 超时只表示该次检测失败，不影响长任务执行策略。</summary>
+    private static readonly TimeSpan DiagnosticProcessTimeout = TimeSpan.FromSeconds(10);
+
     /// <summary>执行完整环境诊断：Node 发现/版本规则、dsh 包发现/版本风险、能力探测（CLI/Web profile/Web Host/中继）。
-    /// 版本只用于风险提示，不单独阻止启用；入口完整且能力通过时未知新版本也可用。</summary>
-    public async Task<DeepSeekHarnessStatus> DiagnoseAsync(string? userSelectedNodePath = null, string? userSelectedDshEntryPath = null, CancellationToken cancellationToken = default, bool forceRefresh = false)
+    /// 版本只用于风险提示，不单独阻止启用；入口完整且能力通过时未知新版本也可用。
+    /// 整个诊断（含文件系统发现与外部命令探测）在线程池执行，首次 await 前绝不占用调用方（UI）线程。</summary>
+    public Task<DeepSeekHarnessStatus> DiagnoseAsync(string? userSelectedNodePath = null, string? userSelectedDshEntryPath = null, CancellationToken cancellationToken = default, bool forceRefresh = false)
+        => Task.Run(() => DiagnoseCoreAsync(userSelectedNodePath, userSelectedDshEntryPath, cancellationToken, forceRefresh), cancellationToken);
+
+    private async Task<DeepSeekHarnessStatus> DiagnoseCoreAsync(string? userSelectedNodePath, string? userSelectedDshEntryPath, CancellationToken cancellationToken, bool forceRefresh)
     {
         var discovery = DiscoveryFactory?.Invoke() ?? new DeepSeekHarnessDiscovery();
         var candidates = discovery.Discover(userSelectedNodePath);
@@ -173,7 +183,7 @@ public sealed class DeepSeekHarnessService
         if (node is null || dsh is null)
         {
             var hostRunning0 = await IsWebHostRunningAsync(cancellationToken);
-            var relay0 = await (RelayFactory?.Invoke() ?? new DeepSeekHarnessRelayProbe()).ProbeCapabilitiesAsync(cancellationToken);
+            var relay0 = await (RelayFactory?.Invoke() ?? new DeepSeekHarnessRelayProbe(webUrl)).ProbeCapabilitiesAsync(cancellationToken);
             return new HarnessCapabilityResult(
                 Cli: false,
                 CliMessage: "缺少可用的 Node 可执行文件，无法探测 CLI。",
@@ -213,7 +223,7 @@ public sealed class DeepSeekHarnessService
         }
 
         var webHostRunning = await IsWebHostRunningAsync(cancellationToken);
-        var relay = await (RelayFactory?.Invoke() ?? new DeepSeekHarnessRelayProbe()).ProbeCapabilitiesAsync(cancellationToken);
+        var relay = await (RelayFactory?.Invoke() ?? new DeepSeekHarnessRelayProbe(webUrl)).ProbeCapabilitiesAsync(cancellationToken);
         var result = new HarnessCapabilityResult(
             Cli: cli, CliMessage: cliMessage,
             WebProfile: webProfile, WebProfileMessage: webProfileMessage,
@@ -239,7 +249,7 @@ public sealed class DeepSeekHarnessService
         if (WebProfileReader is not null) return WebProfileReader(nodePath, dshEntryPath);
         try
         {
-            var result = DeepSeekHarnessProcess.RunAsync(nodePath, new[] { dshEntryPath, "--help" }).GetAwaiter().GetResult();
+            var result = DeepSeekHarnessProcess.RunAsync(nodePath, new[] { dshEntryPath, "--help" }, timeout: DiagnosticProcessTimeout).GetAwaiter().GetResult();
             return (result.StdOut ?? string.Empty) + (result.StdErr ?? string.Empty);
         }
         catch { return string.Empty; }
@@ -258,6 +268,44 @@ public sealed class DeepSeekHarnessService
             webHostProcess = process;
         }
         return webHostProcess;
+    }
+
+    /// <summary>Ensure the local Harness Web Host is reachable, starting it from discovered absolute paths when needed.</summary>
+    public async Task<HarnessHostReadyResult> EnsureWebHostReadyAsync(
+        string? userSelectedNodePath = null,
+        string? userSelectedDshEntryPath = null,
+        CancellationToken cancellationToken = default)
+    {
+        var status = await DiagnoseAsync(userSelectedNodePath, userSelectedDshEntryPath, cancellationToken);
+        if (status.WebHostRunning)
+            return new(true, false, 0, "Harness Web Host 已在运行。", status);
+        if (!status.EnableAllowed)
+            return new(false, false, 0, "无法启动 Harness Web Host：Node 或 dsh 入口未就绪。", status);
+
+        var process = StartWebHost(status.NodePath, status.DshEntryPath);
+        if (process is null)
+            return new(false, false, 0, "Harness Web Host 进程启动失败。", status);
+
+        var processId = 0;
+        try { processId = process.Id; } catch { }
+        for (var attempt = 0; attempt < 40; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (await IsWebHostRunningAsync(cancellationToken))
+            {
+                var ready = await DiagnoseAsync(userSelectedNodePath, userSelectedDshEntryPath, cancellationToken, forceRefresh: true);
+                return new(true, true, processId, "Harness Web Host 已自动启动并通过健康检查。", ready);
+            }
+            try
+            {
+                if (process.HasExited)
+                    return new(false, true, processId, $"Harness Web Host 启动后提前退出（退出码 {process.ExitCode}）。", status);
+            }
+            catch { }
+            await Task.Delay(250, cancellationToken);
+        }
+
+        return new(false, true, processId, "Harness Web Host 已启动，但 10 秒内未通过健康检查。", status);
     }
 
     /// <summary>停止 Helper 启动的 Web Host（终止进程树）。</summary>
@@ -285,7 +333,7 @@ public sealed class DeepSeekHarnessService
         if (NodeVersionReader is not null) return NodeVersionReader(path);
         try
         {
-            var result = DeepSeekHarnessProcess.RunAsync(path, new[] { "--version" }).GetAwaiter().GetResult();
+            var result = DeepSeekHarnessProcess.RunAsync(path, new[] { "--version" }, timeout: DiagnosticProcessTimeout).GetAwaiter().GetResult();
             return CleanVersion(result.StdOut);
         }
         catch { return string.Empty; }

@@ -2,17 +2,17 @@
 
 Codex Helper 是面向 Windows 10/11 的 Codex 专属工作台，统一管理官方账号、第三方 Responses API、重要项目、个人 Skills、Codex 配置、加密增量备份与批量迁移。
 
-当前开发版本：`4.0.0`
+当前开发版本：`4.0.1`
 
 ![Codex Helper Logo](assets/CodexHelper-256.png)
 
 ## 下载安装
 
-**Codex Helper v4.0.0** 精简一键安装包（GitHub Release）：
+**Codex Helper v4.0.1** 精简一键安装包（GitHub Release）：
 
-- 精简安装包：`codex-helper-v4.0.0-setup.exe`（依赖 Windows x64 的 **.NET 8 Desktop Runtime**，安装 .NET 8 SDK 也可满足）
-- [打开 v4.0.0 Release 页面](https://github.com/2909272751/codex-helper/releases/tag/v4.0.0)
-- [直接下载精简安装包](https://github.com/2909272751/codex-helper/releases/download/v4.0.0/codex-helper-v4.0.0-setup.exe)
+- 精简安装包：`codex-helper-v4.0.1-setup.exe`（依赖 Windows x64 的 **.NET 8 Desktop Runtime**，安装 .NET 8 SDK 也可满足）
+- [打开 v4.0.1 Release 页面](https://github.com/2909272751/codex-helper/releases/tag/v4.0.1)
+- [直接下载精简安装包](https://github.com/2909272751/codex-helper/releases/download/v4.0.1/codex-helper-v4.0.1-setup.exe)
 - [微软官方 .NET 8 下载页](https://dotnet.microsoft.com/zh-cn/download/dotnet/8.0)
 
 > 若安装器提示缺少运行库，请先安装 **.NET 8 Desktop Runtime（Windows x64）**，再重新打开并运行本安装包。自 `v3.3.3` 起项目只发布精简安装包与对应的 SHA-256 校验文件，不再提供完整离线安装包或便携 ZIP。
@@ -113,7 +113,7 @@ powershell -ExecutionPolicy Bypass -File scripts\build.ps1
 powershell -ExecutionPolicy Bypass -File scripts\build-release.ps1
 ```
 
-精简发布构建输出到 `artifacts/v4.0.0/`，只生成 `codex-helper-v4.0.0-setup.exe` 与 `codex-helper-v4.0.0-sha256.txt`：
+精简发布构建输出到 `artifacts/v4.0.1-runtime-required/`，生成 `codex-helper-v4.0.1-setup.exe` 与 `codex-helper-v4.0.1-windows-x64.zip`：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\build-release.ps1

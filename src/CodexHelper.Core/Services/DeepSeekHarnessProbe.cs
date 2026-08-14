@@ -161,29 +161,14 @@ public sealed record HarnessRelayCapability(
 }
 
 /// <summary>
-/// 可测试的 Harness 会话/任务中继抽象。实现只应在"实际完成 Host 能力探测且确认支持任务提交、
-/// 事件流与取消"时才报告可实时协作；无法由现有官方稳定接口确认时诚实降级。
+/// Harness 会话/任务中继抽象。实现只应在"实际完成 Host 能力探测且确认支持任务提交、
+/// 事件流与取消"时才报告可实时协作；任何一项无法确认时诚实降级并给出具体原因。
+/// 默认实现 <see cref="DeepSeekHarnessRelayProbe"/> 通过 rc.6 原生协议真实探测（见 DeepSeekHarnessRpc.cs）。
 /// </summary>
 public interface IDeepSeekHarnessRelay
 {
     /// <summary>探测 Host 能力。未确认时 Confirmed=false。</summary>
     Task<HarnessRelayCapability> ProbeCapabilitiesAsync(CancellationToken cancellationToken = default);
-}
-
-/// <summary>
-/// 默认中继探测：当前 Harness 预览版尚未提供可由现有官方稳定接口确认的任务提交/事件流/取消协议，
-/// 因此诚实返回未确认（Confirmed=false）。绝不猜测私有端点，绝不伪造会话或回退成不可见 headless 后
-/// 仍声称实时可见。测试通过注入其他实现来确认能力。
-/// </summary>
-public sealed class DeepSeekHarnessRelayProbe : IDeepSeekHarnessRelay
-{
-    public Task<HarnessRelayCapability> ProbeCapabilitiesAsync(CancellationToken cancellationToken = default)
-        => Task.FromResult(new HarnessRelayCapability(
-            SubmitSupported: false,
-            EventStreamSupported: false,
-            CancelSupported: false,
-            Confirmed: false,
-            Message: "当前 Harness 开发者预览版协议未经运行时能力探测确认，无法保证任务提交、事件流与取消；显示为“Web 可用但自动中继不可用”。"));
 }
 
 /// <summary>Web Host 端口可达性探测器（本机回环探测，可注入避免真实网络依赖）。</summary>
@@ -194,14 +179,15 @@ public sealed class DeepSeekHarnessWebHostProbe
 
     public async Task<bool> IsWebHostRunningAsync(string url = "", int port = DeepSeekHarnessVersions.WebHostDefaultPort, CancellationToken cancellationToken = default)
     {
-        if (PortProbe is not null) return await PortProbe(url, port, cancellationToken);
         var target = string.IsNullOrWhiteSpace(url) ? DeepSeekHarnessVersions.WebHostDefaultUrl : url;
         try
         {
+            if (PortProbe is not null) return await PortProbe(url, port, cancellationToken);
             using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
             using var response = await client.GetAsync(target, cancellationToken);
             return response.IsSuccessStatusCode;
         }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested) { return false; }
         catch (OperationCanceledException) { throw; }
         catch { return false; }
     }

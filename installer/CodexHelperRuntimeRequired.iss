@@ -10,6 +10,9 @@
 #ifndef MyRescueDir
   #error MyRescueDir must be supplied
 #endif
+#ifndef MyRunnerDir
+  #error MyRunnerDir must be supplied
+#endif
 #ifndef MyOutputDir
   #error MyOutputDir must be supplied
 #endif
@@ -33,6 +36,7 @@ ArchitecturesInstallIn64BitMode=x64
 
 [Files]
 Source: "{#MyMainDir}\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
+Source: "{#MyRunnerDir}\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
 Source: "{#MyHelperDir}\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
 Source: "{#MyRescueDir}\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
 

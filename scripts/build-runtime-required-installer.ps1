@@ -12,6 +12,7 @@ New-Item -ItemType Directory -Path $artifactRoot | Out-Null
 
 $targets = @(
     @{ Project = 'src\CodexHelper.App\CodexHelper.App.csproj'; Folder = 'main' },
+    @{ Project = 'src\CodexHelper.HarnessRunner\CodexHelper.HarnessRunner.csproj'; Folder = 'runner' },
     @{ Project = 'src\CodexHelper.CredentialHelper\CodexHelper.CredentialHelper.csproj'; Folder = 'helper' },
     @{ Project = 'src\CodexHelper.Rescue\CodexHelper.Rescue.csproj'; Folder = 'rescue' }
 )
@@ -24,7 +25,7 @@ foreach ($target in $targets) {
 Get-ChildItem -LiteralPath $publishRoot -Recurse -Filter '*.pdb' -File | Remove-Item -Force
 $iscc = @((Join-Path $env:LOCALAPPDATA 'Programs\Inno Setup 6\ISCC.exe'), 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe', 'C:\Program Files\Inno Setup 6\ISCC.exe') | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
 if (-not $iscc) { throw 'Inno Setup 6 is required.' }
-& $iscc "/DMyAppVersion=$version" "/DMyMainDir=$(Join-Path $publishRoot 'main')" "/DMyHelperDir=$(Join-Path $publishRoot 'helper')" "/DMyRescueDir=$(Join-Path $publishRoot 'rescue')" "/DMyOutputDir=$artifactRoot" (Join-Path $root 'installer\CodexHelperRuntimeRequired.iss')
+& $iscc "/DMyAppVersion=$version" "/DMyMainDir=$(Join-Path $publishRoot 'main')" "/DMyRunnerDir=$(Join-Path $publishRoot 'runner')" "/DMyHelperDir=$(Join-Path $publishRoot 'helper')" "/DMyRescueDir=$(Join-Path $publishRoot 'rescue')" "/DMyOutputDir=$artifactRoot" (Join-Path $root 'installer\CodexHelperRuntimeRequired.iss')
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 Remove-Item -LiteralPath $publishRoot -Recurse -Force
 Write-Host "Runtime-required installer: $artifactRoot"

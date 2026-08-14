@@ -1,4 +1,4 @@
-﻿
+
 Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.0.31903.59
@@ -10,6 +10,8 @@ EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CodexHelper.Rescue", "src\CodexHelper.Rescue\CodexHelper.Rescue.csproj", "{C0CA5348-CCAC-4AF4-9D43-20FA7DE51201}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CodexHelper.CredentialHelper", "src\CodexHelper.CredentialHelper\CodexHelper.CredentialHelper.csproj", "{FCB2D106-D848-452C-A28D-83D35340677E}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CodexHelper.HarnessRunner", "src\CodexHelper.HarnessRunner\CodexHelper.HarnessRunner.csproj", "{6D18198B-E9F6-472C-AE52-0C04649D984B}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CodexHelper.Core.Tests", "tests\CodexHelper.Core.Tests\CodexHelper.Core.Tests.csproj", "{48234407-71C2-4FD8-BADD-C8934AFD8D38}"
 EndProject
@@ -35,6 +37,10 @@ Global
 		{FCB2D106-D848-452C-A28D-83D35340677E}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{FCB2D106-D848-452C-A28D-83D35340677E}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{FCB2D106-D848-452C-A28D-83D35340677E}.Release|Any CPU.Build.0 = Release|Any CPU
+		{6D18198B-E9F6-472C-AE52-0C04649D984B}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{6D18198B-E9F6-472C-AE52-0C04649D984B}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{6D18198B-E9F6-472C-AE52-0C04649D984B}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{6D18198B-E9F6-472C-AE52-0C04649D984B}.Release|Any CPU.Build.0 = Release|Any CPU
 		{48234407-71C2-4FD8-BADD-C8934AFD8D38}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
 		{48234407-71C2-4FD8-BADD-C8934AFD8D38}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{48234407-71C2-4FD8-BADD-C8934AFD8D38}.Release|Any CPU.ActiveCfg = Release|Any CPU

@@ -187,7 +187,10 @@ public sealed class ReasonixIntegrationService
     /// PermissionMode），启用协作时把托管脚本刷新到新 CLI，且绝不递归触发再次探测；
     /// 无可用兼容候选时保持旧状态不变。
     /// </summary>
-    public async Task<ReasonixCliSelection> DiscoverBestAsync(CancellationToken cancellationToken = default)
+    public Task<ReasonixCliSelection> DiscoverBestAsync(CancellationToken cancellationToken = default)
+        => Task.Run(() => DiscoverBestCoreAsync(cancellationToken), cancellationToken);
+
+    private async Task<ReasonixCliSelection> DiscoverBestCoreAsync(CancellationToken cancellationToken)
     {
         var discovery = DiscoveryFactory?.Invoke() ?? new ReasonixCliDiscovery();
         var probe = ProbeFactory?.Invoke() ?? new ReasonixCliProbe();

@@ -23,6 +23,7 @@ New-Item -ItemType Directory -Path $artifactRoot | Out-Null
 
 $targets = @(
     @{ Project = 'src\CodexHelper.App\CodexHelper.App.csproj'; Folder = 'main' },
+    @{ Project = 'src\CodexHelper.HarnessRunner\CodexHelper.HarnessRunner.csproj'; Folder = 'runner' },
     @{ Project = 'src\CodexHelper.CredentialHelper\CodexHelper.CredentialHelper.csproj'; Folder = 'helper' },
     @{ Project = 'src\CodexHelper.Rescue\CodexHelper.Rescue.csproj'; Folder = 'rescue' }
 )
@@ -46,7 +47,7 @@ $iscc = $isccCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Ob
 if (-not $iscc) { throw 'Inno Setup 6 is required to build the installer. Install it with: winget install JRSoftware.InnoSetup' }
 
 $installerScript = Join-Path $root 'installer\CodexHelperRuntimeRequired.iss'
-& $iscc "/DMyAppVersion=$version" "/DMyMainDir=$(Join-Path $publishRoot 'main')" "/DMyHelperDir=$(Join-Path $publishRoot 'helper')" "/DMyRescueDir=$(Join-Path $publishRoot 'rescue')" "/DMyOutputDir=$artifactRoot" $installerScript
+& $iscc "/DMyAppVersion=$version" "/DMyMainDir=$(Join-Path $publishRoot 'main')" "/DMyRunnerDir=$(Join-Path $publishRoot 'runner')" "/DMyHelperDir=$(Join-Path $publishRoot 'helper')" "/DMyRescueDir=$(Join-Path $publishRoot 'rescue')" "/DMyOutputDir=$artifactRoot" $installerScript
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 # 只对实际发布资产（精简 setup.exe）生成 SHA-256，避免人工从完整包目录挑选。

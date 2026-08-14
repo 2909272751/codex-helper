@@ -32,6 +32,11 @@ foreach ($item in $targets) {
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 
+# Release assets must not contain development symbols. Keep PDBs in normal build
+# output when needed, but strip them from the temporary publish tree before Inno
+# Setup collects files for the lightweight installer.
+Get-ChildItem -LiteralPath $publishRoot -Recurse -File -Filter '*.pdb' | Remove-Item -Force
+
 $isccCandidates = @(
     (Join-Path $env:LOCALAPPDATA 'Programs\Inno Setup 6\ISCC.exe'),
     'C:\Program Files (x86)\Inno Setup 6\ISCC.exe',

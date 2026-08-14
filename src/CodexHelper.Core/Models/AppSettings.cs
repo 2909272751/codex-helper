@@ -18,6 +18,25 @@ public sealed class AppSettings
     public string ReasonixExecutionIntensity { get; set; } = "standard";
     /// <summary>DeepSeek 缓存统计时间范围（24h/7d/14d/30d/all）；非法值回退 14 天。</summary>
     public string DeepSeekCacheRange { get; set; } = "14d";
+    /// <summary>智能拆分默认开。</summary>
+    public bool AutoSplitEnabled { get; set; } = true;
+    /// <summary>独立任务并行默认开。</summary>
+    public bool ParallelIndependentEnabled { get; set; } = true;
+    /// <summary>最大并发（1..3），默认 2；越界在保存时收敛。</summary>
+    public int MaxConcurrency { get; set; } = 2;
+    /// <summary>自动 worktree 默认开。</summary>
+    public bool AutoWorktreeEnabled { get; set; } = true;
+    /// <summary>超预算收敛默认开。</summary>
+    public bool ConvergeOnBudgetOverrunEnabled { get; set; } = true;
+    /// <summary>
+    /// 协作执行器选择：Off / Reasonix / Harness。空值或旧设置由 <see cref="Services.SettingsService.Load"/>
+    /// 迁移：旧版已启用 Reasonix 的设备保持 Reasonix，否则保持 Off。
+    /// </summary>
+    public string CollaborationMode { get; set; } = "Off";
+    /// <summary>用户显式选择的 Node 可执行文件路径（Harness 模式；空表示用自动发现）。</summary>
+    public string HarnessNodePath { get; set; } = string.Empty;
+    /// <summary>用户显式选择的 dsh JS 入口（lib/bin.js）路径（Harness 模式；空表示用自动发现）。</summary>
+    public string HarnessDshEntryPath { get; set; } = string.Empty;
 }
 
 public static class CodexRootResolver

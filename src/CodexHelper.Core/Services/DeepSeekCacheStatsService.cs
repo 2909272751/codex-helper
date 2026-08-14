@@ -94,7 +94,6 @@ public sealed class DeepSeekCacheStatsService
         // ------------------------------------------------------------- Reasonix
         if (!string.IsNullOrWhiteSpace(reasonixTasksDirectory) && Directory.Exists(reasonixTasksDirectory))
         {
-            var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
             foreach (var file in Directory.EnumerateFiles(reasonixTasksDirectory, "*.json")
                          .Select(candidate => new FileInfo(candidate))
                          .Where(file => file.LastWriteTimeUtc >= since))
@@ -102,7 +101,7 @@ public sealed class DeepSeekCacheStatsService
                 cancellationToken.ThrowIfCancellationRequested();
                 scanned++;
                 ReasonixTaskStatus? status;
-                try { status = JsonSerializer.Deserialize<ReasonixTaskStatus>(File.ReadAllText(file.FullName, Encoding.UTF8), options); }
+                try { status = ReasonixStatusJson.TryReadStatus(file.FullName); }
                 catch { corrupt++; continue; }
                 if (status is null) { corrupt++; continue; }
                 if (!IsDeepSeekReasonix(status)) { skipped++; continue; }   // 旧状态缺 ExecutionModel 也在此安全跳过

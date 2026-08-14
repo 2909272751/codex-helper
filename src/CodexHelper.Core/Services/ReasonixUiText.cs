@@ -41,6 +41,16 @@ public static class ReasonixUiText
     public static string OutcomeLine(ReasonixTaskStatus task)
     {
         var reportExists = File.Exists(Path.Combine(task.TaskDirectory, "EXECUTION_REPORT.md"));
+        // final-readiness 退出码 1：Reasonix 最终门禁未通过，但执行与报告已交付 → 明确"等待 GPT 复核"，
+        // 不伪装 workerChecks 成功，也不当作普通代码开发失败。
+        if (string.Equals(task.FailureKind, "final-readiness-blocked", StringComparison.Ordinal))
+            return "等待 GPT 复核：Reasonix 最终门禁未通过（执行与交付报告已生成，GPT 需独立复核验收）";
+        // P0-1 漏报告自动恢复：Helper 已生成自动恢复报告并把任务置为等待 GPT 验收的完成态，
+        // 明确标注未伪造测试通过，不伪装 workerChecks 成功。
+        if (string.Equals(task.State, "completed", StringComparison.OrdinalIgnoreCase)
+            && string.Equals(task.FailureKind, "missing-report", StringComparison.Ordinal)
+            && reportExists)
+            return "漏报告自动恢复：Reasonix 退出码 0 且存在实际活动，但未生成执行报告；Helper 已生成自动恢复报告（未伪造测试通过），等待 GPT 独立验收";
         return task.State.ToLowerInvariant() switch
         {
             "completed" => reportExists ? "执行完成，等待 GPT 独立验收" : "执行完成，但未找到执行报告",
@@ -60,10 +70,13 @@ public static class ReasonixUiText
         var budget = DescribeBudget(task);
         var failure = DescribeFailure(task);
         var attempt = task.AttemptNumber is > 0 ? $"\n尝试：第 {task.AttemptNumber} 次" : string.Empty;
-        return $"{task.TaskId} · {DescribeState(task)} · {task.Phase}\n项目：{task.ProjectRoot}\n活动：{ActivitySummary(task)}\nReasonix：{DesktopStateText(task)}\nCodex：{ReturnStateText(task)}\n事件：{task.EventCount:N0} · 更新：{task.UpdatedUtc.ToLocalTime():HH:mm:ss}\n时间：{TimeLine(task)}\n{OutcomeLine(task)}" + budget + failure + attempt + strategy + ProgressLine(task) + (reportExists ? "\n已生成 EXECUTION_REPORT.md" : string.Empty);
+        return $"{task.TaskId} · {DescribeState(task)} · {task.Phase}\n项目：{task.ProjectRoot}\n活动：{ActivitySummary(task)}\nReasonix：{DesktopStateText(task)}\nCodex：{ReturnStateText(task)}\n事件：{task.EventCount:N0} · 更新：{task.UpdatedUtc.ToLocalTime():HH:mm:ss}\n时间：{TimeLine(task)}\n{OutcomeLine(task)}" + budget + failure + attempt + strategy + ProgressLine(task) + ContractLine(task) + (reportExists ? "\n已生成 EXECUTION_REPORT.md" : string.Empty);
     }
 
-    /// <summary>时间行：开始 / 已运行 / 保守 ETA / 完成总耗时。运行中用保守估算，绝不伪装精确。</summary>
+    /// <summary>时间行：开始 / 已运行 / 预计剩余百分比 / 总耗时。运行中不再做线性时间外推或保守 ETA。
+    /// 预计剩余优先采用 Helper 持久化的单调值（同一 attempt 内只降不升，进度源切换/重启恢复均不回升）；
+    /// 历史状态缺该字段时回退到实时计算。仅 completed 状态使用“完成总耗时”；failed/stopped/interrupted 等
+    /// 非运行、非完成状态一律用“总耗时”，不采用“完成”措辞。完成时 UI 不显示预计剩余（等价 0%）。</summary>
     public static string TimeLine(ReasonixTaskStatus task)
     {
         var startedText = task.StartedUtc.ToLocalTime().ToString("HH:mm:ss");
@@ -71,23 +84,53 @@ public static class ReasonixUiText
         {
             var elapsed = DateTime.UtcNow - task.StartedUtc;
             if (elapsed < TimeSpan.Zero) elapsed = TimeSpan.Zero;
-            var eta = ConservativeEta(task, elapsed);
-            return $"开始 {startedText} · 已运行 {FormatDuration(elapsed)} · 保守 ETA {(eta is null ? "估算中" : eta.Value.ToLocalTime().ToString("HH:mm:ss"))}";
+            var remaining = task.RemainingPercent is > 0
+                ? task.RemainingPercent
+                : RunningRemainingPercent(task.EstimatedSteps, task.StepCount, task.ModelTurnCount, task.CompletedChecks, task.TotalChecks);
+            var remainingText = remaining is null ? "预计剩余：估算中" : $"预计剩余 {remaining.Value}%";
+            return $"开始 {startedText} · 已运行 {FormatDuration(elapsed)} · {remainingText}";
         }
         var total = task.UpdatedUtc - task.StartedUtc;
         if (total < TimeSpan.Zero) total = TimeSpan.Zero;
-        return $"开始 {startedText} · 完成总耗时 {FormatDuration(total)}";
+        var durationLabel = string.Equals(task.State, "completed", StringComparison.OrdinalIgnoreCase) ? "完成总耗时" : "总耗时";
+        return $"开始 {startedText} · {durationLabel} {FormatDuration(total)}";
     }
 
-    /// <summary>保守 ETA：按已完成进度（模型轮次/软预算）线性外推，进度钳制在 5%~95% 以避免极端值。</summary>
-    private static DateTime? ConservativeEta(ReasonixTaskStatus task, TimeSpan elapsed)
+    /// <summary>
+    /// 纯函数：运行中预计剩余百分比（5–100；达到/超过软预算仍为 5；0 只用于已完成状态，不在这里返回）。
+    /// 完成比例取“有效的 workerChecks 完成数/总数”与“当前步骤数/软预算”两者较大的那个，任一来源有效即采用
+    /// （更可信、不会因单一来源滞后而倒退）；只有步骤预算时用步骤/预算。没有任何有效进度或预算时返回 null
+    /// （调用方显示“估算中”）。completedChecks &lt; 0 或 totalChecks &lt;= 0 时整组 workerChecks 进度视为无效
+    /// 并安全回退；completedChecks &gt; totalChecks 可钳制为完成比例。
+    /// </summary>
+    public static int? RunningRemainingPercent(
+        int? estimatedSteps, long stepCount, long modelTurnCount, int? completedChecks, int? totalChecks)
     {
-        var budget = task.EstimatedSteps is > 0 ? task.EstimatedSteps.Value : 0;
-        var completed = task.ModelTurnCount > 0 ? task.ModelTurnCount : task.StepCount;
-        if (budget <= 0 || completed <= 0) return null;
-        var progress = Math.Clamp((double)completed / budget, 0.05, 0.95);
-        var remaining = TimeSpan.FromSeconds(elapsed.TotalSeconds * ((1.0 / progress) - 1.0));
-        return DateTime.UtcNow + remaining;
+        // workerChecks 有效完成比例：total 必须为正且 completed 必须非负（completed<0 视为整组损坏、无效），
+        // 超出总数时钳制为完成比例。
+        double? checksRatio = null;
+        if (totalChecks is > 0 && completedChecks is >= 0)
+        {
+            var completed = Math.Clamp(completedChecks.Value, 0, totalChecks.Value);
+            checksRatio = (double)completed / totalChecks.Value;
+        }
+
+        // 步骤/软预算比例：仅当预算有效且已推进（模型轮次优先，回退实际步骤）才可信。
+        double? stepsRatio = null;
+        if (estimatedSteps is > 0)
+        {
+            var steps = modelTurnCount > 0 ? modelTurnCount : stepCount;
+            if (steps > 0) stepsRatio = (double)steps / estimatedSteps.Value;
+        }
+
+        // 取两者较大的完成比例：任一有效即采用，防止单一来源滞后导致倒退。
+        var progress = checksRatio is not null && stepsRatio is not null
+            ? Math.Max(checksRatio.Value, stepsRatio.Value)
+            : checksRatio ?? stepsRatio;
+        if (progress is null) return null;
+
+        // 剩余 = 1 - 完成比例，钳制在 5%–100%，绝不显示负数或 0%。
+        return (int)Math.Round(Math.Clamp((1.0 - progress.Value) * 100.0, 5.0, 100.0));
     }
 
     private static string FormatDuration(TimeSpan span)
@@ -128,6 +171,7 @@ public static class ReasonixUiText
             "cli-exit" => "CLI 退出异常",
             "missing-report" => "缺少交付报告",
             "worker-check-failed" => "worker 检查失败",
+            "final-readiness-blocked" => "最终门禁未通过（等待 GPT 复核）",
             "host-error" => "宿主异常",
             "user-stopped" => "用户停止",
             "interrupted" => "中断",
@@ -149,9 +193,19 @@ public static class ReasonixUiText
         }
         var summary = string.IsNullOrWhiteSpace(task.ProgressSummary) ? string.Empty : $"：{task.ProgressSummary}";
         var checks = task.TotalChecks is > 0 ? $"（{task.CompletedChecks ?? 0}/{task.TotalChecks} 项检查）" : string.Empty;
+        var current = string.IsNullOrWhiteSpace(task.CurrentCheck) ? string.Empty : $"（当前检查：{task.CurrentCheck}）";
         var source = string.IsNullOrWhiteSpace(task.ProgressSource) ? string.Empty
             : task.ProgressSource.Equals("reasonix", StringComparison.OrdinalIgnoreCase) ? "（Reasonix 报告）" : "（Helper 推断）";
-        return $"\n阶段：{stage}{source}{summary}{checks}{StaleProgressHint(task)}";
+        return $"\n阶段：{stage}{source}{summary}{checks}{current}{StaleProgressHint(task)}";
+    }
+
+    /// <summary>合同体检/归一化摘要行：只展示结构化诊断文本，不暴露合同正文或秘密。</summary>
+    public static string ContractLine(ReasonixTaskStatus task)
+    {
+        if (string.IsNullOrWhiteSpace(task.ContractDiagnostic)) return string.Empty;
+        var prefix = task.ContractNormalized == true ? "合同已归一化" : "合同提示";
+        var text = task.ContractDiagnostic.Length > 220 ? task.ContractDiagnostic[..220] + "…" : task.ContractDiagnostic;
+        return $"\n{prefix}：{text}";
     }
 
     /// <summary>阶段更新较久未动只做提示，绝不按时间终止任务。</summary>

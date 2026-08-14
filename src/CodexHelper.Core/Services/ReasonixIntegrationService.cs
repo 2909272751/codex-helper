@@ -69,7 +69,11 @@ public sealed record ReasonixTaskStatus(
     string? FailureKind = null,
     string? FailureSummary = null,
     int? AttemptNumber = null,
-    string? ProgressSource = null)
+    string? ProgressSource = null,
+    int? RemainingPercent = null,
+    string? CurrentCheck = null,
+    string? ContractDiagnostic = null,
+    bool? ContractNormalized = null)
 {
     public bool IsRunning => string.Equals(State, "running", StringComparison.OrdinalIgnoreCase) || string.Equals(State, "starting", StringComparison.OrdinalIgnoreCase);
 
@@ -516,7 +520,14 @@ public sealed class ReasonixIntegrationService
         {
             try
             {
-                var status = JsonSerializer.Deserialize<ReasonixTaskStatus>(File.ReadAllText(file, Encoding.UTF8), new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+                // 先读原文区分“空文件”与“损坏内容”，再用统一宽容读取解析（损坏/日期非法 → null）。
+                var text = File.ReadAllText(file, Encoding.UTF8);
+                if (string.IsNullOrWhiteSpace(text))
+                {
+                    diagnostics.Add(new(Path.GetFileName(file), "状态文件内容为空"));
+                    continue;
+                }
+                var status = ReasonixStatusJson.TryReadStatus(file);
                 if (status is not null)
                 {
                     // 刚进入 starting 且 PID 尚未写回时提供短暂 grace，不得立即归一化为 interrupted；
@@ -536,10 +547,18 @@ public sealed class ReasonixIntegrationService
                             FailureSummary = reportExists ? "host 进程意外退出，但交付报告存在。" : "host 进程意外退出，未生成交付报告。"
                         };
                     }
+                    // P0-3 终态归一化（内存级）：完成/失败/取消/中断等非运行状态剩余百分比归零、阶段归一。
+                    status = ReasonixStatusJson.NormalizeTerminalState(status);
+                    // P0-1 漏报告自动恢复：missing-report 且证据充分时由 Helper 生成自动恢复报告并置为等待 GPT 验收。
+                    if (IsMissingReportCandidate(status))
+                    {
+                        var recovered = TryAutoRecoverMissingReport(status);
+                        if (recovered is not null) status = recovered;
+                    }
                     tasks.Add(status);
                     if (tasks.Count >= wanted) break;
                 }
-                else diagnostics.Add(new(Path.GetFileName(file), "状态文件内容为空。"));
+                else diagnostics.Add(new(Path.GetFileName(file), "JSON 语法或日期格式无效"));
             }
             catch (Exception ex)
             {
@@ -581,6 +600,64 @@ public sealed class ReasonixIntegrationService
         catch { return []; }
     }
 
+    /// <summary>是否为漏报告失败候选（runner 仅在该场景设置 missing-report：退出码 0、非模型失败、无报告）。</summary>
+    private static bool IsMissingReportCandidate(ReasonixTaskStatus status)
+        => status is not null
+           && string.Equals(status.State, "failed", StringComparison.OrdinalIgnoreCase)
+           && string.Equals(status.FailureKind, "missing-report", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// P0-1 漏报告自动恢复（Helper 侧）：仅当 runner 记录了 missing-report 证据且满足
+    /// <see cref="ReasonixAutoRecovery.ShouldRecover"/>（退出码 0 + 实际活动 + 本次新增变化或已通过检查）
+    /// 时，由 Helper 原子生成自动恢复版 EXECUTION_REPORT.md 与 REVIEW_PACKET.md，并把任务状态置为
+    /// 等待 GPT 验收的完成态。绝不伪造测试通过；无活动/无变化/模型失败/非零退出均不恢复。
+    /// 恢复是幂等的：恢复后 State 变为 completed，不再重复触发。
+    /// </summary>
+    public ReasonixTaskStatus? TryAutoRecoverMissingReport(ReasonixTaskStatus task)
+    {
+        try
+        {
+            if (!IsMissingReportCandidate(task)) return null;
+            var evidence = ReasonixAutoRecovery.TryLoadEvidence(task.TaskDirectory);
+            if (!ReasonixAutoRecovery.ShouldRecover(task, evidence)) return null;
+            var recovered = ReasonixAutoRecovery.BuildRecoveredStatus(task, evidence!);
+            ReasonixAutoRecovery.WriteReports(task, evidence!);
+            ReasonixStatusJson.WriteStatus(Path.Combine(paths.ReasonixTasksDirectory, task.TaskId + ".json"), recovered);
+            return recovered;
+        }
+        catch { return null; }
+    }
+
+    /// <summary>
+    /// 从 PROGRESS.json 宽容读取已通过（passed）的 workerChecks 名称（排除视觉/GUI/发布等已移交 GPT 的项）。
+    /// 文件缺失、损坏、字段非法一律返回空列表，绝不抛异常。
+    /// </summary>
+    private static IReadOnlyList<string> ReadPassedWorkerChecks(string progressPath)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(progressPath) || !File.Exists(progressPath)) return [];
+            using var document = JsonDocument.Parse(
+                File.ReadAllText(progressPath, Encoding.UTF8),
+                new JsonDocumentOptions { CommentHandling = JsonCommentHandling.Skip, AllowTrailingCommas = true });
+            if (document.RootElement.ValueKind != JsonValueKind.Object) return [];
+            if (!document.RootElement.TryGetProperty("checks", out var checks) || checks.ValueKind != JsonValueKind.Array) return [];
+            var result = new List<string>();
+            foreach (var item in checks.EnumerateArray())
+            {
+                if (item.ValueKind != JsonValueKind.Object) continue;
+                if (!item.TryGetProperty("status", out var status)
+                    || !string.Equals(status.GetString(), "passed", StringComparison.OrdinalIgnoreCase)) continue;
+                if (!item.TryGetProperty("name", out var name) || string.IsNullOrWhiteSpace(name.GetString())) continue;
+                var check = name.GetString()!.Trim();
+                if (ReasonixAcceptanceFilter.ShouldDelegateToGpt(check)) continue;
+                result.Add(check);
+            }
+            return result;
+        }
+        catch { return []; }
+    }
+
     private static bool IsProcessAlive(int processId)
     {
         if (processId <= 0) return false;
@@ -601,7 +678,7 @@ public sealed class ReasonixIntegrationService
         if (!task.IsRunning || task.HostProcessId <= 0) return;
         try { Process.GetProcessById(task.HostProcessId).Kill(entireProcessTree: true); } catch { }
         var stopped = task with { State = "cancelled", Phase = "已停止", UpdatedUtc = DateTime.UtcNow, Message = "用户从 Codex Helper 停止了任务。", FailureKind = "user-stopped", FailureSummary = "用户主动停止任务。" };
-        AtomicFile.WriteAllText(Path.Combine(paths.ReasonixTasksDirectory, task.TaskId + ".json"), JsonSerializer.Serialize(stopped, new JsonSerializerOptions { WriteIndented = true }));
+        ReasonixStatusJson.WriteStatus(Path.Combine(paths.ReasonixTasksDirectory, task.TaskId + ".json"), stopped);
     }
 
     private static readonly string[] RetryContractFiles = ["SPEC.md", "ACCEPTANCE.md", "HANDOFF.md", "manifest.json"];
@@ -632,8 +709,40 @@ public sealed class ReasonixIntegrationService
         var lockPath = Path.Combine(task.ProjectRoot, ".codex-helper", "runs", ".reasonix.lock");
         if (IsLocked(lockPath)) return "存在任务锁占用，请稍后再试。";
         if (!File.Exists(Path.Combine(skillDirectory, "invoke-reasonix.ps1"))) return "缺少托管 invoke 脚本，无法重试。";
+        // P0-2 连续失败熔断：同一任务 missing-report 或 model-run-failed 累计达到 2 次（含当前尝试与
+        // attempts/ 归档）后不再允许一键无脑重试；用户主动停止（user-stopped/cancelled）不计入。
+        var breakerCount = CountCircuitBreakerFailures(task);
+        if (breakerCount >= 2)
+            return $"该任务已连续 {breakerCount} 次因缺少交付报告或模型运行失败（missing-report / model-run-failed），已触发重试熔断；请先检查任务合同、Reasonix 模型配置与失败日志，确认原因后再重试（用户主动停止不计入）。";
         return null;
     }
+
+    /// <summary>
+    /// P0-2 熔断计数：统计当前尝试与 attempts/ 归档中 failureKind 为 missing-report 或 model-run-failed
+    /// 的次数（不区分大小写）；用户主动停止（user-stopped/cancelled）与其他失败类型不计入。
+    /// </summary>
+    public int CountCircuitBreakerFailures(ReasonixTaskStatus task)
+    {
+        if (task is null) return 0;
+        var count = 0;
+        if (IsCircuitBreakerFailure(task.FailureKind)) count++;
+        try
+        {
+            var attemptsDir = Path.Combine(Path.GetFullPath(task.TaskDirectory), "attempts");
+            if (!Directory.Exists(attemptsDir)) return count;
+            foreach (var directory in Directory.EnumerateDirectories(attemptsDir))
+            {
+                var archived = ReasonixStatusJson.TryReadStatus(Path.Combine(directory, "status.json"));
+                if (archived is not null && IsCircuitBreakerFailure(archived.FailureKind)) count++;
+            }
+        }
+        catch { }
+        return count;
+    }
+
+    private static bool IsCircuitBreakerFailure(string? failureKind)
+        => string.Equals(failureKind, "missing-report", StringComparison.OrdinalIgnoreCase)
+           || string.Equals(failureKind, "model-run-failed", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// 安全原地重试（B5–B7）：先复制并验证归档、再清理根运行产物；写 RETRY_CONTEXT；
@@ -671,7 +780,7 @@ public sealed class ReasonixIntegrationService
                 copied.Add(file);
             }
             // 状态快照（脱敏：仅状态内容，不含合同正文）。
-            AtomicFile.WriteAllText(Path.Combine(archiveDir, "status.json"), JsonSerializer.Serialize(task, new JsonSerializerOptions { WriteIndented = true }));
+            ReasonixStatusJson.WriteStatus(Path.Combine(archiveDir, "status.json"), task);
             foreach (var file in copied)
                 if (!File.Exists(Path.Combine(archiveDir, file))) throw new InvalidOperationException($"归档验证失败：{file}。");
 
@@ -684,10 +793,14 @@ public sealed class ReasonixIntegrationService
 
             // 3) 写 RETRY_CONTEXT，指向归档内 FAILURE_REPORT 相对路径，不引用已移走的根文件、不嵌入自由 FailureSummary。
             var hasFailureReport = File.Exists(Path.Combine(archiveDir, "FAILURE_REPORT.md"));
+            // P1-7 避免重复验收：RETRY_CONTEXT 明确记录归档 PROGRESS.json 中已通过的 workerChecks
+            //（排除视觉/GPT 项），后续只运行未完成检查，不重复构建或重复视觉检查。
+            var passedChecks = ReadPassedWorkerChecks(Path.Combine(archiveDir, "PROGRESS.json"));
+            var passedLine = passedChecks.Count > 0 ? string.Join("、", passedChecks.Take(10)) : "（归档内无已通过记录）";
             var context = $$"""
 # RETRY_CONTEXT.md
 
-从当前源码继续收尾本次 Reasonix 任务。优先读取归档内失败摘要与 ACCEPTANCE.md 中未满足的验收项，聚焦剩余范围收敛；不要重新分析已完成的部分，不要重跑已通过的检查。完成后照常写 EXECUTION_REPORT.md。
+从当前源码继续收尾本次 Reasonix 任务。优先读取归档内失败摘要与 WORKER_ACCEPTANCE.md 中未满足的 workerChecks，聚焦剩余范围收敛；不要重新分析已完成的部分，不要重跑已通过的检查，也不要读取 ACCEPTANCE.md。完成后只写 EXECUTION_REPORT.md，不写 REVIEW_PACKET.md（由 Helper 自动生成）。
 
 - 任务：{{task.TaskId}}
 - 本次尝试编号：{{newAttempt}}
@@ -695,10 +808,14 @@ public sealed class ReasonixIntegrationService
 - 原 CodexThreadId：{{task.CodexThreadId ?? "-"}}
 - 失败报告：attempts/{{archiveName}}/FAILURE_REPORT.md
 {{(hasFailureReport ? "" : "（旧尝试未生成 FAILURE_REPORT.md 时可结合归档内 status.json 的状态信息。）")}}
+- 已通过 workerChecks（归档 PROGRESS.json，已排除视觉/GPT 项）：{{passedLine}}
+
+> 后续只运行尚未完成的检查；已通过检查不重复执行，不重复构建，不重复视觉检查。
 """;
             AtomicFile.WriteAllText(Path.Combine(taskDir, "RETRY_CONTEXT.md"), context);
 
             // 4) 递增 AttemptNumber 并置为 starting（同时使其不再是可重试状态，从而防双击/并发）。
+            // 新 attempt 重新初始化剩余百分比（单调保护从 0 起点重新计算）。
             var next = task with
             {
                 State = "starting",
@@ -710,10 +827,11 @@ public sealed class ReasonixIntegrationService
                 FailureSummary = null,
                 BudgetState = null,
                 BudgetOverrunSteps = null,
+                RemainingPercent = null,
                 HostProcessId = 0
             };
             var statusPath = Path.Combine(paths.ReasonixTasksDirectory, task.TaskId + ".json");
-            AtomicFile.WriteAllText(statusPath, JsonSerializer.Serialize(next, new JsonSerializerOptions { WriteIndented = true }));
+            ReasonixStatusJson.WriteStatus(statusPath, next);
 
             // 5) 启动 runner 并回写启动 PID（starting 状态下提供可靠进程绑定）。
             var runner = Path.Combine(skillDirectory, "invoke-reasonix.ps1");
@@ -721,8 +839,8 @@ public sealed class ReasonixIntegrationService
             if (pid <= 0) throw new InvalidOperationException("启动托管脚本失败。");
             try
             {
-                var latest = JsonSerializer.Deserialize<ReasonixTaskStatus>(File.ReadAllText(statusPath, Encoding.UTF8), new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
-                AtomicFile.WriteAllText(statusPath, JsonSerializer.Serialize((latest ?? next) with { HostProcessId = pid }, new JsonSerializerOptions { WriteIndented = true }));
+                var latest = ReasonixStatusJson.TryReadStatus(statusPath) ?? next;
+                ReasonixStatusJson.WriteStatus(statusPath, latest with { HostProcessId = pid });
             }
             catch { /* 状态竞争时以已完成写入为准，不阻断 */ }
 
@@ -754,7 +872,7 @@ public sealed class ReasonixIntegrationService
         try
         {
             var statusPath = Path.Combine(paths.ReasonixTasksDirectory, task.TaskId + ".json");
-            AtomicFile.WriteAllText(statusPath, JsonSerializer.Serialize(task, new JsonSerializerOptions { WriteIndented = true }));
+            ReasonixStatusJson.WriteStatus(statusPath, task);
         }
         catch { }
 
@@ -854,7 +972,7 @@ public sealed class ReasonixIntegrationService
         {
             var block = $$"""
 {{GuidanceStart}}
-For implementation tasks that change project files, GPT is the planner and judge and Reasonix is the executor. GPT must create a unique task directory under `<project>/.codex-helper/runs/run-<timestamp>-<guid>/` containing `SPEC.md`, `ACCEPTANCE.md`, `HANDOFF.md`, and `manifest.json`. Then invoke the `reasonix-executor` skill runner with only the absolute project root and task directory and **no command timeout** (the host waits indefinitely, without polling, until Reasonix exits; there is no task-duration limit). Do not configure a fixed one-hour or any other finite timeout for this command; only a user-initiated Stop in Codex Helper or closing Codex should end it. The same GPT turn resumes and performs acceptance after the runner returns. Do not poll the event log. Codex Helper shows a live event view; the session syncs to Reasonix Desktop once its session file appears. After the runner returns, inspect `REVIEW_PACKET.md`, the actual diff, and rerun acceptance checks. GPT owns visual acceptance and gptChecks/releaseChecks; Reasonix performs implementation and workerChecks only. Execution intensity (auto/fast/standard/strict) is declared in manifest.json or inferred from the contract scope; Fast/Standard never auto-start review subagents. The manifest.json budget fields are `budgetSteps` (soft budget) and `maxSteps` (hard cap); `estimatedSteps` is not supported. Do not use Codex native subagents. Pure questions and read-only reviews stay in GPT.
+For implementation tasks that change project files, GPT is the planner and judge. Route implementation by task scale (3.4.1, three tiers; defaults, not security-authorization expansion): (1) GPT implements micro tasks directly — no more than 2 files and about 80 effective changed lines, no new cross-module/public interface, no security/credentials/data-migration/backup-restore/concurrency-coordination/install-upgrade/shared-runner/core-config involvement, and reliably verifiable with one focused test; typical: copy, styling, small UI, test assertions, simple clear bug. (2) Route to a single Reasonix contract when any holds: at least 3 files or more than about 80 lines; a full new feature, cross-module interface, or heavy code reading; a high-risk domain; multiple rounds of implement-and-test; or the user explicitly requests Reasonix/DeepSeek. (3) Reasonix limited parallel only for medium/large tasks containing at least two independent modules whose interfaces are frozen, write sets do not overlap, no rewiring is needed, and merge is purely mechanical; otherwise fall back to a single contract. Boundaries: if a GPT micro-fix crosses a threshold mid-way, stop expanding and convert to a Reasonix contract; after Reasonix finishes the main body, only acceptance-stage fixes within 2 files/80 lines and low-risk are done directly by GPT, without starting a new Reasonix. GPT must create a unique task directory under `<project>/.codex-helper/runs/run-<timestamp>-<guid>/` containing `SPEC.md`, `ACCEPTANCE.md`, `HANDOFF.md`, and `manifest.json`. Then invoke the `reasonix-executor` skill runner with only the absolute project root and task directory and **no command timeout** (the host waits indefinitely, without polling, until Reasonix exits; there is no task-duration limit). Do not configure a fixed one-hour or any other finite timeout for this command; only a user-initiated Stop in Codex Helper or closing Codex should end it. The same GPT turn resumes and performs acceptance after the runner returns. Do not poll the event log. Codex Helper shows a live event view; the session syncs to Reasonix Desktop once its session file appears. After the runner returns, inspect `REVIEW_PACKET.md` and the actual diff, then independently rerun only the focused acceptance checks affected by the changes (incremental acceptance); REVIEW_PACKET.md contains an acceptance scope suggestion (focused/full/release/security/visual) derived from the actual changed files — GPT follows it for incremental acceptance, and always runs the full regression for high-risk, release, security, or contract-mandated changes. GPT owns visual acceptance and gptChecks/releaseChecks; Reasonix performs implementation and workerChecks only, reads only `SPEC.md`/`HANDOFF.md`/`manifest.json`/`WORKER_ACCEPTANCE.md` (never `ACCEPTANCE.md`), and writes only `EXECUTION_REPORT.md` (`REVIEW_PACKET.md` is generated by Helper, not by Reasonix). HANDOFF.md must explicitly state allowed-read files, allowed-write files, and direct dependencies, and must forbid recursive scanning once the goal is clear. Execution intensity (auto/fast/standard/strict) is declared in manifest.json or inferred from the contract scope; Fast/Standard never auto-start review subagents; DeepSeek default effort is low except Strict/major (high). The manifest.json budget fields are `budgetSteps` (soft budget) and `maxSteps` (hard cap); `estimatedSteps` is not supported. Do not use Codex native subagents. Pure questions and read-only reviews stay in GPT. Parallel collaboration: implementation tasks should first be smartly split; tasks that are independent and have non-overlapping write sets may run in parallel, up to the configured max concurrency (1..3); tasks sharing public files, depending on each other, or touching dirty files must run serially; Reasonix executes and GPT merges and accepts. Never force every request to run in parallel — evaluate independence first. Mechanical merge rule (3.4.0): only split an implementation task into parallel sub-contracts when the merge is purely mechanical — interfaces are frozen, no rewiring or shared UI/config/public entry is needed, and the sub-tasks declare they can be merged by Git/Helper; a task that still needs rewiring or has an unfrozen interface must run serially. Do not split when merging would require Reasonix to re-understand or re-encode. Merge conflict-free results mechanically via Git/Helper; only re-encode on real conflicts.
 {{VisualBoundaryRule}}
 {{GuidanceEnd}}
 """;
@@ -878,7 +996,7 @@ description: Execute an already planned implementation task through the managed 
 GPT remains planner and judge. This skill only launches Reasonix as the implementation hand.
 
 Run `powershell.exe -NoProfile -ExecutionPolicy Bypass -File invoke-reasonix.ps1 -ProjectRoot <absolute project root> -TaskDirectory <absolute run directory>`. The runner binds the newest active user Codex task automatically; pass `-CodexThreadId <uuid>` when the current thread id is explicitly available.
-Never pass the task body as a command-line argument. Run the command with **no command timeout** (wait indefinitely; the host has no task-duration limit) and wait for it to return; this consumes no repeated GPT turns and must not be replaced by log polling. Do not configure a fixed one-hour or any other finite timeout for this command — only user-initiated Stop in Codex Helper or closing Codex should end it. Tell the user the task is visible in Codex Helper (live event view) and will be synced to Reasonix Desktop once its session file appears. After completion, read REVIEW_PACKET.md and EXECUTION_REPORT.md, inspect actual changed files, and independently rerun acceptance checks in this same GPT turn. GPT owns visual acceptance and gptChecks/releaseChecks; Reasonix performs implementation and workerChecks only. Execution intensity (auto/fast/standard/strict) comes from manifest.json or is inferred; Fast/Standard never auto-start review subagents. The manifest.json budget fields are `budgetSteps` (soft budget) and `maxSteps` (hard cap); `estimatedSteps` is not supported. Do not commit, push, reset, clean, delete important files, modify credentials, or install dependencies unless the user explicitly authorized it.
+Never pass the task body as a command-line argument. Run the command with **no command timeout** (wait indefinitely; the host has no task-duration limit) and wait for it to return; this consumes no repeated GPT turns and must not be replaced by log polling. Do not configure a fixed one-hour or any other finite timeout for this command — only user-initiated Stop in Codex Helper or closing Codex should end it. Tell the user the task is visible in Codex Helper (live event view) and will be synced to Reasonix Desktop once its session file appears. After completion, read REVIEW_PACKET.md and EXECUTION_REPORT.md, inspect actual changed files, and independently rerun only the focused acceptance checks affected by the changes (incremental acceptance; REVIEW_PACKET.md includes an acceptance scope suggestion derived from the actual changed files — follow it, and always run the full regression for high-risk, release, security, or contract-mandated changes) in this same GPT turn. GPT owns visual acceptance and gptChecks/releaseChecks; Reasonix performs implementation and workerChecks only, reads only SPEC.md/HANDOFF.md/manifest.json/WORKER_ACCEPTANCE.md (never ACCEPTANCE.md), and writes only EXECUTION_REPORT.md (REVIEW_PACKET.md is generated by Helper, not by Reasonix). Execution intensity (auto/fast/standard/strict) comes from manifest.json or is inferred; Fast/Standard never auto-start review subagents; DeepSeek default effort is low except Strict/major (high). The manifest.json budget fields are `budgetSteps` (soft budget) and `maxSteps` (hard cap); `estimatedSteps` is not supported. Do not commit, push, reset, clean, delete important files, modify credentials, or install dependencies unless the user explicitly authorized it.
 {{VisualBoundaryRule}}
 """;
 
@@ -928,7 +1046,7 @@ $ErrorActionPreference='Stop'
 $project=[IO.Path]::GetFullPath($ProjectRoot).TrimEnd('\')
 $task=[IO.Path]::GetFullPath($TaskDirectory).TrimEnd('\')
 $taskId=Split-Path $task -Leaf
-$events=Join-Path $task 'events.jsonl'; $metrics=Join-Path $task 'metrics.json'; $report=Join-Path $task 'EXECUTION_REPORT.md'; $review=Join-Path $task 'REVIEW_PACKET.md'; $helperErr=Join-Path $task 'helper-stderr.txt'
+$events=Join-Path $task 'events.jsonl'; $metrics=Join-Path $task 'metrics.json'; $report=Join-Path $task 'EXECUTION_REPORT.md'; $review=Join-Path $task 'REVIEW_PACKET.md'; $helperErr=Join-Path $task 'helper-stderr.txt'; $workerAccept=Join-Path $task 'WORKER_ACCEPTANCE.md'
 $started=[DateTime]::UtcNow; $startedText=$started.ToString('o'); $startTicks=$started.Ticks
 $script:count=0; $script:reasonixSession=''; $script:desktopState='awaiting-session'; $script:desktopDiagnostic='not-attempted'
 $script:returnUri=if([string]::IsNullOrWhiteSpace($CodexThreadId)){''}else{'codex://threads/'+$CodexThreadId}; $script:returnState='pending'
@@ -940,7 +1058,11 @@ $script:lastEventKind=''; $script:lastToolName=''; $script:lastStage='analyzing'
 $script:attemptNumber=1
 $script:reasonixModel=''; $script:manifestDiagnostic=$null; $script:progressDiagnostic=$null
 $script:planIntensity='auto'; $script:planProfile='balanced'; $script:planEffort='medium'; $script:planComplexity='medium'
-$script:planBudget=80; $script:planMaxSteps=$null; $script:planSource='inferred'; $script:allowAutoReview=$false; $script:workerChecks=@()
+$script:planBudget=80; $script:planMaxSteps=$null; $script:planSource='inferred'; $script:allowAutoReview=$false; $script:workerChecks=@(); $script:finalReadinessSeen=$false
+$script:startedUtc=$started
+$script:remainingPercent=$null; $script:currentCheck=''
+$script:contractDiagnostic=$null; $script:contractNormalized=$false; $script:contractBlocked=$false; $script:contractBlockReason=$null
+$script:gitBaseline=$null
 function Get-Progress {
   $progressPath=Join-Path $task 'PROGRESS.json'
   if(-not [IO.File]::Exists($progressPath)){ return $null }
@@ -976,10 +1098,21 @@ function Get-Progress {
     if($p.PSObject.Properties['taskId'] -and [string]$p.taskId -ne $taskId){ $script:progressDiagnostic='PROGRESS.json taskId 与任务不匹配，已忽略'; return $null }
     $summary=''
     if($p.PSObject.Properties['summary'] -and $null-ne$p.summary){ $summary=[string]$p.summary; if($summary.Length -gt 240){ $summary=$summary.Substring(0,240); $script:progressDiagnostic='PROGRESS.json summary 超长已截断' } }
+    $currentCheck=''
+    if($p.PSObject.Properties['currentCheck'] -and $null-ne$p.currentCheck){ $currentCheck=[string]$p.currentCheck; if($currentCheck.Length -gt 120){ $currentCheck=$currentCheck.Substring(0,120) } }
     $completed=-1; $total=-1
     if($p.PSObject.Properties['completedChecks'] -and $null-ne$p.completedChecks){ $completed=[int]$p.completedChecks }
     if($p.PSObject.Properties['totalChecks'] -and $null-ne$p.totalChecks){ $total=[int]$p.totalChecks }
-    # 仅当标准 completedChecks/totalChecks 未显式提供时，从 steps 数组兜底统计（只统计对象项，绝不展示 step 名称/内容）。
+    # 标准 checks 数组（名称、状态 pending/running/passed/failed）：只统计合法对象项；
+    # passed 计数排除命中视觉/GUI/发布职责的项（Helper 绝不把视觉/GPT 检查计为 worker 完成）。
+    if(($completed -lt 0 -or $total -lt 0) -and $p.PSObject.Properties['checks'] -and $p.checks -is [System.Array]){
+      $validChecks=@($p.checks | Where-Object { $_ -is [System.Management.Automation.PSCustomObject] -and $null-ne$_.status -and @('pending','running','passed','failed') -contains ([string]$_.status).ToLowerInvariant() })
+      if($validChecks.Count -gt 0){
+        if($total -lt 0){ $total=$validChecks.Count }
+        if($completed -lt 0){ $completed=@($validChecks | Where-Object { ([string]$_.status).ToLowerInvariant() -eq 'passed' -and -not (Test-IsGptOrReleaseCheck ([string]$_.name)) }).Count }
+      }
+    }
+    # 仅当标准 completedChecks/totalChecks/checks 均未显式提供时，从旧式 steps 数组兜底统计（只统计对象项，绝不展示 step 名称/内容）。
     if(($completed -lt 0 -or $total -lt 0) -and $p.PSObject.Properties['steps'] -and $p.steps -is [System.Array]){
       $valid=@($p.steps | Where-Object { $_ -is [System.Management.Automation.PSCustomObject] }).Count
       if($valid -gt 0){
@@ -995,12 +1128,80 @@ function Get-Progress {
       if([datetime]::TryParse($candidate,[Globalization.CultureInfo]::InvariantCulture,[Globalization.DateTimeStyles]::RoundtripKind,[ref]$dt)){
         $dtUtc=$dt.ToUniversalTime()
         if($dtUtc -gt ([datetime]::UtcNow.AddMinutes(2))){ $dtUtc=[datetime]::UtcNow; $script:progressDiagnostic='PROGRESS.json updatedUtc 明显晚于当前时间，已夹到观察时间' }
+        # 陈旧内容安全忽略：updatedUtc 明显早于任务开始（>5 分钟）视为任务开始前残留，不采信。
+        elseif($dtUtc -lt $script:startedUtc.AddMinutes(-5)){ $script:progressDiagnostic='PROGRESS.json updatedUtc 陈旧（早于任务开始），已忽略'; return $null }
         $updated=$dtUtc.ToString('o')
       }
       else { $script:progressDiagnostic='PROGRESS.json updatedUtc 格式非法，已忽略' }
     }
-    return [pscustomobject]@{stage=$stage;summary=$summary;completedChecks=$completed;totalChecks=$total;updatedUtc=$updated}
+    return [pscustomobject]@{stage=$stage;summary=$summary;completedChecks=$completed;totalChecks=$total;updatedUtc=$updated;currentCheck=$currentCheck}
   }catch{ $script:progressDiagnostic='PROGRESS.json 无法解析，已忽略'; return $null }
+}
+function Get-PassedWorkerChecks {
+  # P1-7/自动恢复证据：读取 PROGRESS.json 中 status=passed 的 workerCheck 名称（排除视觉/GUI/发布等已移交 GPT 的项）。
+  $progressPath=Join-Path $task 'PROGRESS.json'
+  if(-not [IO.File]::Exists($progressPath)){ return @() }
+  try{
+    $p=[IO.File]::ReadAllText($progressPath,[Text.Encoding]::UTF8)|ConvertFrom-Json
+    if($p.PSObject.Properties['checks'] -and $p.checks -is [System.Array]){
+      return @($p.checks | Where-Object { $_ -is [System.Management.Automation.PSCustomObject] -and $null-ne$_.name -and $null-ne$_.status -and ([string]$_.status).ToLowerInvariant() -eq 'passed' -and -not (Test-IsGptOrReleaseCheck ([string]$_.name)) } | ForEach-Object { [string]$_.name } | Select-Object -First 20)
+    }
+  }catch{}
+  return @()
+}
+function Get-BudgetHistoryPath {
+  # P1-5 历史预算统计文件：与 settings.json 同目录（AppPaths.BaseDirectory 下）。
+  try{
+    $settingsPath='{{{settingsPath.Replace("'", "''")}}}'
+    if(-not [string]::IsNullOrWhiteSpace($settingsPath)){ return Join-Path (Split-Path $settingsPath -Parent) 'reasonix-budget-history.json' }
+  }catch{}
+  return $null
+}
+function Get-BudgetSamples([string]$complexity){
+  $path=Get-BudgetHistoryPath
+  if([string]::IsNullOrWhiteSpace($path) -or -not [IO.File]::Exists($path)){ return @() }
+  try{
+    $h=[IO.File]::ReadAllText($path,[Text.Encoding]::UTF8)|ConvertFrom-Json
+    if($h.PSObject.Properties['samples']){
+      $key=((($project.ToLowerInvariant() -replace '[:\\/]+','-'))+'|'+([string]$complexity).ToLowerInvariant())
+      $prop=$h.samples.PSObject.Properties[$key]
+      if($null-ne$prop -and $prop.Value -is [System.Array]){
+        return @($prop.Value | Where-Object { $null-ne$_ -and [int]::TryParse([string]$_,[ref]([int]0)) } | ForEach-Object { [int]$_ })
+      }
+    }
+  }catch{}
+  return @()
+}
+function Calibrate-Budget([int]$defaultBudget,[string]$complexity){
+  # P1-5 纯函数规则与 C# ReasonixBudgetHistory.Calibrate 完全一致：
+  # 样本 <3 回退默认；排序去首尾各 1 个异常值后取平均；钳制到 [max(8, default/2), min(200, default*2)]。
+  $samples=@(Get-BudgetSamples $complexity)
+  if($samples.Count -lt 3){ return $defaultBudget }
+  $sorted=@($samples | Sort-Object)
+  $trimmed=@($sorted | Select-Object -Skip 1 | Select-Object -First ([Math]::Max(0,$sorted.Count-2)))
+  if($trimmed.Count -eq 0){ return $defaultBudget }
+  $avg=[int][Math]::Round((($trimmed | Measure-Object -Average).Average))
+  $lower=[Math]::Max(8,[int][Math]::Floor($defaultBudget/2))
+  $upper=[Math]::Min(200,$defaultBudget*2)
+  return [Math]::Max($lower,[Math]::Min($upper,$avg))
+}
+function Record-BudgetSample([int]$steps){
+  # P1-5 成功任务结束后记录 (项目, 复杂度) 的实际 steps；样本保留最近 20 条，原子写入。
+  if($steps -lt 0){ return }
+  $path=Get-BudgetHistoryPath
+  if([string]::IsNullOrWhiteSpace($path)){ return }
+  try{
+    $history=$null
+    if([IO.File]::Exists($path)){ $history=[IO.File]::ReadAllText($path,[Text.Encoding]::UTF8)|ConvertFrom-Json }
+    if($null-eq$history -or $history.PSObject.Properties['samples'] -eq $null){ $history=[pscustomobject]@{samples=[pscustomobject]@{}} }
+    $key=((($project.ToLowerInvariant() -replace '[:\\/]+','-'))+'|'+([string]$script:planComplexity).ToLowerInvariant())
+    $list=@()
+    $prop=$history.samples.PSObject.Properties[$key]
+    if($null-ne$prop -and $prop.Value -is [System.Array]){ $list=@($prop.Value | Where-Object { $null-ne$_ -and [int]::TryParse([string]$_,[ref]([int]0)) }) }
+    $list=@($list | Select-Object -Last 19) + $steps
+    $history.samples | Add-Member -NotePropertyName $key -NotePropertyValue $list -Force | Out-Null
+    Write-JsonAtomic $path $history
+  }catch{}
 }
 function Get-ReasonixModel {
   $configPath=Join-Path $ReasonixHome 'config.toml'
@@ -1019,8 +1220,9 @@ function Get-StageRank([string]$s){
 }
 function Save-Status([string]$state,[string]$phase,[string]$message){
   $progress=Get-Progress
-  $pgSummary=$null; $pgUpdated=$null; $pgDone=-1; $pgTotal=-1
-  if($null-ne$progress){ $pgSummary=$progress.summary; $pgUpdated=$progress.updatedUtc; $pgDone=$progress.completedChecks; $pgTotal=$progress.totalChecks }
+  $pgSummary=$null; $pgUpdated=$null; $pgDone=-1; $pgTotal=-1; $pgCurrent=''
+  if($null-ne$progress){ $pgSummary=$progress.summary; $pgUpdated=$progress.updatedUtc; $pgDone=$progress.completedChecks; $pgTotal=$progress.totalChecks; $pgCurrent=[string]$progress.currentCheck }
+  if(-not [string]::IsNullOrWhiteSpace($pgCurrent)){ $script:currentCheck=$pgCurrent }
   # Helper 主导基础阶段（F2/F4）：默认 analyzing→implementing；EXECUTION_REPORT 出现→reporting。
   $helperStage=$script:lastStage
   if([IO.File]::Exists($report)){ $helperStage='reporting' }
@@ -1034,8 +1236,11 @@ function Save-Status([string]$state,[string]$phase,[string]$message){
     elseif(@('analyzing','implementing','testing','reporting','blocked') -contains $progressStage){ $allow=$true }
     if($allow -and (Get-StageRank $progressStage) -ge (Get-StageRank $helperStage)){ $pgStage=$progressStage; $pgSource='reasonix' }
   }
-  # 成功终态强制 done；失败不得伪装 done。
+  # 成功终态强制 done；失败不得伪装 done（P0-3 阶段归一：完成必为 done，其余终态保留失败发生阶段）。
   if($state -eq 'completed'){ $pgStage='done'; $pgSource='helper' }
+  # P0-3 状态一致性：状态文件保留运行中计算的单调剩余百分比（同一 attempt 重启恢复继承、只降不升）；
+  # 完成/失败/取消/等待验收的“0% 与阶段归一”由 Helper 读取侧 ReasonixStatusJson.NormalizeTerminalState
+  # 统一执行（展示与消费侧归零），状态文件继续统一走标准 JSON 原子写入，不在此处覆盖单调数据。
   # 软预算（A3）：达到预算=warning，达到150%=exceeded；都不终止任务。
   $budgetState=$null; $overrun=$null
   if($script:budgetFinalReady){
@@ -1047,7 +1252,22 @@ function Save-Status([string]$state,[string]$phase,[string]$message){
       $overrun=if($script:stepCount -gt $script:planBudget){[int]($script:stepCount-$script:planBudget)}else{0}
     }
   }
-  $data=[ordered]@{TaskId=$taskId;ProjectRoot=$project;TaskDirectory=$task;State=$state;Phase=$phase;PermissionMode='{{{permissionMode}}}';StartedUtc=$startedText;UpdatedUtc=[DateTime]::UtcNow.ToString('o');HostProcessId=$PID;EventCount=$script:count;Message=$message;CodexThreadId=$CodexThreadId;ReasonixSessionPath=$script:reasonixSession;ReturnUri=$script:returnUri;ReturnState=$script:returnState;ExecutionIntensity=$script:planIntensity;ExecutionProfile=$script:planProfile;ExecutionEffort=$script:planEffort;ExecutionModel=$script:reasonixModel;EstimatedSteps=$script:planBudget;ModelTurnCount=$script:stepCount;StepCount=$(if($script:finalSteps -ge 0){$script:finalSteps}else{$script:stepCount});ToolCallCount=$script:toolCallCount;ReasoningEventCount=$script:reasoningCount;TokenInput=$script:tokenInput;TokenOutput=$script:tokenOutput;CacheHitTokens=$script:cacheHit;DesktopLive=(-not [string]::IsNullOrWhiteSpace($script:reasonixSession));DesktopState=$script:desktopState;ExecutionSource=$script:planSource;ProgressStage=$pgStage;ProgressSummary=$pgSummary;ProgressUpdatedUtc=$pgUpdated;CompletedChecks=$pgDone;TotalChecks=$pgTotal;ManifestDiagnostic=$script:manifestDiagnostic;ProgressDiagnostic=$script:progressDiagnostic;BudgetState=$budgetState;BudgetOverrunSteps=$overrun;LastEventKind=$script:lastEventKind;LastToolName=$script:lastToolName;FailureKind=$script:failureKind;FailureSummary=$script:failureSummary;AttemptNumber=$script:attemptNumber;ProgressSource=$pgSource}
+  # 预计剩余百分比（A2 单调保护）：候选值取“workerChecks 完成比例”与“步骤/软预算”较大完成比例的剩余，
+  # 与 C# ReasonixUiText.RunningRemainingPercent 同规则；同一 attempt 内只允许下降或不变（min 单调），
+  # 范围 5–100；新 attempt/新任务重新初始化（remainingPercent 为 null 时直接采用候选）。
+  $candidate=$null
+  $checksRatio=$null; $stepsRatio=$null
+  if($pgTotal -gt 0 -and $pgDone -ge 0){ $checksRatio=[Math]::Min($pgDone,$pgTotal)/$pgTotal }
+  if($script:planBudget -gt 0 -and $script:stepCount -gt 0){ $stepsRatio=$script:stepCount/$script:planBudget }
+  if($null-ne$checksRatio -and $null-ne$stepsRatio){ $candidate=[Math]::Max($checksRatio,$stepsRatio) }
+  elseif($null-ne$checksRatio){ $candidate=$checksRatio }
+  elseif($null-ne$stepsRatio){ $candidate=$stepsRatio }
+  if($null-ne$candidate){
+    $candidateRemaining=[int][Math]::Round([Math]::Max(0.0,[Math]::Min(1.0,1.0-$candidate))*100.0)
+    if($candidateRemaining -lt 5){ $candidateRemaining=5 }
+    if($null-eq$script:remainingPercent -or $candidateRemaining -lt $script:remainingPercent){ $script:remainingPercent=$candidateRemaining }
+  }
+  $data=[ordered]@{TaskId=$taskId;ProjectRoot=$project;TaskDirectory=$task;State=$state;Phase=$phase;PermissionMode='{{{permissionMode}}}';StartedUtc=$startedText;UpdatedUtc=[DateTime]::UtcNow.ToString('o');HostProcessId=$PID;EventCount=$script:count;Message=$message;CodexThreadId=$CodexThreadId;ReasonixSessionPath=$script:reasonixSession;ReturnUri=$script:returnUri;ReturnState=$script:returnState;ExecutionIntensity=$script:planIntensity;ExecutionProfile=$script:planProfile;ExecutionEffort=$script:planEffort;ExecutionModel=$script:reasonixModel;EstimatedSteps=$script:planBudget;ModelTurnCount=$script:stepCount;StepCount=$(if($script:finalSteps -ge 0){$script:finalSteps}else{$script:stepCount});ToolCallCount=$script:toolCallCount;ReasoningEventCount=$script:reasoningCount;TokenInput=$script:tokenInput;TokenOutput=$script:tokenOutput;CacheHitTokens=$script:cacheHit;DesktopLive=(-not [string]::IsNullOrWhiteSpace($script:reasonixSession));DesktopState=$script:desktopState;ExecutionSource=$script:planSource;ProgressStage=$pgStage;ProgressSummary=$pgSummary;ProgressUpdatedUtc=$pgUpdated;CompletedChecks=$pgDone;TotalChecks=$pgTotal;ManifestDiagnostic=$script:manifestDiagnostic;ProgressDiagnostic=$script:progressDiagnostic;BudgetState=$budgetState;BudgetOverrunSteps=$overrun;LastEventKind=$script:lastEventKind;LastToolName=$script:lastToolName;FailureKind=$script:failureKind;FailureSummary=$script:failureSummary;AttemptNumber=$script:attemptNumber;ProgressSource=$pgSource;RemainingPercent=$script:remainingPercent;CurrentCheck=$script:currentCheck;ContractDiagnostic=$script:contractDiagnostic;ContractNormalized=$script:contractNormalized}
   $tmp=$StatusPath+'.status-'+[Guid]::NewGuid().ToString('N')+'.tmp'
   try{[IO.File]::WriteAllText($tmp,($data|ConvertTo-Json),[Text.UTF8Encoding]::new($false));Move-Item -LiteralPath $tmp -Destination $StatusPath -Force}
   finally{if([IO.File]::Exists($tmp)){Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue}}
@@ -1091,7 +1311,7 @@ function Resolve-ExecutionPlan {
     $complexityRaw=if($manifest.PSObject.Properties['complexity']){$manifest.complexity}elseif($manifest.PSObject.Properties['executionComplexity']){$manifest.executionComplexity}else{$null}
     if($complexityRaw -and @('small','medium','major') -contains ([string]$complexityRaw).ToLowerInvariant()){ $complexity=([string]$complexityRaw).ToLowerInvariant(); $declared=$true }
     $profileRaw=if($manifest.PSObject.Properties['profile']){$manifest.profile}elseif($manifest.PSObject.Properties['executionProfile']){$manifest.executionProfile}else{$null}
-    if($profileRaw -and @('economy','balanced','delivery') -contains ([string]$profileRaw).ToLowerInvariant()){ $profile=([string]$profileRaw).ToLowerInvariant(); $declared=$true }
+    if($profileRaw -and @('economy','balanced','delivery') -contains ([string]$profileRaw).ToLowerInvariant()){ $declared=$true }
     $effortRaw=if($manifest.PSObject.Properties['effort']){$manifest.effort}elseif($manifest.PSObject.Properties['executionEffort']){$manifest.executionEffort}else{$null}
     if($effortRaw -and @('low','medium','high','max') -contains ([string]$effortRaw).ToLowerInvariant()){ $effort=([string]$effortRaw).ToLowerInvariant(); $declared=$true }
     $maxStepsRaw=if($manifest.PSObject.Properties['maxSteps']){$manifest.maxSteps}elseif($manifest.PSObject.Properties['executionMaxSteps']){$manifest.executionMaxSteps}else{$null}
@@ -1127,10 +1347,9 @@ function Resolve-ExecutionPlan {
     else{ $complexity='medium' }
   }
   if(-not $profile){
-    if($intensity -eq 'strict'){ $profile='delivery' }
-    elseif($intensity -eq 'fast' -or $intensity -eq 'standard'){ $profile='balanced' }
-    elseif($complexity -eq 'major'){ $profile='delivery' }
-    else{ $profile='balanced' }
+    # 托管 Reasonix 永远使用 balanced profile：manifest 显式 economy/delivery 仅作为输入被读取（计入 source=manifest），
+    # 最终 profile 恒为 balanced；Strict 只映射为 balanced + high（高 effort 由下方 InferEffort 分支负责）。
+    $profile='balanced'
   }
   if(-not $effort){
     $deepSeek=$script:reasonixModel.ToLowerInvariant().Contains('deepseek')
@@ -1141,11 +1360,199 @@ function Resolve-ExecutionPlan {
     elseif($complexity -eq 'small'){ $effort='low' }
     else{ $effort=if($deepSeek){'low'}else{'medium'} }
   }
-  if($null-eq$budget){ if($complexity -eq 'small'){$budget=25}elseif($complexity -eq 'major'){$budget=200}else{$budget=80} }
+  if($null-eq$budget){
+    if($complexity -eq 'small'){$budget=16}elseif($complexity -eq 'major'){$budget=56}else{$budget=35}
+    # P1-5 历史预算校准：仅对推断预算按同项目同复杂度最近成功任务的实际 steps 校准；
+    # manifest 显式声明的 budgetSteps 不参与校准（保持权威）。
+    $budget=Calibrate-Budget $budget $complexity
+  }
   $script:planIntensity=$intensity; $script:planProfile=$profile; $script:planEffort=$effort; $script:planComplexity=$complexity
   $script:planBudget=$budget; $script:planMaxSteps=$maxSteps; $script:planSource=if($declared){'manifest'}else{'inferred'}
-  $script:allowAutoReview=($intensity -eq 'strict' -or ($intensity -eq 'auto' -and $complexity -eq 'major'))
+  # 所有托管强度都禁止自动启动 review/security-review/explore 子代理；GPT 是唯一评审者。
+  $script:allowAutoReview=$false
   $script:workerChecks=$checks
+  $script:manifest=$manifest
+}
+function Test-IsGptOrReleaseCheck([string]$check){
+  $t=([string]$check).ToLowerInvariant()
+  $vis=@('screenshot','截屏','截图','view image','inspect image','view screenshot','inspect screenshot','看图片','看图','查看图片','查看图像','pixel','像素','dpi','visual acceptance','视觉验收','视觉验证','视觉判断','真实 gui','gui 烟测','gui smoke','gui 交互','gui 操作','gui 验收','gui 截图','screen capture','屏幕捕获','捕获屏幕','color','颜色','occlusion','遮挡','bitblt','printwindow')
+  $rel=@('publish','打包','zip','.zip','安装包','installer','setup.exe','build-release','github release','create release','release 页面','releases/download','package release','打包发布','发布 release','发布安装','发布项目','发布工作','发布验收')
+  $hit=$false
+  foreach($p in $vis){ if($t.Contains($p)){ $hit=$true; break } }
+  if(-not $hit){ foreach($p in $rel){ if($t.Contains($p)){ $hit=$true; break } } }
+  if(-not $hit){ return $false }
+  # 否定约束优先：命中明确视觉/GUI/发布关键词但同时含否定标记，视为“不截图/不看图/不发布”等约束说明而非待执行检查。
+  foreach($n in @('不','没有','无','禁止','避免','无需','不要','不得','切勿',"don't",'do not','should not','must not','never')){ if($t.Contains($n)){ return $false } }
+  return $true
+}
+function Write-WorkerAcceptance {
+  $legal=@(); $delegated=@()
+  foreach($c in $script:workerChecks){ if(Test-IsGptOrReleaseCheck $c){ $delegated += $c } else { $legal += $c } }
+  $content=@()
+  $content += '# WORKER_ACCEPTANCE.md'
+  $content += ''
+  $content += '此文件由 Codex Helper 执行器从 manifest.json 的 workerChecks 运行时派生生成，不是原始完整验收账本；完整 GPT 与发布验收仍归 GPT 独立完成。'
+  $content += ''
+  $content += '## workerChecks（Reasonix 需完成）'
+  if($legal.Count -gt 0){ foreach($c in $legal){ $content += ('- ' + $c) } }
+  else {
+    $content += '- 无显式 workerChecks。按通用自动可验证 worker 规则完成：运行项目现有完整测试套件一次并执行 Release 配置构建一次，均须成功；不得尝试任何视觉/GUI/发布工作。'
+  }
+  if($delegated.Count -gt 0){
+    $content += ''
+    $content += '## 已移交 GPT（不属于 Reasonix）'
+    $content += "- 共 $($delegated.Count) 项检查被判定为 GPT 视觉/GUI 或 release 打包/发布职责，已整体移交给 GPT 独立验收。其正文不在此披露（Reasonix 不截图、不看图、不作视觉结论，也不打包/发布）；Reasonix 不得尝试执行其中任何一项。"
+  }
+  $content += ''
+  $content += '## 执行规则'
+  $content += '- 每个 workerCheck 最多运行一次；已通过的不重跑；不迭代测试/Release 构建来回。'
+  $content += '- 不提交、不推送、不打包、不发布、不安装；不得创建实验项目；不运行 publish/package/build-release。'
+  $content += '- 视觉/GUI/发布验收全部归 GPT；Reasonix 不截图、不看图、不作视觉结论。'
+  $content += ''
+  $content += '## 报告要求'
+  $content += '- 将实施结果写入 EXECUTION_REPORT.md。'
+  $body=($content -join [Environment]::NewLine)
+  $tmp=$workerAccept+'.wa-'+[Guid]::NewGuid().ToString('N')+'.tmp'
+  try{[IO.File]::WriteAllText($tmp,$body,[Text.UTF8Encoding]::new($false));Move-Item -LiteralPath $tmp -Destination $workerAccept -Force}
+  finally{if([IO.File]::Exists($tmp)){Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue}}
+}
+function Test-Negation([string]$t){
+  foreach($n in @('不','没有','无','禁止','避免','无需','不要','不得','切勿',"don't",'do not','should not','must not','never')){ if($t.Contains($n)){ return $true } }
+  return $false
+}
+function Resolve-ContractHealth {
+  # 合同启动前体检与安全归一化（B1）：只检查当前任务合同的执行要求，不因历史文档出现单词而误报。
+  # 原始 SPEC/ACCEPTANCE/HANDOFF/manifest 不被覆盖；归一化只作用于派生运行合同（workerChecks/状态诊断）。
+  $script:contractDiagnostic=$null; $script:contractNormalized=$false; $script:contractBlocked=$false; $script:contractBlockReason=$null
+  $diag=New-Object System.Collections.Generic.List[string]
+  $handoff=''
+  $handoffPath=Join-Path $task 'HANDOFF.md'
+  if([IO.File]::Exists($handoffPath)){ try{ $handoff=[IO.File]::ReadAllText($handoffPath,[Text.Encoding]::UTF8) }catch{} }
+  $handoffLines=@($handoff -split "`r?`n")
+  $specText=''
+  $specPath=Join-Path $task 'SPEC.md'
+  if([IO.File]::Exists($specPath)){ try{ $specText=[IO.File]::ReadAllText($specPath,[Text.Encoding]::UTF8) }catch{} }
+  # 1) HANDOFF 肯定式要求 Reasonix 读取 ACCEPTANCE / 写 REVIEW_PACKET / 截图视觉交付（忽略含否定标记的约束说明行）。
+  $requiresReadAcceptance=$false; $requiresWritePacket=$false
+  foreach($line in $handoffLines){
+    if($line -match 'acceptance' -and $line -match '(read|reading|reads|读取|阅读|读)\s+(the\s+)?acceptance' -and -not (Test-Negation $line)){ $requiresReadAcceptance=$true }
+    if($line -match 'review_packet' -and $line -match '(write|writing|writes|写|写入|生成)\s+(the\s+)?review_?packet' -and -not (Test-Negation $line)){ $requiresWritePacket=$true }
+    if($line -match '(必须|务必|需)\s*(截图|进行视觉验收|视觉验收)|(must|required|need)\s+(to\s+)?(screenshot|take\s+screenshots|deliver\s+screenshots)|截图交付' -and -not (Test-Negation $line)){
+      $script:contractBlocked=$true; $script:contractBlockReason='合同要求 Reasonix 交付截图/视觉验收证据，但视觉验收归 GPT 且 Reasonix 禁止截图，无法安全修正。请修改 HANDOFF.md 后重试。'
+    }
+  }
+  if($requiresReadAcceptance){ $diag.Add('HANDOFF 要求 Reasonix 读取 ACCEPTANCE.md；已归一化：Reasonix 只读 SPEC/HANDOFF/manifest/WORKER_ACCEPTANCE，从不读 ACCEPTANCE。'); $script:contractNormalized=$true }
+  if($requiresWritePacket){ $diag.Add('HANDOFF 要求 Reasonix 写 REVIEW_PACKET；已归一化：REVIEW_PACKET 由 Helper 自动生成，Reasonix 只写 EXECUTION_REPORT。'); $script:contractNormalized=$true }
+  if($script:contractBlocked){ $script:contractDiagnostic=($diag -join '；'); return }
+  # 2) workerChecks 去重（保留首个，忽略空项）——同时供 Write-WorkerAcceptance 使用。
+  $unique=New-Object System.Collections.Generic.List[string]; $seen=@{}
+  foreach($c in $script:workerChecks){
+    $trimmed=([string]$c).Trim()
+    if([string]::IsNullOrWhiteSpace($trimmed)){ continue }
+    if(-not $seen.ContainsKey($trimmed.ToLowerInvariant())){ $seen[$trimmed.ToLowerInvariant()]=$true; $unique.Add($trimmed) }
+  }
+  if($unique.Count -ne $script:workerChecks.Count){ $diag.Add("workerChecks 存在 $($script:workerChecks.Count - $unique.Count) 项重复，已去重（保留首个）。"); $script:contractNormalized=$true }
+  $script:workerChecks=@($unique)
+  # 3) workerChecks 混入视觉/GUI/发布打包：职责过滤，移交给 GPT（Write-WorkerAcceptance 具体执行移交）。
+  $delegatedCount=0
+  foreach($c in $script:workerChecks){ if(Test-IsGptOrReleaseCheck $c){ $delegatedCount++ } }
+  if($delegatedCount -gt 0){ $diag.Add("workerChecks 中 $delegatedCount 项属于视觉/GUI 或 release 打包/发布职责，已移交 GPT，Reasonix 不执行。"); $script:contractNormalized=$true }
+  # 4) 普通 DeepSeek 任务错误使用 delivery profile：托管运行始终强制 balanced（manifest 声明仅作输入读取）。
+  if($null-ne$script:manifest -and $script:manifest.PSObject.Properties['profile'] -and $null-ne$script:manifest.profile){
+    $rawProfile=([string]$script:manifest.profile).ToLowerInvariant()
+    if(@('economy','balanced','delivery') -contains $rawProfile -and $rawProfile -ne 'balanced'){
+      $diag.Add("manifest 声明 profile=$($script:manifest.profile)；托管 Reasonix 运行始终强制 balanced，声明仅作为输入读取。"); $script:contractNormalized=$true
+    }
+  }
+  # 5) 普通 small/medium DeepSeek 任务显式 high/max：合同预检规范——派生运行计划 effort 降为 low
+  #    （不修改用户合同原文件）；strict/major/security/release/migration 任务保留 high。
+  if($script:reasonixModel.ToLowerInvariant().Contains('deepseek') -and @('high','max') -contains $script:planEffort -and @('small','medium') -contains $script:planComplexity -and $script:planIntensity -ne 'strict'){
+    $spec=$specText.ToLowerInvariant()
+    $highRisk=@('credential','crypto','envelope','vault','secret','security','migration','installer','publish','release','凭据','加密','迁移','发布','安装','安全') | Where-Object { $spec.Contains($_) }
+    if($highRisk.Count -eq 0){
+      $origEffort=$script:planEffort
+      $script:planEffort='low'
+      $diag.Add("普通 $($script:planComplexity) DeepSeek 任务显式声明 effort=$origEffort；已按合同预检规范把派生运行计划 effort 降为 low（不修改用户合同原文件）。strict/major/security/release/migration 任务保留 high。")
+      $script:contractNormalized=$true
+    }
+  }
+  # 6) HANDOFF 缺少允许读取/允许修改/直接依赖范围。
+  $hasRead=@($handoffLines | Where-Object { $_ -match '允许读取|allowed-?read|允许读' }).Count -gt 0
+  $hasWrite=@($handoffLines | Where-Object { $_ -match '允许修改|allowed-?write|允许写' }).Count -gt 0
+  $hasDep=@($handoffLines | Where-Object { $_ -match '直接依赖|direct dependenc' }).Count -gt 0
+  if(-not $hasRead -or -not $hasWrite -or -not $hasDep){
+    $missing=@(); if(-not $hasRead){ $missing+='允许读取范围' }; if(-not $hasWrite){ $missing+='允许修改范围' }; if(-not $hasDep){ $missing+='直接依赖范围' }
+    $diag.Add("HANDOFF 缺少 $($missing -join '、')；已提示 GPT 补全合同，不影响本任务执行。")
+  }
+  $script:contractDiagnostic=($diag -join '；')
+  if($script:contractDiagnostic.Length -gt 500){ $script:contractDiagnostic=$script:contractDiagnostic.Substring(0,500)+'…' }
+}
+function Get-GitBaseline([string]$root) {
+  # 运行前记录 Git 脏文件内容指纹（tracked modified + untracked），供运行后过滤"本次执行新增的变化"。
+  # git 不可用或无法枚举时返回 $null，标记无法可靠建立基线（调用方保守按 full 验收）。
+  try{
+    $tracked=@(& git -C $root diff --name-only HEAD 2>$null)
+    $untracked=@(& git -C $root ls-files --others --exclude-standard 2>$null)
+    $files=@($tracked + $untracked | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { $_.Trim() } | Select-Object -Unique)
+    $map=@{}
+    foreach($f in $files){
+      $full=Join-Path $root $f
+      $key=$f.ToLowerInvariant()
+      if([IO.File]::Exists($full)){
+        try{ $map[$key]=(Get-FileHash -LiteralPath $full -Algorithm SHA256 -ErrorAction Stop).Hash }
+        catch{ $map[$key]='' }
+      } else { $map[$key]='missing' }
+    }
+    return $map
+  }catch{ return $null }
+}
+function Get-ChangedFiles {
+  # 验收范围只依据本次执行新增的变化：运行前基线之上新出现的文件计入；
+  # 原已脏文件仅在内容指纹变化时计入；无法可靠建立基线（$null）时返回空（保守 full）。
+  if($null-eq$script:gitBaseline){ return @() }
+  try{
+    $tracked=@(& git -C $project diff --name-only HEAD 2>$null)
+    $untracked=@(& git -C $project ls-files --others --exclude-standard 2>$null)
+    $current=@($tracked + $untracked | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { $_.Trim() } | Select-Object -Unique)
+    $changed=@()
+    foreach($f in $current){
+      $key=$f.ToLowerInvariant()
+      if(-not $script:gitBaseline.ContainsKey($key)){ $changed+=$f; continue }
+      $full=Join-Path $project $f
+      $now=''
+      if([IO.File]::Exists($full)){ try{ $now=(Get-FileHash -LiteralPath $full -Algorithm SHA256 -ErrorAction Stop).Hash } catch { $now='' } }
+      else { $now='missing' }
+      if($script:gitBaseline[$key] -ne $now){ $changed+=$f }
+    }
+    return $changed
+  }catch{ return @() }
+}
+function Recommend-AcceptanceScope {
+  # 影响范围增量验收映射（B5）：与 C# ReasonixAcceptanceScope.Recommend 同规则。
+  param([string[]]$files)
+  $releasePatterns=@('directory.build.props','installer','build-release','publish','.iss','.wxs','.github\workflows','.github/workflows')
+  $securityPatterns=@('credential','crypto','envelope','vault','secret','backup','migration','encrypt','decrypt','portable','bundle','officialaccounts','apiprovider','api-provider')
+  if($files.Count -eq 0){ return @{Label='full';Scopes=@('full');Rationale='无法识别改动文件（空列表或 git 不可用），按完整回归验收。'} }
+  $releaseHit=$false; $securityHit=$false; $visualHit=$false; $sourceCount=0; $docCount=0; $testCount=0; $reasons=@()
+  foreach($f in $files){
+    $low=($f -replace '/','\').ToLowerInvariant()
+    $isRelease=$false; $isSecurity=$false
+    foreach($p in $releasePatterns){ if($low.Contains($p)){ $releaseHit=$true; $isRelease=$true; break } }
+    if(-not $isRelease){ foreach($p in $securityPatterns){ if($low.Contains($p)){ $securityHit=$true; $isSecurity=$true; break } } }
+    if($isRelease -or $isSecurity){ $reasons += $f }
+    if($low.EndsWith('.xaml')){ $visualHit=$true }
+    if($low.EndsWith('.cs') -and $low.Contains('src')){ $sourceCount++ }
+    if($low.EndsWith('.md') -or $low.EndsWith('.txt') -or $low.Contains('readme') -or $low.Contains('\docs\')){ $docCount++ }
+    if($low.Contains('\tests\') -or $low.StartsWith('tests\') -or $low.Contains('test')){ $testCount++ }
+  }
+  if($releaseHit){ return @{Label='release + full';Scopes=@('release','full');Rationale=('改动涉及 installer/版本/发布脚本：'+(($reasons|Select-Object -First 5) -join '、'))} }
+  if($securityHit){ return @{Label='security + full';Scopes=@('security','full');Rationale=('改动涉及凭据/加密/备份/迁移：'+(($reasons|Select-Object -First 5) -join '、'))} }
+  if($visualHit){ return @{Label='focused + visual';Scopes=@('focused','visual');Rationale=('改动涉及 UI/XAML：'+(($files|Select-Object -First 5) -join '、'))} }
+  if($docCount -eq $files.Count){ return @{Label='focused';Scopes=@('focused');Rationale=('纯文案/文档改动：'+(($files|Select-Object -First 5) -join '、'))} }
+  if($testCount -eq $files.Count){ return @{Label='focused';Scopes=@('focused');Rationale=('纯测试改动：'+(($files|Select-Object -First 5) -join '、'))} }
+  if($files.Count -eq 1){ return @{Label='focused';Scopes=@('focused');Rationale=('单个文件改动：'+$files[0])} }
+  if($sourceCount -ge 3 -or $files.Count -ge 3){ return @{Label='full';Scopes=@('full');Rationale=("涉及 $sourceCount 个核心源码文件（共 $($files.Count) 个改动文件），按完整回归验收。")} }
+  return @{Label='focused';Scopes=@('focused');Rationale=('少量普通源码/文件改动：'+(($files|Select-Object -First 5) -join '、'))}
 }
 function Get-ProjectSessionRoot {
   $reasonixHomePath=[IO.Path]::GetFullPath($ReasonixHome)
@@ -1222,25 +1629,47 @@ function Register-DesktopSession {
   Save-Status 'running' 'executing' 'Reasonix Desktop session registered'
 }
 Resolve-ExecutionPlan
+Resolve-ContractHealth
+if($script:contractBlocked){
+  $script:failureKind='contract-blocked'
+  Save-Status 'failed' 'blocked' $script:contractBlockReason
+  Write-FailureReport 'contract-blocked' $script:contractBlockReason 3
+  Write-Output "Reasonix task blocked: $taskId. $script:contractBlockReason"
+  exit 3
+}
+Write-WorkerAcceptance
 if([IO.File]::Exists($StatusPath)){
-  try{ $prev=[IO.File]::ReadAllText($StatusPath,[Text.Encoding]::UTF8)|ConvertFrom-Json; $an=0; if($prev.PSObject.Properties['attemptNumber'] -and [int]::TryParse([string]$prev.attemptNumber,[ref]$an) -and $an -gt 0){ $script:attemptNumber=$an } }catch{}
+  try{
+    $prev=[IO.File]::ReadAllText($StatusPath,[Text.Encoding]::UTF8)|ConvertFrom-Json
+    $an=0; if($prev.PSObject.Properties['attemptNumber'] -and [int]::TryParse([string]$prev.attemptNumber,[ref]$an) -and $an -gt 0){ $script:attemptNumber=$an }
+    # 重启恢复单调：同一 attempt 继承已持久化的预计剩余百分比（继续下降或不变）；新 attempt 不继承（重新初始化）。
+    if($prev.PSObject.Properties['attemptNumber'] -and $null-ne$prev.attemptNumber -and [int]$prev.attemptNumber -eq $script:attemptNumber -and $prev.PSObject.Properties['remainingPercent'] -and $null-ne$prev.remainingPercent){
+      $rp=0; if([int]::TryParse([string]$prev.remainingPercent,[ref]$rp) -and $rp -ge 5 -and $rp -le 100){ $script:remainingPercent=$rp }
+    }
+  }catch{}
 }
 $script:sessionRoot=Get-ProjectSessionRoot
 $script:baseline=Get-SessionBaseline $script:sessionRoot
+# 运行 Reasonix 前记录 Git 脏文件内容指纹，供运行后按"本次执行新增的变化"过滤验收范围（B5）。
+$script:gitBaseline=Get-GitBaseline $project
 Save-Status 'starting' 'starting' 'Reading task contract'
 $utf8=[Text.UTF8Encoding]::new($false); [IO.File]::WriteAllText($events,'',$utf8)
 $lock=Join-Path ([IO.Path]::GetFullPath((Join-Path $project '.codex-helper\runs'))) '.reasonix.lock'; $stream=$null
 try{
   $stream=[IO.File]::Open($lock,[IO.FileMode]::OpenOrCreate,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)
   Save-Status 'running' 'executing' 'Reasonix is executing the task'
-  $workerChecksLine=if($script:workerChecks.Count -gt 0){"workerChecks:`n"+($script:workerChecks -join "`n")+"`n"}else{'Run every automatically verifiable acceptance criterion in ACCEPTANCE.md (worker scope).`n'}
-  $reviewLine=if($script:allowAutoReview){'Automatic review/security-review subagents are permitted when the contract requires them.`n'}else{'Do not auto-start review, security-review, or explore subagents; GPT is the reviewer.`n'}
-  $prompt="Read the task contract from $task (only SPEC.md, ACCEPTANCE.md, HANDOFF.md and manifest.json in the current task directory). Implement SPEC.md exactly within project root $project, satisfy ACCEPTANCE.md and HANDOFF.md, and write the execution report to $report. Do not redesign scope.`n"+
-  "First list at most 5 concrete implementation actions, then implement them directly; read only the files HANDOFF names and their direct dependencies; do not scan unrelated parts of the repo.`n"+
+  $workerChecksLine='Satisfy every workerCheck listed in WORKER_ACCEPTANCE.md (derived from manifest workerChecks); gptChecks and releaseChecks belong to GPT, not Reasonix.`n'
+  $reviewLine='Do not auto-start review, security-review, or explore subagents; GPT is the reviewer.`n'
+  $progressLine='Maintain PROGRESS.json in the task directory atomically (standard JSON, UTF-8 without BOM) right before starting and after finishing each workerCheck, with fields stage/summary/updatedUtc/completedChecks/totalChecks/currentCheck/checks (each check has name and status pending/running/passed/failed); never write outside the task directory.`n'
+  $contractNote=if(-not [string]::IsNullOrWhiteSpace($script:contractDiagnostic)){ 'Contract normalization (derived contract only; original SPEC/ACCEPTANCE/HANDOFF/manifest are not modified): '+$script:contractDiagnostic+'`n' }else{''}
+  $prompt="Read the task contract from $task (only SPEC.md, HANDOFF.md, manifest.json and WORKER_ACCEPTANCE.md in the current task directory; do not read ACCEPTANCE.md). Implement SPEC.md exactly within project root $project, satisfy HANDOFF.md and the workerChecks in WORKER_ACCEPTANCE.md, and write the execution report to $report (write only that file; do not write REVIEW_PACKET.md — Helper generates it automatically). Do not redesign scope.`n"+
+  "HANDOFF.md explicitly lists allowed-read files, allowed-write files, and direct dependencies; read only those files and their direct dependencies, do not scan unrelated parts of the repo, and once the goal is clear do not recursively scan the tree. First list at most 5 concrete implementation actions; then read all needed files together (parallel reads are fine; never re-read a file that has not changed) before forming one consolidated edit set, then apply edits in a few batch passes instead of many small round-trips.`n"+
   "Execution policy (soft budget, not a hard limit): intensity=$($script:planIntensity), profile=$($script:planProfile), effort=$($script:planEffort), estimated ~$($script:planBudget) steps.`n"+
   'GPT is the final reviewer; Reasonix performs implementation and workerChecks only.`n'+
   $workerChecksLine+
-  'Run each workerCheck at most once; if a check already passed, do not re-run it. Do not iterate test/Release build back and forth.`n'+
+  $progressLine+
+  $contractNote+
+  'Run each workerCheck at most once and deduplicate it: if a normalized check already passed, never re-run it (including during the reporting/readiness phase when the affected files are unchanged); do not iterate test/Release build back and forth.`n'+
   'gptChecks and releaseChecks (visual acceptance, full regression, packaging/release) belong to GPT or a later release phase; do not attempt them.`n'+
   $reviewLine+
   '{{{VisualBoundaryRule}}}`n'+
@@ -1262,6 +1691,12 @@ try{
     if($null-ne$obj){
       $kind=[string]$obj.kind
       if(-not [string]::IsNullOrWhiteSpace($kind)){ $script:lastEventKind=$kind }
+      $eventTool=([string]$obj.tool_name)+([string]$obj.tool)+([string]$obj.name)
+      # final_readiness 兼容两种真实格式：direct kind（{"kind":"final_readiness"}）与 Reasonix 1.19.3 的
+      # notice.code（{"kind":"notice","code":"final_readiness"}）；并保留 direct tool/name 兼容。
+      $eventCode=[string]$obj.code
+      $isFinalReadiness=($kind -eq 'final_readiness') -or ([string]::Equals($eventCode,'final_readiness',[StringComparison]::OrdinalIgnoreCase)) -or $eventTool.ToLowerInvariant().Contains('final_readiness')
+      if($isFinalReadiness){ $script:finalReadinessSeen=$true }
       if($kind -eq 'turn_started'){ $script:stepCount++ }
       elseif($kind -eq 'tool_dispatch'){ $script:toolCallCount++; $tn=[string]$obj.tool_name; if([string]::IsNullOrWhiteSpace($tn)){ $tn=[string]$obj.tool }; if([string]::IsNullOrWhiteSpace($tn)){ $tn=[string]$obj.name }; if(-not [string]::IsNullOrWhiteSpace($tn) -and $tn.Length -le 64){ $script:lastToolName=$tn } }
       elseif($kind -eq 'tool_result'){ $tn=[string]$obj.tool_name; if([string]::IsNullOrWhiteSpace($tn)){ $tn=[string]$obj.tool }; if([string]::IsNullOrWhiteSpace($tn)){ $tn=[string]$obj.name }; if(-not [string]::IsNullOrWhiteSpace($tn) -and $tn.Length -le 64){ $script:lastToolName=$tn }; $ro=$obj.tool_read_only; if($null-ne$ro -and ([string]$ro) -match '^(false|False|0)$'){ $script:lastStage='implementing' } }
@@ -1309,6 +1744,13 @@ try{
   }
   $finalDisplay=if($script:finalSteps -ge 0){$script:finalSteps}else{'n/a'}
   $budgetLine="`n- Budget: $($script:planBudget) steps (soft, not a hard limit); final metrics steps=$finalDisplay; overrun=$(if($script:budgetFinalReady){$script:finalOverrun}else{'n/a'}); BudgetState=$(if($script:budgetFinalReady){$script:finalBudgetState}else{'n/a'})"
+  # 影响范围增量验收建议（B5）：按实际改动文件生成，供 GPT 选择验收范围；只是建议，合同显式要求与高风险规则优先。
+  $changedFiles=@(Get-ChangedFiles)
+  $scope=Recommend-AcceptanceScope $changedFiles
+  $scopeLine="`n- Acceptance scope suggestion: $($scope.Label)`n- Scope details: $(($scope.Scopes) -join ' + ')`n- Rationale: $($scope.Rationale)`n- Changed files: $(if($changedFiles.Count -gt 0){($changedFiles|Select-Object -First 10) -join '; '}else{'（无法枚举）'})"
+  # P1-7 避免重复验收：Review Packet 明确记录已通过 workerChecks（排除视觉/GPT 项），后续只运行未完成检查。
+  $passedChecks=Get-PassedWorkerChecks
+  $passedChecksLine=if($passedChecks.Count -gt 0){('- Passed workerChecks (from PROGRESS.json, GPT-owned items excluded): '+(($passedChecks) -join '; '))}else{'- Passed workerChecks: none recorded'}
   $packet=@"
 # GPT Review Packet
 
@@ -1325,6 +1767,8 @@ try{
 - Policy: intensity=$script:planIntensity profile=$script:planProfile effort=$script:planEffort budget=$script:planBudget source=$script:planSource
 - Model: $script:reasonixModel
 $budgetLine
+$scopeLine
+$passedChecksLine
 - Project: $project
 - Task directory: $task
 
@@ -1339,7 +1783,17 @@ GPT must read EXECUTION_REPORT.md, inspect actual changes, and independently rer
   # 失败分类（B2）：绝不假装知道测试失败；脱敏摘要，不含完整 stderr/命令/正文/秘密。
   $script:failureKind=$null; $script:failureSummary=$null
   if($reportExists){
-    if($exit -ne 0){ $script:failureKind='cli-exit'; $script:failureSummary="Reasonix exited $exit but EXECUTION_REPORT.md exists." }
+    if($exit -ne 0){
+      # 谨慎分类：仅当 exit=1、事件出现 final_readiness 且存在实际活动（tool/step 证据）时，才把退出码视为
+      # "Reasonix 最终门禁未通过"（等待 GPT 复核），而不是普通代码开发失败或伪装成功。
+      if($exit -eq 1 -and $script:finalReadinessSeen -and ($script:toolCallCount -gt 0 -or $script:stepCount -gt 0)){
+        $script:failureKind='final-readiness-blocked'
+        $script:failureSummary='Reasonix 最终门禁未通过；执行与交付报告已生成，等待 GPT 独立复核验收。'
+      } else {
+        $script:failureKind='cli-exit'
+        $script:failureSummary="Reasonix exited $exit but EXECUTION_REPORT.md exists."
+      }
+    }
   } else {
     if($script:modelRunFailed){ $script:failureKind='model-run-failed' }
     elseif($exit -ne 0){ $script:failureKind='cli-exit' }
@@ -1350,11 +1804,25 @@ GPT must read EXECUTION_REPORT.md, inspect actual changes, and independently rer
       $script:failureSummary="No EXECUTION_REPORT.md; last stage=$($script:lastStage), last event=$($script:lastEventKind), last tool=$($script:lastToolName)."
     }
     Write-FailureReport $script:failureKind $script:failureSummary $exit
+    # P0-1 漏报告自动恢复证据：exit 0、无报告且非模型失败（missing-report）时，把本次执行的活动/
+    # 本次新增变化/已通过检查持久化到任务目录，供 Helper 判定并生成自动恢复报告与 Review Packet。
+    # 证据只是结构化事实，绝不伪造测试通过；是否恢复由 Helper 按条件独立判定。
+    if($script:failureKind -eq 'missing-report'){
+      $evidChanged=@(Get-ChangedFiles)
+      $evidPassed=@(Get-PassedWorkerChecks)
+      $evidence=[ordered]@{taskId=$taskId;attemptNumber=$script:attemptNumber;exitCode=0;hasActivity=($script:stepCount -gt 0 -or $script:toolCallCount -gt 0);stepCount=$script:stepCount;toolCallCount=$script:toolCallCount;changedFiles=$evidChanged;passedChecks=$evidPassed}
+      Write-JsonAtomic (Join-Path $task 'auto-recovery-evidence.json') $evidence
+    }
   }
   if($reportExists){
     if($exit -eq 0){
       $script:returnState='same-turn-resume'
       Save-Status 'completed' 'awaiting-gpt-review' ('Reasonix completed; GPT can review. Desktop: '+$script:desktopDiagnostic)
+      # P1-5 历史预算校准：成功任务结束后记录 (项目, 复杂度) 的实际 steps，供后续任务推导软预算。
+      if($script:finalSteps -ge 0){ Record-BudgetSample $script:finalSteps }
+    } elseif($script:failureKind -eq 'final-readiness-blocked'){
+      $script:returnState='executor-error'
+      Save-Status 'failed' 'awaiting-gpt-review' ("Reasonix 最终门禁未通过（exit $exit）；执行与交付报告已生成，等待 GPT 独立复核。Desktop: "+$script:desktopDiagnostic)
     } else {
       $script:returnState='executor-error'
       Save-Status 'failed' 'awaiting-gpt-review' ("Reasonix exited with code $exit but delivered EXECUTION_REPORT.md; GPT can review. Desktop: "+$script:desktopDiagnostic)

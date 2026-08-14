@@ -28,9 +28,13 @@ public partial class MainWindow : Window
     private CancellationTokenSource? operationCancellation;
     private WelcomeWindow? guideWindow;
     private bool operationRunning;
-    private ReasonixTaskStatus? latestReasonixTask;
+    private ReasonixTaskStatus? selectedReasonixTask;
+    private string? selectedReasonixTaskId;
     private readonly DispatcherTimer reasonixTaskTimer = new() { Interval = TimeSpan.FromSeconds(2) };
     private bool suppressCacheRangeSelection;
+    private bool suppressCollaborationModeSelection;
+    private DeepSeekHarnessStatus? harnessStatus;
+    private DeepSeekHarnessService? harnessService;
 
     public MainWindow()
     {
@@ -49,6 +53,7 @@ public partial class MainWindow : Window
     {
         ApplySettingsToUi();
         await RefreshAllAsync();
+        RefreshHarnessSettings();
         SelectPage(string.IsNullOrWhiteSpace(settings.LastSelectedPage) ? "Dashboard" : settings.LastSelectedPage);
         if (!settings.HasCompletedOnboarding) ShowGuide(markOnboardingComplete: true);
     }
@@ -62,7 +67,11 @@ public partial class MainWindow : Window
         IncludeAttachmentsCheck.IsChecked = settings.IncludeAttachments;
         IncludeGeneratedCheck.IsChecked = settings.IncludeGeneratedImages;
         SelectReasonixIntensity(settings.ReasonixExecutionIntensity);
+        LoadParallelSettings(settings);
         SelectDeepSeekCacheRange(settings.DeepSeekCacheRange);
+        suppressCollaborationModeSelection = true;
+        SelectCollaborationMode(settings.CollaborationMode);
+        suppressCollaborationModeSelection = false;
     }
 
     private async Task RefreshAllAsync()
@@ -130,6 +139,131 @@ public partial class MainWindow : Window
     }
 
     /// <summary>执行环境行：当前实际 CLI 路径、版本、来源与协议兼容性；多候选/迁移说明一并展示。</summary>
+    private void SelectCollaborationMode(string mode)
+    {
+        var value = CollaborationModeExtensions.ParseCollaborationMode(mode);
+        foreach (var item in CollaborationModeBox.Items.OfType<ComboBoxItem>())
+            if (string.Equals(item.Tag?.ToString(), value.ToPersisted(), StringComparison.OrdinalIgnoreCase)) { CollaborationModeBox.SelectedItem = item; return; }
+    }
+
+    private CollaborationMode SelectedCollaborationMode()
+        => CollaborationModeExtensions.ParseCollaborationMode((CollaborationModeBox.SelectedItem as ComboBoxItem)?.Tag?.ToString());
+
+    private void CollaborationModeBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (suppressCollaborationModeSelection || CollaborationModeBox is null) return;
+        var mode = SelectedCollaborationMode();
+        settings.CollaborationMode = mode.ToPersisted();
+        settingsService.Save(settings);
+        new CollaborationService(settings.CodexRoot, appPaths).Synchronize(settings);
+        UpdateCollaborationModeUi();
+        RefreshSubagentSettings();
+        RefreshHarnessSettings();
+    }
+
+    private void UpdateCollaborationModeUi()
+    {
+        var mode = CollaborationModeExtensions.ParseCollaborationMode(settings.CollaborationMode);
+        CollaborationModeHintText.Text = mode switch
+        {
+            CollaborationMode.Reasonix => "已选择 Reasonix 执行器：GPT 规划/验收，Reasonix 实现，维持现有三档策略。",
+            CollaborationMode.Harness => "已选择 DeepSeek Harness 执行器：GPT 规划/验收，Harness 实现；需 Node 就绪且 Web Host 可用。",
+            _ => "已关闭协作：移除 Helper 管理的协作规则，GPT 独立开发。"
+        };
+        if (HarnessModeBadge is not null) HarnessModeBadge.Text = mode == CollaborationMode.Harness ? "已启用" : "未启用";
+    }
+
+    private async void RefreshHarnessSettings(bool forceRefresh = false)
+    {
+        if (HarnessEnvironmentText is null) return;
+        try
+        {
+            harnessService ??= new DeepSeekHarnessService(appPaths);
+            var status = await harnessService.DiagnoseAsync(settings.HarnessNodePath, settings.HarnessDshEntryPath, forceRefresh: forceRefresh);
+            harnessStatus = status;
+            var riskText = status.DshRisk == HarnessVersionRiskLevel.Invalid
+                ? "非法/损坏"
+                : DeepSeekHarnessSemVer.Describe(status.DshRisk);
+            var statusKindText = status.StatusKind switch
+            {
+                HarnessStatusKind.Usable => "可使用",
+                HarnessStatusKind.WebOnly => "可打开 Web 但自动中继未确认",
+                HarnessStatusKind.NewVersionVerified => "新版本已验证",
+                HarnessStatusKind.NewVersionFailed => "新版本未通过",
+                HarnessStatusKind.Broken => "安装损坏",
+                _ => "未知"
+            };
+            var lines = new List<string>
+            {
+                $"Node：{(status.NodeFound ? $"{status.NodeVersion}（{status.NodeSource}）" : "未找到")} · 版本规则：{(status.NodeVersionSupported ? "满足" : "不满足")}",
+                $"Harness：{(status.DshFound ? $"{status.DshVersion}（{status.DshSource} · {riskText}）" : "未找到")}",
+                $"状态：{statusKindText}",
+                $"Web Host：{(status.WebHostRunning ? $"运行中（{status.WebUrl}）" : "未运行")}",
+                status.NodeMessage,
+                status.DshMessage,
+                status.RelayMessage
+            };
+            if (status.DshRisk == HarnessVersionRiskLevel.CrossMajor)
+                lines.Add("警告：dsh 为跨主版本新版本，尚未验证，请确认能力探测通过后再用于正式任务。");
+            HarnessEnvironmentText.Text = string.Join(Environment.NewLine, lines);
+            HarnessEnvironmentText.ToolTip = HarnessEnvironmentText.Text;
+            OpenHarnessWebButton.IsEnabled = status.WebHostRunning;
+            UpdateCollaborationModeUi();
+        }
+        catch (Exception ex)
+        {
+            HarnessEnvironmentText.Text = "Harness 检查失败：" + ex.Message;
+        }
+    }
+
+    private void OpenHarnessWeb_Click(object sender, RoutedEventArgs e)
+    {
+        if (harnessStatus is null) { RefreshHarnessSettings(); return; }
+        if (harnessStatus.WebHostRunning)
+        {
+            Process.Start(new ProcessStartInfo(harnessStatus.WebUrl) { UseShellExecute = true });
+            return;
+        }
+        if (harnessStatus.EnableAllowed && harnessService is not null)
+        {
+            var process = harnessService.StartWebHost(harnessStatus.NodePath, harnessStatus.DshEntryPath);
+            if (process is not null)
+            {
+                _ = System.Threading.Tasks.Task.Delay(1200).ContinueWith(_ => Dispatcher.InvokeAsync(() => RefreshHarnessSettings()));
+                MessageBox.Show("已尝试启动 Helper 管理的 Harness Web Host。关闭浏览器不会停止任务；请等待片刻后点击“打开 Harness Web”。", "Harness Host", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+            MessageBox.Show($"尝试启动 Harness Web Host 失败。请确认已安装 dsh（@deepseek-ai/dsh）并检查入口完整性后重新检测。", "Harness Host", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+        MessageBox.Show("未检测到可用的 Harness Web Host，且 Node 环境未就绪。\n" + DeepSeekHarnessVersions.NodeDownloadUrl, "Harness", MessageBoxButton.OK, MessageBoxImage.Information);
+    }
+
+    private async void HarnessRescan_Click(object sender, RoutedEventArgs e)
+        => await RunOperationAsync("重新检测 Harness", async _ => await Dispatcher.InvokeAsync(() => RefreshHarnessSettings(forceRefresh: true)), showProgress: false);
+
+    private void StopHarnessHost_Click(object sender, RoutedEventArgs e)
+    {
+        if (harnessService is null) return;
+        harnessService.StopWebHost();
+        RefreshHarnessSettings();
+        MessageBox.Show("已停止 Helper 启动的 Harness Web Host。", "Harness Host", MessageBoxButton.OK, MessageBoxImage.Information);
+    }
+
+    private void ChooseHarnessNode_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = new OpenFileDialog
+        {
+            Title = "选择 Node.js 可执行文件（node.exe）",
+            Filter = "Node.js (node.exe)|node.exe|所有文件 (*.*)|*.*",
+            CheckFileExists = true
+        };
+        if (dialog.ShowDialog(this) != true) return;
+        settings.HarnessNodePath = dialog.FileName;
+        settingsService.Save(settings);
+        RefreshHarnessSettings();
+    }
+
     private void UpdateReasonixEnvironment(ReasonixCliSelection selection, ReasonixStatus status)
     {
         if (ReasonixEnvironmentText is null) return;
@@ -194,7 +328,7 @@ public partial class MainWindow : Window
         var action = enabled ? "关闭协作编码" : "开启协作编码";
         var explanation = enabled
             ? "将删除 Helper 管理的 Reasonix Skill 和协作规则，GPT 恢复独立开发。不会删除 Reasonix、模型凭据、项目或其他 Skills。"
-            : "将安装 Helper 管理的 Reasonix 执行 Skill。GPT 负责规划和验收，Reasonix 负责修改项目；Codex 原生子智能体保持关闭。";
+            : "将安装 Helper 管理的 Reasonix 执行 Skill。GPT 负责规划和验收，实现类任务按规模三档路由（微任务 GPT 直接实现、Reasonix 单合同、Reasonix 有限并行）；Codex 原生子智能体保持关闭。";
         if (MessageBox.Show(explanation + "\n\n需要先安全退出 Codex，继续吗？", action, MessageBoxButton.YesNo, MessageBoxImage.Information) != MessageBoxResult.Yes) return;
         if (!await EnsureCodexStoppedAsync()) return;
         var permissionMode = SelectedReasonixPermissionMode();
@@ -261,47 +395,218 @@ public partial class MainWindow : Window
     {
         try
         {
-            var snapshot = new ReasonixIntegrationService(settings.CodexRoot, appPaths).GetRecentTasks(1);
-            latestReasonixTask = snapshot.Tasks.FirstOrDefault();
-            var errorSummary = snapshot.Diagnostics.Count == 0 ? string.Empty
-                : $"\n⚠ {snapshot.Diagnostics.Count} 个状态文件无法读取：{string.Join("、", snapshot.Diagnostics.Take(3).Select(diagnostic => diagnostic.FileName))}{(snapshot.Diagnostics.Count > 3 ? " 等" : string.Empty)}（{snapshot.Diagnostics.First().Reason}）";
-            if (latestReasonixTask is null)
+            var service = new ReasonixIntegrationService(settings.CodexRoot, appPaths);
+            var snapshot = service.GetRecentTasks(50);
+            // 运行中优先，同一优先级内按更新时间倒序，保证“运行中多项同时可见”而不仅是 latest。
+            var tasks = snapshot.Tasks
+                .OrderByDescending(task => task.IsRunning)
+                .ThenByDescending(task => task.UpdatedUtc)
+                .ToList();
+
+            // 复用 ReasonixParallelScheduler：以各任务当前状态为输入，生成顶部统计与每行的等待/冲突/排队原因。
+            var schedule = new ReasonixParallelScheduler().Schedule(tasks.Select(ToSchedulerTask).ToList());
+            var decisions = schedule.Decisions.ToDictionary(decision => decision.TaskId, StringComparer.OrdinalIgnoreCase);
+
+            RenderReasonixStats(schedule.Snapshot);
+            RenderReasonixDiagnostics(snapshot.Diagnostics);
+
+            ReasonixTaskListBox.Items.Clear();
+            ReasonixTaskListHintText.Text = snapshot.Tasks.Count == 0 && snapshot.Diagnostics.Count == 0
+                ? "暂无任务"
+                : "暂无可读取的任务，详见上方诊断。";
+            ReasonixTaskListHintText.Visibility = snapshot.Tasks.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+            foreach (var task in tasks)
             {
-                ReasonixLatestTaskText.Text = snapshot.Diagnostics.Count == 0
-                    ? "暂无由新版临时 TaskHost 提交的任务。"
-                    : "暂无可读取的任务。\n" + errorSummary.TrimStart();
-                ReasonixLatestTaskText.Foreground = (Brush)FindResource("SecondaryTextBrush");
-                StopReasonixTaskButton.IsEnabled = false;
-                RetryReasonixTaskButton.IsEnabled = false;
-                ReturnToCodexTaskButton.IsEnabled = false;
-                CopyReasonixTaskIdButton.IsEnabled = false;
-                OpenReasonixTaskDirectoryButton.IsEnabled = false;
-                RenderReasonixSteps(null);
-                return;
+                decisions.TryGetValue(task.TaskId, out var decision);
+                ReasonixTaskListBox.Items.Add(BuildTaskRow(task, decision));
             }
-            ReasonixLatestTaskText.Text = ReasonixUiText.SummaryText(latestReasonixTask) + errorSummary;
-            ReasonixLatestTaskText.Foreground = StatusBrush(ReasonixUiText.StateColorKey(latestReasonixTask));
-            var reasonixService = new ReasonixIntegrationService(settings.CodexRoot, appPaths);
-            StopReasonixTaskButton.IsEnabled = latestReasonixTask.IsRunning;
-            RetryReasonixTaskButton.IsEnabled = reasonixService.RetryBlockReason(latestReasonixTask) is null;
-            ReturnToCodexTaskButton.IsEnabled = CodexThreadUri.Build(latestReasonixTask.ReturnUri, latestReasonixTask.CodexThreadId) is not null;
-            CopyReasonixTaskIdButton.IsEnabled = true;
-            OpenReasonixTaskDirectoryButton.IsEnabled = !string.IsNullOrWhiteSpace(latestReasonixTask.TaskDirectory);
-            RenderReasonixSteps(ReasonixUiText.BuildWorkerSteps(latestReasonixTask, reasonixService.ReadWorkerChecks(latestReasonixTask)));
+
+            RestoreSelection(tasks);
+            UpdateReasonixTaskActionButtons();
+            RenderReasonixStepsForSelection(service);
         }
         catch (Exception ex)
         {
             // 2 秒定时刷新与按钮刷新都必须安全运行：任何读取失败只显示错误，不得让 UI 崩溃。
-            latestReasonixTask = null;
-            ReasonixLatestTaskText.Text = "Reasonix 任务状态读取失败：" + ex.Message;
-            ReasonixLatestTaskText.Foreground = (Brush)FindResource("SecondaryTextBrush");
+            selectedReasonixTask = null;
+            ReasonixTaskListBox.Items.Clear();
+            ReasonixStatsPanel.Children.Clear();
+            ReasonixTaskListHintText.Text = "Reasonix 任务状态读取失败：" + ex.Message;
+            ReasonixTaskListHintText.Visibility = Visibility.Visible;
+            UpdateReasonixTaskActionButtons();
+            RenderReasonixSteps(null);
+        }
+    }
+
+    /// <summary>把任务状态映射为调度器输入（复用 ReasonixParallelScheduler 的领域状态枚举）。</summary>
+    private static ReasonixSchedulerTask ToSchedulerTask(ReasonixTaskStatus task)
+    {
+        var state = task.IsRunning ? ReasonixTaskState.Running
+            : string.Equals(task.State, "completed", StringComparison.OrdinalIgnoreCase) ? ReasonixTaskState.Completed
+            : task.IsRetryableState ? ReasonixTaskState.Failed
+            : ReasonixTaskState.Queued;
+        return new ReasonixSchedulerTask(task.TaskId, task.TaskId, task.TaskDirectory, task.ProjectRoot, Array.Empty<string>(), Array.Empty<string>(), state);
+    }
+
+    /// <summary>顶部统计行：运行中 / 排队 / 受阻 / 已完成 / 失败 / 最大并发。颜色区分但附带文字，不只靠颜色。</summary>
+    private void RenderReasonixStats(ReasonixSchedulerSnapshot snapshot)
+    {
+        ReasonixStatsPanel.Children.Clear();
+        ReasonixStatsPanel.Children.Add(BuildStatChip($"运行中 {snapshot.Running}", "running"));
+        ReasonixStatsPanel.Children.Add(BuildStatChip($"排队 {snapshot.Queued}", "pending"));
+        ReasonixStatsPanel.Children.Add(BuildStatChip($"受阻 {snapshot.Blocked}", "pending"));
+        ReasonixStatsPanel.Children.Add(BuildStatChip($"已完成 {snapshot.Completed}", "completed"));
+        ReasonixStatsPanel.Children.Add(BuildStatChip($"失败 {snapshot.Failed}", "failed"));
+        ReasonixStatsPanel.Children.Add(BuildStatChip($"最大并发 {snapshot.MaxConcurrency}", "other"));
+    }
+
+    private Border BuildStatChip(string text, string colorKey)
+    {
+        var label = new TextBlock
+        {
+            Text = text,
+            FontSize = 12,
+            Foreground = StatusBrush(colorKey),
+            Margin = new Thickness(8, 3, 8, 3)
+        };
+        return new Border
+        {
+            Background = new SolidColorBrush(Color.FromArgb(0x12, 0x00, 0x00, 0x00)),
+            CornerRadius = new CornerRadius(4),
+            Margin = new Thickness(0, 0, 6, 6),
+            Child = label
+        };
+    }
+
+    /// <summary>损坏状态文件诊断：显示摘要但绝不让页面崩溃。</summary>
+    private void RenderReasonixDiagnostics(IReadOnlyList<ReasonixTaskDiagnostic> diagnostics)
+    {
+        if (diagnostics is null || diagnostics.Count == 0)
+        {
+            ReasonixTasksDiagnosticText.Visibility = Visibility.Collapsed;
+            return;
+        }
+        var names = string.Join("、", diagnostics.Take(3).Select(diagnostic => diagnostic.FileName));
+        if (diagnostics.Count > 3) names += " 等";
+        ReasonixTasksDiagnosticText.Text = $"⚠ {diagnostics.Count} 个状态文件无法读取：{names}（{diagnostics.First().Reason}）";
+        ReasonixTasksDiagnosticText.Visibility = Visibility.Visible;
+    }
+
+    /// <summary>构建任务列表中的一行：状态标记 + ID + 阶段 / 模型·时间·剩余·检查 / 等待冲突原因与当前检查。</summary>
+    private ListBoxItem BuildTaskRow(ReasonixTaskStatus task, ReasonixTaskDecision? decision)
+    {
+        var colorKey = ReasonixUiText.StateColorKey(task);
+        var titleRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(2, 3, 2, 1) };
+        titleRow.Children.Add(new TextBlock { Text = "●", FontSize = 11, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 4, 0), Foreground = StatusBrush(colorKey) });
+        titleRow.Children.Add(new TextBlock { Text = TaskStatusText(task), FontSize = 12, FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center, Foreground = StatusBrush(colorKey) });
+        if (!string.IsNullOrWhiteSpace(task.Phase))
+            titleRow.Children.Add(new TextBlock { Text = " · " + task.Phase, FontSize = 12, VerticalAlignment = VerticalAlignment.Center, Foreground = StatusBrush(colorKey) });
+        titleRow.Children.Add(new TextBlock { Text = "  " + task.TaskId, FontSize = 12, FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis });
+
+        var meta = new TextBlock
+        {
+            Text = BuildTaskMetaLine(task),
+            FontSize = 11,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            Foreground = (Brush)FindResource("SecondaryTextBrush"),
+            Margin = new Thickness(2, 0, 2, 1)
+        };
+
+        var reason = BuildTaskReasonLine(task, decision);
+        var panel = new StackPanel();
+        panel.Children.Add(titleRow);
+        panel.Children.Add(meta);
+        if (!string.IsNullOrWhiteSpace(reason))
+            panel.Children.Add(new TextBlock { Text = reason, FontSize = 11, TextWrapping = TextWrapping.Wrap, Foreground = (Brush)FindResource("SecondaryTextBrush"), Margin = new Thickness(2, 0, 2, 3) });
+
+        return new ListBoxItem { Content = panel, Tag = task };
+    }
+
+    private static string TaskStatusText(ReasonixTaskStatus task) => task.State.ToLowerInvariant() switch
+    {
+        "running" => "运行中",
+        "starting" => "启动中",
+        "completed" => "已完成",
+        "failed" => "失败",
+        "cancelled" => "已停止",
+        "interrupted" => "中断",
+        _ => task.State
+    };
+
+    /// <summary>元信息行：执行模型 · 时间线（已运行/预计剩余）· 完成检查数。</summary>
+    private static string BuildTaskMetaLine(ReasonixTaskStatus task)
+    {
+        var model = string.IsNullOrWhiteSpace(task.ExecutionModel)
+            ? (string.IsNullOrWhiteSpace(task.ExecutionProfile) ? "未记录" : task.ExecutionProfile)
+            : task.ExecutionModel;
+        var checks = task.TotalChecks is > 0 ? $"{task.CompletedChecks ?? 0}/{task.TotalChecks} 项检查" : "检查数未记录";
+        return $"模型 {model} · {ReasonixUiText.TimeLine(task)} · {checks}";
+    }
+
+    /// <summary>等待/冲突/排队原因优先展示；运行中显示当前检查。</summary>
+    private static string BuildTaskReasonLine(ReasonixTaskStatus task, ReasonixTaskDecision? decision)
+    {
+        var parts = new List<string>();
+        if (decision is not null && decision.Status is ReasonixDecisionStatus.WaitingDependency or ReasonixDecisionStatus.WaitingConflict or ReasonixDecisionStatus.WaitingMerge or ReasonixDecisionStatus.Queued
+            && !string.IsNullOrWhiteSpace(decision.Reason))
+            parts.Add(decision.Reason);
+        if (!string.IsNullOrWhiteSpace(task.CurrentCheck)) parts.Add("当前检查：" + task.CurrentCheck);
+        return string.Join(" · ", parts);
+    }
+
+    /// <summary>定时刷新保留选择；没有选择时自动选运行中最新任务，否则选最新任务。</summary>
+    private void RestoreSelection(IReadOnlyList<ReasonixTaskStatus> tasks)
+    {
+        if (selectedReasonixTaskId is not null && FindTaskListItem(selectedReasonixTaskId) is { } kept)
+        {
+            ReasonixTaskListBox.SelectedItem = kept;
+            return;
+        }
+        var auto = tasks.FirstOrDefault(task => task.IsRunning) ?? tasks.FirstOrDefault();
+        if (auto is not null && FindTaskListItem(auto.TaskId) is { } item) ReasonixTaskListBox.SelectedItem = item;
+    }
+
+    private ListBoxItem? FindTaskListItem(string taskId)
+    {
+        foreach (var item in ReasonixTaskListBox.Items)
+            if (item is ListBoxItem { Tag: ReasonixTaskStatus task } && string.Equals(task.TaskId, taskId, StringComparison.OrdinalIgnoreCase))
+                return (ListBoxItem)item;
+        return null;
+    }
+
+    private void ReasonixTaskListBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        selectedReasonixTask = (ReasonixTaskListBox.SelectedItem as ListBoxItem)?.Tag as ReasonixTaskStatus;
+        selectedReasonixTaskId = selectedReasonixTask?.TaskId;
+        UpdateReasonixTaskActionButtons();
+        RenderReasonixStepsForSelection(new ReasonixIntegrationService(settings.CodexRoot, appPaths));
+    }
+
+    private void UpdateReasonixTaskActionButtons()
+    {
+        var task = selectedReasonixTask;
+        if (task is null)
+        {
             StopReasonixTaskButton.IsEnabled = false;
             RetryReasonixTaskButton.IsEnabled = false;
             ReturnToCodexTaskButton.IsEnabled = false;
             CopyReasonixTaskIdButton.IsEnabled = false;
             OpenReasonixTaskDirectoryButton.IsEnabled = false;
-            RenderReasonixSteps(null);
+            return;
         }
+        var service = new ReasonixIntegrationService(settings.CodexRoot, appPaths);
+        StopReasonixTaskButton.IsEnabled = task.IsRunning;
+        RetryReasonixTaskButton.IsEnabled = service.RetryBlockReason(task) is null;
+        ReturnToCodexTaskButton.IsEnabled = CodexThreadUri.Build(task.ReturnUri, task.CodexThreadId) is not null;
+        CopyReasonixTaskIdButton.IsEnabled = true;
+        OpenReasonixTaskDirectoryButton.IsEnabled = !string.IsNullOrWhiteSpace(task.TaskDirectory);
+    }
+
+    private void RenderReasonixStepsForSelection(ReasonixIntegrationService service)
+    {
+        RenderReasonixSteps(selectedReasonixTask is null
+            ? null
+            : ReasonixUiText.BuildWorkerSteps(selectedReasonixTask, service.ReadWorkerChecks(selectedReasonixTask)));
     }
 
     /// <summary>在“最近 Reasonix 任务”卡片摘要下逐项渲染 workerChecks 步骤（完成绿/当前蓝/待执行灰/失败红）。</summary>
@@ -351,11 +656,45 @@ public partial class MainWindow : Window
             if (string.Equals(item.Tag?.ToString(), intensity, StringComparison.OrdinalIgnoreCase)) { ReasonixIntensityBox.SelectedItem = item; return; }
     }
 
+    /// <summary>并行协作设置：从 AppSettings 载入（旧配置缺字段时控件用默认值）。</summary>
+    private void LoadParallelSettings(AppSettings settings)
+    {
+        AutoSplitCheck.IsChecked = settings.AutoSplitEnabled;
+        ParallelIndependentCheck.IsChecked = settings.ParallelIndependentEnabled;
+        AutoWorktreeCheck.IsChecked = settings.AutoWorktreeEnabled;
+        ConvergeOnBudgetOverrunCheck.IsChecked = settings.ConvergeOnBudgetOverrunEnabled;
+        SelectMaxConcurrency(settings.MaxConcurrency);
+    }
+
+    private void ApplyParallelSettings_Click(object sender, RoutedEventArgs e)
+    {
+        settings.AutoSplitEnabled = AutoSplitCheck.IsChecked ?? true;
+        settings.ParallelIndependentEnabled = ParallelIndependentCheck.IsChecked ?? true;
+        settings.AutoWorktreeEnabled = AutoWorktreeCheck.IsChecked ?? true;
+        settings.ConvergeOnBudgetOverrunEnabled = ConvergeOnBudgetOverrunCheck.IsChecked ?? true;
+        settings.MaxConcurrency = SelectedMaxConcurrency();
+        settingsService.Save(settings);
+        MessageBox.Show($"并行设置已保存：智能拆分 {(settings.AutoSplitEnabled ? "开" : "关")}、独立任务并行 {(settings.ParallelIndependentEnabled ? "开" : "关")}、最大并发 {settings.MaxConcurrency}、自动 worktree {(settings.AutoWorktreeEnabled ? "开" : "关")}、超预算收敛 {(settings.ConvergeOnBudgetOverrunEnabled ? "开" : "关")}。旧配置缺失的字段保留默认值。", "并行设置已保存", MessageBoxButton.OK, MessageBoxImage.Information);
+    }
+
+    private int SelectedMaxConcurrency()
+    {
+        if (int.TryParse((MaxConcurrencyBox.SelectedItem as ComboBoxItem)?.Tag?.ToString(), out var value))
+            return Math.Clamp(value, ReasonixParallelScheduler.MinMaxConcurrency, ReasonixParallelScheduler.MaxMaxConcurrency);
+        return ReasonixParallelScheduler.DefaultMaxConcurrency;
+    }
+
+    private void SelectMaxConcurrency(int value)
+    {
+        foreach (var item in MaxConcurrencyBox.Items.OfType<ComboBoxItem>())
+            if (string.Equals(item.Tag?.ToString(), value.ToString(), StringComparison.Ordinal)) { MaxConcurrencyBox.SelectedItem = item; return; }
+    }
+
     private void StopReasonixTask_Click(object sender, RoutedEventArgs e)
     {
-        if (latestReasonixTask is null || !latestReasonixTask.IsRunning) return;
+        if (selectedReasonixTask is null || !selectedReasonixTask.IsRunning) return;
         if (MessageBox.Show("将终止临时 TaskHost 及其 Reasonix 子进程。已写入的项目文件不会删除，继续吗？", "停止 Reasonix 任务", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
-        new ReasonixIntegrationService(settings.CodexRoot, appPaths).StopTask(latestReasonixTask);
+        new ReasonixIntegrationService(settings.CodexRoot, appPaths).StopTask(selectedReasonixTask);
         RefreshReasonixTasks();
     }
 
@@ -824,21 +1163,21 @@ public partial class MainWindow : Window
 
     private async void RetryReasonixTask_Click(object sender, RoutedEventArgs e)
     {
-        if (latestReasonixTask is null) return;
+        if (selectedReasonixTask is null) return;
         var service = new ReasonixIntegrationService(settings.CodexRoot, appPaths);
-        var blockReason = service.RetryBlockReason(latestReasonixTask);
+        var blockReason = service.RetryBlockReason(selectedReasonixTask);
         if (blockReason is not null) { MessageBox.Show(blockReason, "无法重试", MessageBoxButton.OK, MessageBoxImage.Warning); return; }
         var confirm = MessageBox.Show("将保留旧尝试证据并归档到 attempts/，从当前源码继续收尾；项目改动不会回滚。由 Helper 启动的重试无法自动唤醒既有 GPT 轮次，完成后请返回原 Codex 任务继续验收。继续吗？", "重试未完成任务", MessageBoxButton.YesNo, MessageBoxImage.Warning);
         if (confirm != MessageBoxResult.Yes) return;
-        var result = await service.RetryTaskAsync(latestReasonixTask);
+        var result = await service.RetryTaskAsync(selectedReasonixTask);
         RefreshReasonixTasks();
         MessageBox.Show(result.Message, result.Success ? "已启动重试" : "无法重试", MessageBoxButton.OK, result.Success ? MessageBoxImage.Information : MessageBoxImage.Warning);
     }
 
     private void ReturnToCodexTask_Click(object sender, RoutedEventArgs e)
     {
-        if (latestReasonixTask is null) return;
-        var uri = CodexThreadUri.Build(latestReasonixTask.ReturnUri, latestReasonixTask.CodexThreadId);
+        if (selectedReasonixTask is null) return;
+        var uri = CodexThreadUri.Build(selectedReasonixTask.ReturnUri, selectedReasonixTask.CodexThreadId);
         if (uri is null) { MessageBox.Show("没有可用的原 Codex 任务 URI。", "返回原 Codex 任务", MessageBoxButton.OK, MessageBoxImage.Information); return; }
         try { Process.Start(new ProcessStartInfo(uri) { UseShellExecute = true }); }
         catch (Exception ex) { ShowError(ex); }
@@ -846,24 +1185,24 @@ public partial class MainWindow : Window
 
     private void CopyReasonixTaskId_Click(object sender, RoutedEventArgs e)
     {
-        if (latestReasonixTask is null) return;
+        if (selectedReasonixTask is null) return;
         try
         {
-            Clipboard.SetText(latestReasonixTask.TaskId);
-            MessageBox.Show($"已复制任务 ID：{latestReasonixTask.TaskId}", "已复制", MessageBoxButton.OK, MessageBoxImage.Information);
+            Clipboard.SetText(selectedReasonixTask.TaskId);
+            MessageBox.Show($"已复制任务 ID：{selectedReasonixTask.TaskId}", "已复制", MessageBoxButton.OK, MessageBoxImage.Information);
         }
         catch (Exception ex) { ShowError(ex); }
     }
 
     private void OpenReasonixTaskDirectory_Click(object sender, RoutedEventArgs e)
     {
-        if (latestReasonixTask is null || string.IsNullOrWhiteSpace(latestReasonixTask.TaskDirectory)) return;
+        if (selectedReasonixTask is null || string.IsNullOrWhiteSpace(selectedReasonixTask.TaskDirectory)) return;
         try
         {
-            if (Directory.Exists(latestReasonixTask.TaskDirectory))
-                Process.Start(new ProcessStartInfo { FileName = latestReasonixTask.TaskDirectory, UseShellExecute = true });
+            if (Directory.Exists(selectedReasonixTask.TaskDirectory))
+                Process.Start(new ProcessStartInfo { FileName = selectedReasonixTask.TaskDirectory, UseShellExecute = true });
             else
-                MessageBox.Show("任务目录不存在：" + latestReasonixTask.TaskDirectory, "无法打开", MessageBoxButton.OK, MessageBoxImage.Warning);
+                MessageBox.Show("任务目录不存在：" + selectedReasonixTask.TaskDirectory, "无法打开", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
         catch (Exception ex) { ShowError(ex); }
     }

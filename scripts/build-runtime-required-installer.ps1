@@ -20,6 +20,8 @@ foreach ($target in $targets) {
     & $dotnet publish (Join-Path $root $target.Project) -c Release -r win-x64 --self-contained false -p:PublishSingleFile=false -o $output --nologo
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
+# Strip debug symbols from the publish output so the installer never contains .pdb files.
+Get-ChildItem -LiteralPath $publishRoot -Recurse -Filter '*.pdb' -File | Remove-Item -Force
 $iscc = @((Join-Path $env:LOCALAPPDATA 'Programs\Inno Setup 6\ISCC.exe'), 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe', 'C:\Program Files\Inno Setup 6\ISCC.exe') | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
 if (-not $iscc) { throw 'Inno Setup 6 is required.' }
 & $iscc "/DMyAppVersion=$version" "/DMyMainDir=$(Join-Path $publishRoot 'main')" "/DMyHelperDir=$(Join-Path $publishRoot 'helper')" "/DMyRescueDir=$(Join-Path $publishRoot 'rescue')" "/DMyOutputDir=$artifactRoot" (Join-Path $root 'installer\CodexHelperRuntimeRequired.iss')

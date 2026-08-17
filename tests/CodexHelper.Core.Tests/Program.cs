@@ -71,6 +71,7 @@ internal static class Program
         ("Reasonix 预计剩余百分比单调保护", TestReasonixRemainingMonotonicAsync),
         ("Reasonix PROGRESS checks 协议与陈旧忽略", TestReasonixProgressChecksProtocolAsync),
         ("Reasonix 合同启动前体检与安全归一化", TestReasonixContractHealthAsync),
+        ("Reasonix 单项 workerChecks 派生与真实进展守卫（单元素/旧别名/空数组/缺失兼容、无进展终止并清理子进程、真实写入重置窗口）", TestReasonixWorkerChecksAndNoProgressAsync),
         ("Reasonix 影响范围增量验收映射", TestReasonixAcceptanceScopeAsync),
         ("精简发布策略静态校验（4.0.1 版本一致/无 full-portable/运行库检测文案）", TestThinReleasePolicyStaticAsync),
         ("Reasonix 并行调度模型（并发2/依赖链/同文件/目录覆盖/大小写/不同项目/失败依赖/槽位/通配符）", TestReasonixParallelSchedulerAsync),
@@ -99,7 +100,47 @@ internal static class Program
         ("Reasonix 刷新单飞与重入/取消（自动跳过/手动排队/页面可见/关闭）", TestReasonixRefreshCoordinatorAsync),
         ("协作模式互斥与安全回退（三态互斥/非法值回退 Off）", TestCollaborationModeExclusiveAsync),
         ("Harness 诊断后台执行/可取消/命令有界超时", TestHarnessDiagnoseBackgroundAndTimeoutAsync),
-        ("Harness 任务中心停止回退（非存活会话 session.cancel/无会话不误报）", TestHarnessTaskCenterStopFallbackAsync)
+        ("Harness 任务中心停止回退（非存活会话 session.cancel/无会话不误报）", TestHarnessTaskCenterStopFallbackAsync),
+        ("Harness 任务中心对账（多条假 running 一次列表/运行保留/终态映射/缺失会话不永久运行/历史缺失损坏或RPC失败不永久运行）", TestHarnessTaskCenterReconcileAsync),
+        ("Harness 退化防护（正常不误判/文本重复熔断/工具重复熔断/重放 seq 去重）", TestHarnessDegenerationGuardAsync),
+        ("Harness 接回核验与并发单飞（session.list 核验/已结束缺失不接回/并发只提交一次）", TestHarnessResumeVerifyAndSingleFlightAsync),
+        ("Harness 隐藏宿主参数与启动（健康安静退出/缺失参数/启动参数 CreateNoWindow/等待子进程退出码）", TestHarnessHiddenHostAsync),
+        ("Harness 计划任务 XML 隐藏宿主动作（非 node/绝对路径/转义/旧 node 识别 stale）", TestHarnessStartupXmlAsync)
+        ,("Harness 合同设置默认值、归一化、preset 与完全控制环境", TestHarnessContractOptionsAsync)
+        ,("Harness 执行策略映射与强度预算（模式→agentPreset/强度检查预算/恢复推荐）", TestHarnessExecutionPolicyAsync)
+        ,("Harness 任务状态字段（模式/权限/强度/会话状态/降级记录）", TestHarnessTaskStatusFieldsAsync)
+        ,("全量测试进程退出回归（子进程看门狗/无遗留）", TestTestProcessExitRegressionAsync)
+        ,("DSH Skills/插件备份恢复（发现/中文路径/跨用户名/冲突/损坏/越界/重解析点）", TestDshExtensionBackupAsync)
+        ,("DSH Home 解析（环境变量/默认/规范化）", TestDshHomeResolutionAsync)
+        ,("DSH 组件声明解析与校验（内嵌/侧车/受信/过期/拒绝命令与密钥）", TestDshComponentManifestAsync)
+        ,("DSH 组件扫描与状态（skills/预设/插件/静态提示/不泄密钥）", TestDshComponentScanAsync)
+        ,("DSH 侧车按声明身份发现（可读文件名/Base64 旧名/重复/损坏/不相关/预设 componentId）", TestDshSidecarIdentityAsync)
+        ,("DSH 迁移包导出导入（排除/预览/冲突/损坏/越界/回滚）", TestDshTransferAsync)
+        ,("DSH 插件发现 Profile 注册规则（引号/注释/字段值/content-type/yaml 排除）", TestDshPluginDiscoveryAsync)
+        ,("DSH 扫描预算与排除（大量伪配置/被排除目录不识别且扫描有界）", TestDshScanBudgetAndExclusionsAsync)
+        ,("DSH 扫描取消（已取消 token 立即中止）", TestDshScanCancellationAsync)
+        ,("滚动链纯逻辑（无溢出/顶部/底部/中间/空视口/delta0）", TestScrollChainLogicAsync)
+        ,("Harness 启动失败诊断（正常启动/退出码/插件崩溃/ANSI/超长/脱敏/空输出）", TestHarnessStartupDiagnosticsAsync)
+        ,("Harness 合同会话隔离（不同合同不同 Session/指纹变化强制新会话/同项目其他运行合同 busy/旧 affinity 不复用）", TestHarnessContractSessionIsolationAsync)
+        ,("Harness 报告完成门禁（有效报告通过/缺失/陈旧/错 ID/错指纹/缺字段失败/REVIEW_PACKET 记录校验）", TestHarnessReportGateAsync)
+        ,("Harness step 重置与工具分片聚合（turn/start 重置/分片不误计数/参数超限不误判/HTTP 轮询一致）", TestHarnessStepResetAndToolAggregationAsync)
+        ,("Harness runner 零证据（会话已建/无事件/无步骤/无 token 最终 failed，不长期运行中）", TestHarnessRunnerZeroEvidenceFailsAsync)
+        ,("Harness runner 断流后 HTTP 有进度（不误判失败/保持 running/增量回退到终态）", TestHarnessRunnerHttpProgressAfterDisconnectAsync)
+        ,("Harness rootCauseKey 组键接回（同组键接回/不同组键新建）", TestHarnessRootCauseKeyResumeAsync)
+        ,("Harness 阶段进展防护（不同目标读取不停止/写入检查报告进展清重复/同阶段无进展循环停止/大量推理不改步骤/摘要分离）", TestHarnessProgressAwareGuardAsync)
+        ,("Harness 跨任务目录单飞占位（无会话 starting 持租约即占位，第二合同 busy 含旧任务 ID；孤儿 starting 不阻塞）", TestHarnessCrossDirectorySingleflightOccupancyAsync)
+        ,("Harness 会话创建前停止持久化取消意图（停止后 StartAsync 兑现取消，不建会话不提交）", TestHarnessPersistedCancelIntentStartAsync)
+        ,("Harness 报告缩进列表解析（多行修改文件/workerChecks/风险通过，行内与结构校验保持）", TestHarnessReportMultilineListAsync)
+        ,("Harness 原子项目互斥（项目级跨进程租约占位：同项目第二任务 busy 含占用方，不创建会话不提交）", TestHarnessProjectLeaseAtomicMutexAsync)
+        ,("Harness 项目租约崩溃遗留与机械并行例外（残留锁文件不阻塞重新获取；manifest 显式 parallelWriteSets 放行绕过分互斥）", TestHarnessProjectLeaseCrashAndParallelAsync)
+        ,("Harness 事件流长时间无帧回退 HTTP（无帧超时放弃连接计入重连，耗尽降级 HTTP 增量轮询到达终态并写明降级事实）", TestHarnessEventStreamFrameTimeoutFallbackAsync)
+        ,("Harness 目录真相源与旧状态迁移（双写/真源优先/损坏回退/自动迁移）", TestHarnessTaskStateStoreAsync)
+        ,("Harness 合同体检与 WORKER_ACCEPTANCE 派生（四件套/去重/职责移交/截图阻止）", TestHarnessContractHealthAsync)
+        ,("Harness 事件到 PROGRESS.json（真实事件阶段/检查清单/终态 stage done）", TestHarnessProgressFromEventsAsync)
+        ,("Harness 断流 HTTP 回退保持 PROGRESS 状态协议（不虚报完成/不无限运行中）", TestHarnessProgressDisconnectFallbackAsync)
+        ,("Harness 停止旧任务后新任务可启动（取消意图兑现/终态不被覆盖）", TestHarnessStopThenNewTaskStartsAsync)
+        ,("Harness 任务中心不重复提交（运行中对账/重复启动不二次创建会话）", TestHarnessTaskCenterNoResubmitAsync)
+        ,("Harness active-harness-task 记录语义（启动占位/cancel-requested/终态清除）", TestHarnessActiveTaskRecordAsync)
     ];
 
     private static async Task<int> Main()
@@ -1063,9 +1104,10 @@ internal static class Program
             var executable = Path.Combine(root, "reasonix-cli.cmd");
             await File.WriteAllTextAsync(executable, """
                 @echo off
+                if "%~1"=="--version" ( echo 1.19.3 & exit /b 0 )
                 echo {"kind":"turn_started"}
                 echo {"kind":"turn_started"}
-                powershell -NoProfile -ExecutionPolicy Bypass -File %CODEX_HELPER_TEST_WRITE_SCRIPT%
+                if defined CODEX_HELPER_TEST_WRITE_SCRIPT ( powershell -NoProfile -ExecutionPolicy Bypass -File %CODEX_HELPER_TEST_WRITE_SCRIPT% )
                 exit /b 0
                 """);
             var service = new ReasonixIntegrationService(codexRoot, app);
@@ -1124,10 +1166,10 @@ internal static class Program
             root = parent;
         }
 
-        // 版本源必须是 3.4.0。
+        // 版本源必须与当前发布版本一致。
         var props = await File.ReadAllTextAsync(Path.Combine(root, "Directory.Build.props"));
         var match = System.Text.RegularExpressions.Regex.Match(props, @"<Version>([^<]+)</Version>");
-        Assert(match.Success && match.Groups[1].Value == "4.0.1", "版本源必须为 4.0.1，实际：" + (match.Success ? match.Groups[1].Value : "未找到"));
+        Assert(match.Success && match.Groups[1].Value == "4.3.0", "版本源必须为 4.3.0，实际：" + (match.Success ? match.Groups[1].Value : "未找到"));
 
         // 安装器：含微软官方链接、无 full/portable 旧引导、运行库检测不依赖单一目录。
         var iss = await File.ReadAllTextAsync(Path.Combine(root, "installer", "CodexHelperRuntimeRequired.iss"));
@@ -1142,10 +1184,10 @@ internal static class Program
         Assert(!release.Contains("CodexHelper.iss", StringComparison.Ordinal) && !release.Contains("portable", StringComparison.OrdinalIgnoreCase) && !release.Contains("self-contained true", StringComparison.OrdinalIgnoreCase), "精简发布入口不得生成或选入 full/portable 资产。");
         Assert(release.Contains("codex-helper-v$version-setup.exe", StringComparison.Ordinal) && release.Contains("sha256", StringComparison.Ordinal), "精简发布必须产出版本化 setup 与 SHA-256。");
 
-        // README：开发版本 3.4.0，但首页下载区必须指向已发布的 v3.3.3（不得生成虚假的 v3.4.0 Release 下载链接）。
+        // README：开发版本与当前正式 Release 保持一致，首页只提供版本化精简安装包。
         var readme = await File.ReadAllTextAsync(Path.Combine(root, "README.md"));
-        Assert(readme.Contains("当前开发版本：`4.0.1`", StringComparison.Ordinal), "README 当前开发版本应为 4.0.1。");
-        Assert(readme.Contains("releases/download/v4.0.1/codex-helper-v4.0.1-setup.exe", StringComparison.Ordinal) && readme.Contains("releases/tag/v4.0.1", StringComparison.Ordinal), "README 首页应指向 v4.0.1 正式 Release 与版本化安装包。");
+        Assert(readme.Contains("当前开发版本：`4.3.0`", StringComparison.Ordinal), "README 当前开发版本应为 4.3.0。");
+        Assert(readme.Contains("releases/download/v4.3.0/codex-helper-v4.3.0-setup.exe", StringComparison.Ordinal) && readme.Contains("releases/tag/v4.3.0", StringComparison.Ordinal), "README 首页应指向 v4.3.0 正式 Release 与版本化安装包。");
         Assert(readme.Contains("https://dotnet.microsoft.com/zh-cn/download/dotnet/8.0", StringComparison.Ordinal), "README 下载区应提供微软官方 .NET 8 下载页。");
         Assert(!readme.Contains("setup-full", StringComparison.OrdinalIgnoreCase) && !readme.Contains("portable.zip", StringComparison.OrdinalIgnoreCase), "README 不得再推荐 full/portable 下载。");
     }
@@ -1227,16 +1269,17 @@ internal static class Program
             var executable = Path.Combine(root, "reasonix-cli.cmd");
             await File.WriteAllTextAsync(executable, """
                 @echo off
+                if "%~1"=="--version" ( echo 1.19.3 & exit /b 0 )
                 setlocal EnableDelayedExpansion
                 echo {"kind":"turn_started"}
                 powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Sleep -Milliseconds 400"
-                powershell -NoProfile -ExecutionPolicy Bypass -File %CODEX_HELPER_TEST_WRITE_SCRIPT% progress3
+                if defined CODEX_HELPER_TEST_WRITE_SCRIPT ( powershell -NoProfile -ExecutionPolicy Bypass -File %CODEX_HELPER_TEST_WRITE_SCRIPT% progress3 )
                 echo {"kind":"turn_started"}
                 powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Sleep -Milliseconds 400"
-                powershell -NoProfile -ExecutionPolicy Bypass -File %CODEX_HELPER_TEST_WRITE_SCRIPT% progress1
+                if defined CODEX_HELPER_TEST_WRITE_SCRIPT ( powershell -NoProfile -ExecutionPolicy Bypass -File %CODEX_HELPER_TEST_WRITE_SCRIPT% progress1 )
                 echo {"kind":"turn_started"}
                 powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Sleep -Milliseconds 400"
-                powershell -NoProfile -ExecutionPolicy Bypass -File %CODEX_HELPER_TEST_WRITE_SCRIPT% report
+                if defined CODEX_HELPER_TEST_WRITE_SCRIPT ( powershell -NoProfile -ExecutionPolicy Bypass -File %CODEX_HELPER_TEST_WRITE_SCRIPT% report )
                 exit /b 0
                 """);
             var service = new ReasonixIntegrationService(codexRoot, app);
@@ -1407,6 +1450,144 @@ internal static class Program
             var buildLines = workerAccept2.Split('\n').Count(line => line.TrimEnd() == "- build");
             Assert(buildLines == 1, "WORKER_ACCEPTANCE 应去重 build 只保留一项。内容：" + workerAccept2);
             Assert(!workerAccept2.Contains("screenshot the app", StringComparison.Ordinal), "视觉 workerCheck 应整体移交 GPT，不披露正文。内容：" + workerAccept2);
+            service.Disable();
+        });
+    }
+
+    private static async Task TestReasonixWorkerChecksAndNoProgressAsync()
+    {
+        var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+
+        // ---- 场景 A：单项 workerChecks 派生（PS 5.1 ConvertFrom-Json 单元素数组标量解包修复）+ 兼容矩阵 ----
+        await WithTempDirectoryAsync("reasonix-checks-single", async root =>
+        {
+            var codexRoot = Path.Combine(root, "codex");
+            Directory.CreateDirectory(codexRoot);
+            await File.WriteAllTextAsync(Path.Combine(codexRoot, "AGENTS.md"), "keep\n");
+            var app = new AppPaths(Path.Combine(root, "app"));
+            var executable = Path.Combine(root, "reasonix-cli.cmd");
+            // 先落交付报告再发 run_done；真实执行器把 run_done 视为终态，不应让测试夹具制造“终态先于报告”的竞态。
+            await File.WriteAllTextAsync(executable, "@echo off\r\necho {\"kind\":\"turn_started\"}\r\nif defined CODEX_HELPER_TEST_TASK ( echo done>\"%CODEX_HELPER_TEST_TASK%\\EXECUTION_REPORT.md\" )\r\necho {\"kind\":\"run_done\",\"ok\":true}\r\nexit /b 0\r\n");
+            var service = new ReasonixIntegrationService(codexRoot, app);
+            service.Enable(executable, "opencode/deepseek-v4-flash", ReasonixPermissionMode.Full);
+            var project = Path.Combine(root, "project");
+            var reasonixHome = Path.Combine(root, "rh");
+            Directory.CreateDirectory(reasonixHome);
+            await File.WriteAllTextAsync(Path.Combine(reasonixHome, "config.toml"), "default_model = \"opencode/deepseek-v4-flash\"\n");
+
+            // 单元素 workerChecks（完整命令行字符串）+ 单元素旧别名 + 空数组 + 缺失字段。
+            var variants = new[]
+            {
+                (name: "run-single", manifest: """{"workerChecks":["powershell -ExecutionPolicy Bypass -File scripts\\test.ps1"]}""", check: "scripts\\test.ps1", expectDefault: false),
+                (name: "run-alias", manifest: """{"executionWorkerChecks":["build single"]}""", check: "build single", expectDefault: false),
+                (name: "run-empty", manifest: """{"workerChecks":[]}""", check: "无显式 workerChecks", expectDefault: true),
+                (name: "run-missing", manifest: "{}", check: "无显式 workerChecks", expectDefault: true),
+            };
+            foreach (var v in variants)
+            {
+                var task = Path.Combine(project, ".codex-helper", "runs", v.name);
+                Directory.CreateDirectory(task);
+                foreach (var contract in new[] { "SPEC.md", "ACCEPTANCE.md", "HANDOFF.md" })
+                    await File.WriteAllTextAsync(Path.Combine(task, contract), "test");
+                await File.WriteAllTextAsync(Path.Combine(task, "manifest.json"), v.manifest, new UTF8Encoding(false));
+                var result = await RunPowerShellAsync(Path.Combine(codexRoot, "skills", "reasonix-executor", "invoke-reasonix.ps1"), project, task, reasonixHome, "", "thread-" + v.name, taskDir: task);
+                var hostError = File.Exists(Path.Combine(task, "helper-stderr.txt"))
+                    ? await File.ReadAllTextAsync(Path.Combine(task, "helper-stderr.txt"))
+                    : string.Empty;
+                var statusPath = Path.Combine(app.ReasonixTasksDirectory, v.name + ".json");
+                var hostStatus = File.Exists(statusPath) ? await File.ReadAllTextAsync(statusPath) : string.Empty;
+                Assert(result.ExitCode == 0, "派生场景 runner 应正常结束（" + v.name + "）：" + result.Output + "\nHOST STDERR:\n" + hostError + "\nHOST STATUS:\n" + hostStatus);
+                var wa = await File.ReadAllTextAsync(Path.Combine(task, "WORKER_ACCEPTANCE.md"));
+                Assert(wa.Contains(v.check, StringComparison.Ordinal), $"WORKER_ACCEPTANCE 派生不符（{v.name}）：→ " + wa);
+                var hasDefault = wa.Contains("无显式 workerChecks", StringComparison.Ordinal);
+                Assert(hasDefault == v.expectDefault, $"“无显式 workerChecks”降级标记应为 {(v.expectDefault ? "出现" : "不出现")}（{v.name}）：→ " + wa);
+                // 单元素真实 workerCheck 场景必须保留该项且任务正常完成，不得降级为“无显式 workerChecks”。
+                if (v.name == "run-single")
+                {
+                    var status = JsonSerializer.Deserialize<ReasonixTaskStatus>(await File.ReadAllTextAsync(Path.Combine(app.ReasonixTasksDirectory, "run-single.json")), options)!;
+                    Assert(string.Equals(status.State, "completed", StringComparison.OrdinalIgnoreCase), "单项 workerChecks 场景应正常完成：" + status.State + "/" + status.Message);
+                }
+            }
+            service.Disable();
+        });
+
+        // ---- 场景 B：无进展循环终止（大量 reasoning 事件且无任何推进 → no-progress 失败态 + 清理子进程）----
+        await WithTempDirectoryAsync("reasonix-no-progress", async root =>
+        {
+            var codexRoot = Path.Combine(root, "codex");
+            Directory.CreateDirectory(codexRoot);
+            await File.WriteAllTextAsync(Path.Combine(codexRoot, "AGENTS.md"), "keep\n");
+            var app = new AppPaths(Path.Combine(root, "app"));
+            // 700 个 reasoning 事件（阈值 600）之后才能写出 marker；宿主在阈值处终止 CLI 进程树，
+            // 因此 marker 必须不存在才能真正证明“终止/清理子进程”生效。
+            // （PowerShell 管道按行拉取：宿主读到第 N 行时，cmd 最多写到第 N 行，不会超前写完 700 行。）
+            var executable = Path.Combine(root, "reasonix-cli-loop.cmd");
+            var loopLines = new StringBuilder("@echo off\r\n");
+            for (var i = 0; i < 700; i++) loopLines.Append("echo {\"kind\":\"reasoning\"}\r\n");
+            // 事件行可能被 Windows 管道缓冲；给宿主一个真实的终止窗口，避免 CLI 已写完 marker 后
+            // 才读取到第 600 个事件而造成测试假阴性。
+            loopLines.Append("ping -n 3 127.0.0.1 >nul\r\n");
+            loopLines.Append("if defined CODEX_HELPER_TEST_TASK ( echo FINISHED>\"%CODEX_HELPER_TEST_TASK%\\cli-finished.marker\" )\r\n");
+            loopLines.Append("exit /b 0\r\n");
+            await File.WriteAllTextAsync(executable, loopLines.ToString());
+            var service = new ReasonixIntegrationService(codexRoot, app);
+            service.Enable(executable, "opencode/deepseek-v4-flash", ReasonixPermissionMode.Full);
+            var project = Path.Combine(root, "project");
+            var task = Path.Combine(project, ".codex-helper", "runs", "run-noprogress");
+            Directory.CreateDirectory(task);
+            foreach (var contract in new[] { "SPEC.md", "ACCEPTANCE.md", "HANDOFF.md", "manifest.json" })
+                await File.WriteAllTextAsync(Path.Combine(task, contract), contract == "manifest.json" ? "{}" : "test");
+            var reasonixHome = Path.Combine(root, "rh");
+            Directory.CreateDirectory(reasonixHome);
+            await File.WriteAllTextAsync(Path.Combine(reasonixHome, "config.toml"), "default_model = \"opencode/deepseek-v4-flash\"\n");
+            var result = await RunPowerShellAsync(Path.Combine(codexRoot, "skills", "reasonix-executor", "invoke-reasonix.ps1"), project, task, reasonixHome, "", "thread-noprogress", taskDir: task);
+            Assert(result.ExitCode == 0, "no-progress 宿主应自行收敛退出而非挂死：" + result.Output);
+            var status = JsonSerializer.Deserialize<ReasonixTaskStatus>(await File.ReadAllTextAsync(Path.Combine(app.ReasonixTasksDirectory, "run-noprogress.json")), options)!;
+            Assert(string.Equals(status.State, "failed", StringComparison.OrdinalIgnoreCase) && status.FailureKind == "no-progress" && status.Phase == "blocked",
+                $"无进展守卫应以明确 no-progress 失败态结束：state={status.State}, kind={status.FailureKind}, phase={status.Phase}, message={status.Message}");
+            Assert(File.Exists(Path.Combine(task, "FAILURE_REPORT.md")), "no-progress 应写入 FAILURE_REPORT.md。");
+            var failure = await File.ReadAllTextAsync(Path.Combine(task, "FAILURE_REPORT.md"));
+            Assert(failure.Contains("no-progress", StringComparison.Ordinal), "失败报告应标注 no-progress 类型：" + failure);
+            Assert(!File.Exists(Path.Combine(task, "cli-finished.marker")), "无进展终止必须终止/清理 CLI 子进程（marker 不得被写出）。");
+            Assert(!File.Exists(Path.Combine(task, "EXECUTION_REPORT.md")), "no-progress 不得伪造交付报告。");
+            service.Disable();
+        });
+
+        // ---- 场景 C：真实写入后重置观察窗口（750 事件分段 + 报告写入/终态，不得误杀正常长任务）----
+        await WithTempDirectoryAsync("reasonix-progress-reset", async root =>
+        {
+            var codexRoot = Path.Combine(root, "codex");
+            Directory.CreateDirectory(codexRoot);
+            await File.WriteAllTextAsync(Path.Combine(codexRoot, "AGENTS.md"), "keep\n");
+            var app = new AppPaths(Path.Combine(root, "app"));
+            // 750 个 reasoning 事件（超过阈值)但每 250 个都真实写入 EXECUTION_REPORT.md（报告写入重置窗口），
+            // 末尾 run_done 终态；任务必须正常完成、不得被误判为无进展。
+            var executable = Path.Combine(root, "reasonix-cli-reset.cmd");
+            var resetLines = new StringBuilder("@echo off\r\n");
+            void Emit(int n) { for (var i = 0; i < n; i++) resetLines.Append("echo {\"kind\":\"reasoning\"}\r\n"); }
+            Emit(250);
+            resetLines.Append("if defined CODEX_HELPER_TEST_TASK echo.>>\"%CODEX_HELPER_TEST_TASK%\\EXECUTION_REPORT.md\"\r\n");
+            Emit(250);
+            resetLines.Append("if defined CODEX_HELPER_TEST_TASK echo.>>\"%CODEX_HELPER_TEST_TASK%\\EXECUTION_REPORT.md\"\r\n");
+            Emit(250);
+            resetLines.Append("if defined CODEX_HELPER_TEST_TASK echo.>>\"%CODEX_HELPER_TEST_TASK%\\EXECUTION_REPORT.md\"\r\n");
+            resetLines.Append("echo {\"kind\":\"run_done\",\"ok\":true}\r\nexit /b 0\r\n");
+            await File.WriteAllTextAsync(executable, resetLines.ToString());
+            var service = new ReasonixIntegrationService(codexRoot, app);
+            service.Enable(executable, "opencode/deepseek-v4-flash", ReasonixPermissionMode.Full);
+            var project = Path.Combine(root, "project");
+            var task = Path.Combine(project, ".codex-helper", "runs", "run-reset");
+            Directory.CreateDirectory(task);
+            foreach (var contract in new[] { "SPEC.md", "ACCEPTANCE.md", "HANDOFF.md", "manifest.json" })
+                await File.WriteAllTextAsync(Path.Combine(task, contract), contract == "manifest.json" ? "{}" : "test");
+            var reasonixHome = Path.Combine(root, "rh");
+            Directory.CreateDirectory(reasonixHome);
+            await File.WriteAllTextAsync(Path.Combine(reasonixHome, "config.toml"), "default_model = \"opencode/deepseek-v4-flash\"\n");
+            var result = await RunPowerShellAsync(Path.Combine(codexRoot, "skills", "reasonix-executor", "invoke-reasonix.ps1"), project, task, reasonixHome, "", "thread-reset", taskDir: task);
+            Assert(result.ExitCode == 0, "真实写入的长任务应正常结束：" + result.Output);
+            var status = JsonSerializer.Deserialize<ReasonixTaskStatus>(await File.ReadAllTextAsync(Path.Combine(app.ReasonixTasksDirectory, "run-reset.json")), options)!;
+            Assert(string.Equals(status.State, "completed", StringComparison.OrdinalIgnoreCase), "真实写入应重置窗口并正常完成：" + status.State + "/" + status.Message);
+            Assert(status.FailureKind == null || status.FailureKind.Length == 0, "正常完成不得带失败类型：" + status.FailureKind);
             service.Disable();
         });
     }
@@ -1622,20 +1803,21 @@ internal static class Program
                 """);
             await File.WriteAllTextAsync(executable, """
                 @echo off
+                if "%~1"=="--version" ( echo 1.19.3 & exit /b 0 )
                 setlocal EnableDelayedExpansion
                 echo {"kind":"turn_started"}
                 echo {"kind":"reasoning","text":"plan"}
                 powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Sleep -Milliseconds 700"
-                powershell -NoProfile -ExecutionPolicy Bypass -File %CODEX_HELPER_TEST_WRITE_SCRIPT% create
+                if defined CODEX_HELPER_TEST_WRITE_SCRIPT ( powershell -NoProfile -ExecutionPolicy Bypass -File %CODEX_HELPER_TEST_WRITE_SCRIPT% create )
                 echo {"kind":"tool_dispatch","tool":"Bash"}
                 echo {"kind":"usage","usage":{"input_tokens":500,"output_tokens":20,"cache_hit_tokens":100}}
                 powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Sleep -Milliseconds 900"
-                powershell -NoProfile -ExecutionPolicy Bypass -File %CODEX_HELPER_TEST_WRITE_SCRIPT% grow
+                if defined CODEX_HELPER_TEST_WRITE_SCRIPT ( powershell -NoProfile -ExecutionPolicy Bypass -File %CODEX_HELPER_TEST_WRITE_SCRIPT% grow )
                 echo {"kind":"turn_started"}
                 echo {"kind":"reasoning","text":"verify"}
                 powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Sleep -Milliseconds 700"
-                powershell -NoProfile -ExecutionPolicy Bypass -File %CODEX_HELPER_TEST_WRITE_SCRIPT% grow
-                if defined CODEX_HELPER_TEST_TASK ( powershell -NoProfile -ExecutionPolicy Bypass -File %CODEX_HELPER_TEST_WRITE_SCRIPT% report )
+                if defined CODEX_HELPER_TEST_WRITE_SCRIPT ( powershell -NoProfile -ExecutionPolicy Bypass -File %CODEX_HELPER_TEST_WRITE_SCRIPT% grow )
+                if defined CODEX_HELPER_TEST_TASK ( if defined CODEX_HELPER_TEST_WRITE_SCRIPT ( powershell -NoProfile -ExecutionPolicy Bypass -File %CODEX_HELPER_TEST_WRITE_SCRIPT% report ) )
                 echo {"kind":"run_done","ok":true,"num_turns":2}
                 exit /b 0
                 """);
@@ -2086,11 +2268,12 @@ internal static class Program
                     """);
                 var fake = """
                     @echo off
+                    if "%~1"=="--version" ( echo 1.19.3 & exit /b 0 )
                     setlocal EnableDelayedExpansion
                     echo {"kind":"turn_started"}
-                    powershell -NoProfile -ExecutionPolicy Bypass -File %CODEX_HELPER_TEST_WRITE_SCRIPT% create
+                    if defined CODEX_HELPER_TEST_WRITE_SCRIPT ( powershell -NoProfile -ExecutionPolicy Bypass -File %CODEX_HELPER_TEST_WRITE_SCRIPT% create )
                     echo {"kind":"run_done","ok":true}
-                    if defined CODEX_HELPER_TEST_TASK ( powershell -NoProfile -ExecutionPolicy Bypass -File %CODEX_HELPER_TEST_WRITE_SCRIPT% report )
+                    if defined CODEX_HELPER_TEST_TASK ( if defined CODEX_HELPER_TEST_WRITE_SCRIPT ( powershell -NoProfile -ExecutionPolicy Bypass -File %CODEX_HELPER_TEST_WRITE_SCRIPT% report ) )
                     exit /b 0
                     """;
                 await File.WriteAllTextAsync(executable, fake);
@@ -2869,13 +3052,14 @@ internal static class Program
             var executable = Path.Combine(root, "reasonix-cli.cmd");
             await File.WriteAllTextAsync(executable, """
                 @echo off
+                if "%~1"=="--version" ( echo 1.19.3 & exit /b 0 )
                 setlocal EnableDelayedExpansion
                 echo {"kind":"turn_started"}
                 powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Sleep -Milliseconds 500"
-                powershell -NoProfile -ExecutionPolicy Bypass -File %CODEX_HELPER_TEST_WRITE_SCRIPT% progress
+                if defined CODEX_HELPER_TEST_WRITE_SCRIPT ( powershell -NoProfile -ExecutionPolicy Bypass -File %CODEX_HELPER_TEST_WRITE_SCRIPT% progress )
                 echo {"kind":"turn_started"}
                 powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Sleep -Milliseconds 900"
-                powershell -NoProfile -ExecutionPolicy Bypass -File %CODEX_HELPER_TEST_WRITE_SCRIPT% report
+                if defined CODEX_HELPER_TEST_WRITE_SCRIPT ( powershell -NoProfile -ExecutionPolicy Bypass -File %CODEX_HELPER_TEST_WRITE_SCRIPT% report )
                 exit /b 0
                 """);
             var service = new ReasonixIntegrationService(codexRoot, app);
@@ -2970,13 +3154,14 @@ internal static class Program
             var legacyCli = Path.Combine(root, "reasonix-cli.cmd");
             await File.WriteAllTextAsync(legacyCli, """
                 @echo off
+                if "%~1"=="--version" ( echo 1.19.3 & exit /b 0 )
                 setlocal EnableDelayedExpansion
                 echo {"kind":"turn_started"}
                 powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Sleep -Milliseconds 500"
-                powershell -NoProfile -ExecutionPolicy Bypass -File %CODEX_HELPER_TEST_WRITE_SCRIPT% progress
+                if defined CODEX_HELPER_TEST_WRITE_SCRIPT ( powershell -NoProfile -ExecutionPolicy Bypass -File %CODEX_HELPER_TEST_WRITE_SCRIPT% progress )
                 echo {"kind":"turn_started"}
                 powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Sleep -Milliseconds 700"
-                powershell -NoProfile -ExecutionPolicy Bypass -File %CODEX_HELPER_TEST_WRITE_SCRIPT% report
+                if defined CODEX_HELPER_TEST_WRITE_SCRIPT ( powershell -NoProfile -ExecutionPolicy Bypass -File %CODEX_HELPER_TEST_WRITE_SCRIPT% report )
                 exit /b 0
                 """);
             service.Enable(legacyCli, "opencode/deepseek-v4-flash", ReasonixPermissionMode.Full);
@@ -3009,6 +3194,9 @@ internal static class Program
             Assert(!legacyUi.Contains("step-a") && !legacyUi.Contains("step-b"), "不得展示旧式步骤名称：" + legacyUi);
 
             // C2：失败最终态（无报告）不得伪装 done；未知 phase 忽略；混合恶意 steps 只统计对象项；标准 stage 优先于 phase。
+            var failCli = Path.Combine(root, "reasonix-fail-cli.cmd");
+            await File.WriteAllTextAsync(failCli, "@echo off\r\nexit /b 0\r\n");
+            service.Enable(failCli, "opencode/deepseek-v4-flash", ReasonixPermissionMode.Full);
             var failCases = new (string Id, string ProgressText, string? ExpectStage, int? ExpectCompleted, int? ExpectTotal, string? ExpectDiag)[]
             {
                 ("run-unknownphase", """{"phase":"garbage"}""", null, null, null, "未知 phase"),
@@ -3576,7 +3764,29 @@ internal static class Program
         {
             var allowed = Path.Combine(Path.GetTempPath(), "codex-helper-tests");
             if (!PathSafety.IsWithin(root, allowed)) throw new InvalidOperationException("拒绝清理测试根目录之外的路径。");
-            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+            if (Directory.Exists(root))
+            {
+                RemoveTestReparsePoints(root);
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    private static void RemoveTestReparsePoints(string root)
+    {
+        var pending = new Stack<string>();
+        pending.Push(root);
+        while (pending.Count > 0)
+        {
+            var current = pending.Pop();
+            foreach (var directory in Directory.EnumerateDirectories(current))
+            {
+                var attributes = File.GetAttributes(directory);
+                if ((attributes & FileAttributes.ReparsePoint) != 0)
+                    Directory.Delete(directory, recursive: false);
+                else
+                    pending.Push(directory);
+            }
         }
     }
 
@@ -3619,9 +3829,21 @@ internal static class Program
         using var process = System.Diagnostics.Process.Start(start)!;
         var stdout = process.StandardOutput.ReadToEndAsync();
         var stderr = process.StandardError.ReadToEndAsync();
-        await process.WaitForExitAsync();
+        // 看门狗：子进程链（powershell → cmd → powershell…）任一环挂死都不允许拖垮整个测试进程。
+        // 超时后终止整棵进程树并关闭管道，保证测试进程一定退出且不遗留子进程（SPEC：不得遗留计时器/子进程）。
+        var exitTask = process.WaitForExitAsync();
+        var completed = await Task.WhenAny(exitTask, Task.Delay(TestChildProcessWatchdog));
+        if (completed != exitTask)
+        {
+            try { process.Kill(entireProcessTree: true); } catch { }
+            await exitTask;
+            throw new InvalidOperationException("测试子进程超时未退出，已终止进程树（脚本：" + Path.GetFileName(script) + "）。");
+        }
         return (process.ExitCode, await stdout + await stderr);
     }
+
+    /// <summary>测试子进程看门狗时限：任何被测试启动的外部进程链必须在该时限内结束，否则终止进程树并报错。</summary>
+    private static readonly TimeSpan TestChildProcessWatchdog = TimeSpan.FromSeconds(120);
 
     private static void Assert(bool condition, string message)
     {
@@ -4902,7 +5124,7 @@ internal static class Program
         public FakeHostError(string code, string message) : base(message) { Code = code; }
     }
 
-    /// <summary>内存假 Harness Host：HTTP RPC（POST /api/{method}）+ WebSocket mux（/api/events.mux）。</summary>
+    /// <summary>内存假 Harness Host：HTTP RPC（POST /api/{method}）+ rc.6 双 WebSocket（mux/host）。</summary>
     private sealed class FakeHarnessHost : IAsyncDisposable
     {
         private readonly HttpListener listener = new();
@@ -4925,20 +5147,11 @@ internal static class Program
         public async Task StartAsync()
         {
             var port = FreePort();
-            foreach (var host in new[] { "127.0.0.1", "localhost" })
-            {
-                try
-                {
-                    listener.Prefixes.Add($"http://{host}:{port}/");
-                    listener.Start();
-                    BaseUrl = $"http://{host}:{port}";
-                    break;
-                }
-                catch (HttpListenerException)
-                {
-                    listener.Prefixes.Clear();
-                }
-            }
+            // HttpListener.Start 失败后实例在部分 Windows 版本会进入 disposed 状态，
+            // 不能再 Clear Prefixes 后复用；测试统一绑定无需 URL ACL 的 IPv4 loopback。
+            listener.Prefixes.Add($"http://127.0.0.1:{port}/");
+            listener.Start();
+            BaseUrl = $"http://127.0.0.1:{port}";
             if (!listener.IsListening) throw new InvalidOperationException("无法启动测试 Host（URL ACL 拒绝）");
             acceptLoop = Task.Run(AcceptLoopAsync);
             await Task.CompletedTask;
@@ -4969,12 +5182,20 @@ internal static class Program
             try
             {
                 var path = ctx.Request.Url?.AbsolutePath ?? "/";
-                if (ctx.Request.IsWebSocketRequest && path == "/api/events.mux")
+                if (ctx.Request.IsWebSocketRequest && (path == "/api/events.mux" || path == "/api/events.host"))
                 {
                     var wsCtx = await ctx.AcceptWebSocketAsync(null);
-                    var index = Interlocked.Increment(ref WsConnections) - 1;
-                    var script = index < WsScripts.Length ? new Queue<string>(WsScripts[index]) : new Queue<string>();
-                    await RunWsScriptAsync(wsCtx.WebSocket, script);
+                    var isMux = path == "/api/events.mux";
+                    var index = isMux ? Interlocked.Increment(ref WsConnections) - 1 : -1;
+                    // host 通道仅维持 rc.6 connection generation，测试帧仍只由 mux 脚本提供。
+                    var script = isMux && index < WsScripts.Length ? new Queue<string>(WsScripts[index]) : new Queue<string>();
+                    // rc.6 的 host 通道只是同一 connection generation 的保活通道，
+                    // 不应在建立后立刻关闭。真实 Harness 会一直保持到客户端取消；
+                    // 若测试桩提前关闭它，Runner 会把 mux 的正常重连误判成 host 故障。
+                    if (isMux)
+                        await RunWsScriptAsync(wsCtx.WebSocket, script);
+                    else
+                        await KeepHostChannelOpenAsync(wsCtx.WebSocket);
                     return;
                 }
                 if (ctx.Request.HttpMethod == "POST" && path.StartsWith("/api/", StringComparison.Ordinal))
@@ -5085,6 +5306,18 @@ internal static class Program
             catch { try { ws.Abort(); } catch { } }
         }
 
+        private async Task KeepHostChannelOpenAsync(WebSocket ws)
+        {
+            try
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, cts.Token);
+            }
+            catch (OperationCanceledException) when (cts.IsCancellationRequested)
+            {
+                try { ws.Abort(); } catch { }
+            }
+        }
+
         private bool HasCall(string method)
         {
             lock (gate) return Calls.Any(call => call.Method == method);
@@ -5099,8 +5332,11 @@ internal static class Program
         }
     }
 
-    /// <summary>构造 mux WS 帧（server-request 信封 + 帧 payload）。</summary>
-    private static string WsFrame(string frameType, string sessionId, string? eventType = null, string? turnEndKind = null)
+    /// <summary>全局递增的事件 seq 源（测试内保证每帧 seq 单调，模拟真实 Host 的单调事件序号）。</summary>
+    private static long wsSeqCounter;
+
+    /// <summary>构造 mux WS 帧（server-request 信封 + 帧 payload）。seq 缺省时自动递增（单调）。</summary>
+    private static string WsFrame(string frameType, string sessionId, string? eventType = null, string? turnEndKind = null, long? seq = null)
     {
         var payload = new JsonObject { ["type"] = frameType, ["sessionId"] = sessionId };
         if (frameType == "session/event")
@@ -5111,7 +5347,7 @@ internal static class Program
             payload["event"] = new JsonObject
             {
                 ["type"] = eventType,
-                ["seq"] = 1,
+                ["seq"] = seq ?? Interlocked.Increment(ref wsSeqCounter),
                 ["time"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                 ["data"] = data
             };
@@ -5121,6 +5357,65 @@ internal static class Program
             ["type"] = "server-request",
             ["rpcId"] = "rpc-" + Guid.NewGuid().ToString("N"),
             ["method"] = frameType,
+            ["payload"] = payload
+        }.ToJsonString();
+    }
+
+    /// <summary>构造 assistant 增量帧（文本增量或工具调用增量），seq 必须显式给出（可模拟重放）。</summary>
+    private static string WsChunkFrame(string sessionId, long seq, string? eventType, string? textDelta = null, string? toolName = null, string? toolArgs = null)
+    {
+        var data = new JsonObject();
+        if (textDelta is not null) data["text"] = textDelta;
+        if (toolName is not null) data["toolName"] = toolName;
+        if (toolArgs is not null) data["arguments"] = toolArgs;
+        var payload = new JsonObject
+        {
+            ["type"] = "session/event",
+            ["sessionId"] = sessionId,
+            ["event"] = new JsonObject
+            {
+                ["type"] = eventType,
+                ["seq"] = seq,
+                ["time"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                ["data"] = data
+            }
+        };
+        return new JsonObject
+        {
+            ["type"] = "server-request",
+            ["rpcId"] = "rpc-" + Guid.NewGuid().ToString("N"),
+            ["method"] = "session/event",
+            ["payload"] = payload
+        }.ToJsonString();
+    }
+
+    private static string WsRealTextChunkFrame(string sessionId, long seq, string textDelta)
+    {
+        var payload = new JsonObject
+        {
+            ["type"] = "session/event",
+            ["sessionId"] = sessionId,
+            ["event"] = new JsonObject
+            {
+                ["type"] = "assistant/chunk",
+                ["seq"] = seq,
+                ["time"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                ["data"] = new JsonObject
+                {
+                    ["chunk"] = new JsonObject
+                    {
+                        ["type"] = "text-delta",
+                        ["index"] = 0,
+                        ["text"] = textDelta
+                    }
+                }
+            }
+        };
+        return new JsonObject
+        {
+            ["type"] = "server-request",
+            ["rpcId"] = "rpc-" + Guid.NewGuid().ToString("N"),
+            ["method"] = "session/event",
             ["payload"] = payload
         }.ToJsonString();
     }
@@ -5152,6 +5447,37 @@ internal static class Program
     private static HarnessHostReadyResult ReadyResult(string message, bool ready = true)
         => new(ready, false, 0, message, new DeepSeekHarnessStatus(false, "", "", "", false, "", "", ready,
             DeepSeekHarnessVersions.WebHostDefaultUrl, message, false, false, "", DeepSeekHarnessVersions.NodeDownloadUrl, false));
+
+    /// <summary>测试内复刻 Runner 的合同指纹算法（SPEC/HANDOFF/manifest 内容哈希），用于预写有效报告。</summary>
+    private static string TestFingerprint(string taskDirectory)
+    {
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        foreach (var name in new[] { "SPEC.md", "HANDOFF.md", "manifest.json" })
+        {
+            var path = Path.Combine(taskDirectory, name);
+            var bytes = File.Exists(path) ? File.ReadAllBytes(path) : Array.Empty<byte>();
+            hash.AppendData(Encoding.UTF8.GetBytes(name));
+            hash.AppendData([0]);
+            hash.AppendData(bytes);
+            hash.AppendData([0]);
+        }
+        return Convert.ToHexString(hash.GetHashAndReset());
+    }
+
+    /// <summary>构造固定键格式的有效报告文本（与 HarnessExecutionReportValidator 的键一致）。</summary>
+    private static string BuildReportText(string taskId, string fingerprint)
+        => $"# EXECUTION_REPORT\n\n- 任务 ID：{taskId}\n- 合同指纹：{fingerprint}\n- 退出码：0\n- 修改文件：tests/CodexHelper.Core.Tests/Program.cs\n- workerChecks：scripts\\test.ps1（通过）\n- 风险/未完成项：无\n";
+
+    /// <summary>
+    /// 预写 EXECUTION_REPORT.md。lastWriteUtc 缺省时为未来时间（保证晚于任务开始时间，
+    /// 模拟"worker 在任务运行期间已写入报告"）；传过去时间可模拟陈旧报告。
+    /// </summary>
+    private static void WriteValidReport(string taskDirectory, string taskId, string fingerprint, DateTime? lastWriteUtc = null)
+    {
+        var path = Path.Combine(taskDirectory, "EXECUTION_REPORT.md");
+        File.WriteAllText(path, BuildReportText(taskId, fingerprint), Encoding.UTF8);
+        File.SetLastWriteTimeUtc(path, lastWriteUtc ?? DateTime.UtcNow.AddMinutes(5));
+    }
 
     private static async Task TestHarnessRpcProtocolAsync()
     {
@@ -5358,8 +5684,10 @@ internal static class Program
                 [
                     new Queue<string>([
                         WsFrame("session/subscribed", "sess-run-1"),
+                        "@wait:session.prompt",
                         WsFrame("session/event", "sess-run-1", "turn/start"),
-                        "@delay:500",
+                        // session.prompt 已在监听器启动前提交；留出足够时间让测试观察 running 并写入报告门禁文件。
+                        "@delay:1500",
                         WsFrame("session/event", "sess-run-1", "turn/end", "completed")
                     ])
                 ]
@@ -5376,17 +5704,25 @@ internal static class Program
                 var taskId = Path.GetFileName(task);
                 var startTask = runner.StartAsync(project, task);
                 // 运行中不得提前标 completed，且真实 sessionId 已写入状态。
-                await WaitUntilAsync(() => runner.TryRead(taskId) is { } mid && mid.State == "running" && mid.SessionId == "sess-run-1",
-                    message: "应观察到 running 状态且 sessionId 已持久化");
-                var mid = runner.TryRead(taskId);
+                // 状态文件由监听线程原子替换写入，TryRead 可能撞上替换锁窗口返回 null，
+                // 因此让等待循环直接捕获一份有效快照复用，避免二次读取竞态。
+                HarnessTaskStatus? mid = null;
+                await WaitUntilAsync(() =>
+                {
+                    mid = runner.TryRead(taskId);
+                    return mid is not null && mid.State == "running" && mid.SessionId == "sess-run-1"
+                        && !string.IsNullOrWhiteSpace(mid.ContractFingerprint);
+                }, message: "应观察到 running 状态且 sessionId/合同指纹已持久化");
                 Assert(mid!.State == "running" && mid.SessionId == "sess-run-1" && mid.IsRunning, "运行中状态不正确");
-                Assert(mid.State != "completed", "运行中不得提前标 completed");
+                Assert(mid.State != "awaiting-gpt", "运行中不得提前标 awaiting-gpt");
+                // worker 在会话运行期间写入 EXECUTION_REPORT.md（真实时序：晚于任务开始时间）。
+                WriteValidReport(task, taskId, mid.ContractFingerprint!, lastWriteUtc: DateTime.UtcNow);
 
                 var status = await startTask;
-                Assert(status.State == "completed" && status.SessionId == "sess-run-1", "终态应为 completed 并携带 sessionId：" + status.State);
+                Assert(status.State == "awaiting-gpt" && status.SessionId == "sess-run-1", "成功终态应为 awaiting-gpt 并携带 sessionId：" + status.State + "；" + status.Message);
                 Assert(status.Message.Contains("完成", StringComparison.Ordinal), "完成消息应可读：" + status.Message);
                 var persisted = runner.TryRead(taskId);
-                Assert(persisted is not null && persisted.State == "completed" && persisted.SessionId == "sess-run-1", "状态文件应持久化终态与 sessionId");
+                Assert(persisted is not null && persisted.State == "awaiting-gpt" && persisted.SessionId == "sess-run-1", "状态文件应持久化终态与 sessionId");
 
                 var createCall = host.Calls.Single(call => call.Method == "session.create");
                 Assert(createCall.Payload["cwd"]?.GetValue<string>() == project, "create cwd 应为项目根目录");
@@ -5396,6 +5732,23 @@ internal static class Program
                 Assert(promptText.Contains(task, StringComparison.Ordinal), "提示应包含任务目录定位");
                 Assert(!promptText.Contains(contractBody, StringComparison.Ordinal), "合同正文不得进入提示");
                 Assert(!promptText.TrimStart().StartsWith("/", StringComparison.Ordinal), "提示不得以斜杠开头（避免被当作斜杠命令）");
+                // 短提示收敛：只保留任务目录/项目根定位、合同标识与启动/停止要求；
+                // 长期 persona/测试政策（集中读取/批量编辑/5 项/默认 Release build/递归扫描等）保留在
+                // codex-contract 预设与派生的 WORKER_ACCEPTANCE.md 中，运行时提示不再复制整段。
+                Assert(promptText.Contains("方案已冻结", StringComparison.Ordinal), "提示应声明方案冻结：" + promptText);
+                Assert(promptText.Contains("WORKER_ACCEPTANCE.md", StringComparison.Ordinal), "提示应指向派生的 WORKER_ACCEPTANCE.md：" + promptText);
+                Assert(promptText.Contains("绝不读取 ACCEPTANCE.md", StringComparison.Ordinal), "提示应禁止读取完整 ACCEPTANCE：" + promptText);
+                Assert(promptText.Contains("PROGRESS.json", StringComparison.Ordinal), "提示应指向 PROGRESS.json 进度协议：" + promptText);
+                Assert(!promptText.Contains("集中读取", StringComparison.Ordinal) && !promptText.Contains("批量编辑", StringComparison.Ordinal), "短提示不得复制 persona 段（集中读取/批量编辑）：" + promptText);
+                Assert(!promptText.Contains("Release build", StringComparison.Ordinal) && !promptText.Contains("完整测试套件", StringComparison.Ordinal), "短提示不得复制默认 workerChecks 测试政策：" + promptText);
+                Assert(!promptText.Contains("递归扫描", StringComparison.Ordinal), "短提示不得复制仓库扫描政策：" + promptText);
+                Assert(promptText.Contains("EXECUTION_REPORT.md", StringComparison.Ordinal), "提示应要求写入 EXECUTION_REPORT.md：" + promptText);
+                // 报告格式与 taskId/合同指纹必须在提示中明确（供完成门禁可靠校验）。
+                Assert(promptText.Contains(taskId, StringComparison.Ordinal), "提示应包含当前 taskId：" + promptText);
+                Assert(promptText.Contains("合同指纹", StringComparison.Ordinal) && promptText.Contains(mid.ContractFingerprint!, StringComparison.Ordinal), "提示应包含合同指纹：" + promptText);
+                Assert(promptText.Contains("任务 ID", StringComparison.Ordinal) && promptText.Contains("退出码", StringComparison.Ordinal)
+                    && promptText.Contains("修改文件", StringComparison.Ordinal) && promptText.Contains("workerChecks：", StringComparison.Ordinal)
+                    && promptText.Contains("风险/未完成项", StringComparison.Ordinal), "提示应说明固定键报告格式：" + promptText);
                 Assert(host.Calls.Count(call => call.Method == "session.create") == 1, "runner 只应创建一个会话");
             }
 
@@ -5483,7 +5836,7 @@ internal static class Program
                     && call.Payload["sessionId"]?.GetValue<string>() == "sess-cancel-1"), "session.cancel 应携带正确 sessionId");
             }
 
-            // 2) 事件流断开且重连耗尽 → 诚实失败，绝不提前 completed。
+            // 2) 事件流断开且重连耗尽 → 通过 HTTP session.list/history 获取真实终态。
             await using (var drop = new FakeHarnessHost
             {
                 Respond = (method, _) => method switch
@@ -5491,6 +5844,15 @@ internal static class Program
                     "session.create" => new JsonObject { ["sessionId"] = "sess-drop-1" },
                     "session.prompt" => new JsonObject { ["accepted"] = true },
                     "session.cancel" => new JsonObject { ["accepted"] = true },
+                    "session.list" => new JsonObject { ["items"] = new JsonArray(new JsonObject { ["sessionId"] = "sess-drop-1", ["running"] = false }) },
+                    "session.history" => new JsonObject { ["events"] = new JsonArray(new JsonObject
+                    {
+                        ["event"] = new JsonObject
+                        {
+                            ["type"] = "turn/end",
+                            ["data"] = new JsonObject { ["reason"] = new JsonObject { ["kind"] = "completed" } }
+                        }
+                    }) },
                     _ => new JsonObject()
                 },
                 WsScripts =
@@ -5509,12 +5871,158 @@ internal static class Program
                     MaxEventReconnects = 1,
                     EventReconnectDelay = TimeSpan.FromMilliseconds(50)
                 };
+                // 预写有效报告（未来时间模拟 worker 在会话中已交付报告），HTTP 兜底终态才可通过完成门禁。
+                WriteValidReport(task, Path.GetFileName(task), TestFingerprint(task));
                 var status = await runner.StartAsync(project, task);
-                Assert(status.State == "failed", "事件流断开且重连耗尽应诚实失败，不得 completed：" + status.State);
+                Assert(status.State == "awaiting-gpt", "事件流断开后应以 HTTP 会话终态为准：" + status.State);
                 Assert(status.SessionId == "sess-drop-1", "断开场景仍应记录真实 sessionId");
-                Assert(status.Message.Contains("事件流", StringComparison.Ordinal) && status.Message.Contains("人工确认", StringComparison.Ordinal), "断开失败消息应指引人工确认：" + status.Message);
                 var persisted = runner.TryRead(Path.GetFileName(task));
-                Assert(persisted is not null && persisted.State == "failed", "断开终态应持久化");
+                Assert(persisted is not null && persisted.State == "awaiting-gpt", "HTTP 兜底终态应持久化");
+            }
+        }
+        finally { TryDeleteDirectory(root); }
+    }
+
+    /// <summary>
+    /// 零证据：会话已创建、提示已提交，但事件流断开且 HTTP 查询也始终没有任何启动证据
+    /// （无事件、无步骤、无 token）。任务必须最终 failed 并释放“运行中”占位，绝不长期显示 running；
+    /// 绝不重复创建会话或提交提示。
+    /// </summary>
+    private static async Task TestHarnessRunnerZeroEvidenceFailsAsync()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "codex-helper-harness-zero-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var project = Path.Combine(root, "project");
+            var task = Path.Combine(project, ".codex-helper", "runs", "run-zero");
+            Directory.CreateDirectory(task);
+            await File.WriteAllTextAsync(Path.Combine(task, "SPEC.md"), "test");
+            await using (var host = new FakeHarnessHost
+            {
+                Respond = (method, _) => method switch
+                {
+                    "session.create" => new JsonObject { ["sessionId"] = "sess-zero-1" },
+                    "session.prompt" => new JsonObject { ["accepted"] = true },
+                    "session.cancel" => new JsonObject { ["accepted"] = true },
+                    // running=true 但没有任何进度投影（步骤/token 均空）→ 零证据。
+                    "session.list" => new JsonObject { ["items"] = new JsonArray(new JsonObject { ["sessionId"] = "sess-zero-1", ["running"] = true }) },
+                    "session.history" => new JsonObject { ["events"] = new JsonArray() },
+                    _ => new JsonObject()
+                },
+                WsScripts =
+                [
+                    new Queue<string>(["@close"]),
+                    new Queue<string>(["@close"])
+                ]
+            })
+            {
+                await host.StartAsync();
+                var runner = new DeepSeekHarnessRunner(new AppPaths(Path.Combine(root, "app")))
+                {
+                    WebUrl = host.BaseUrl,
+                    RelayProbe = new ConfirmedHarnessRelay(),
+                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。")),
+                    MaxEventReconnects = 1,
+                    EventReconnectDelay = TimeSpan.FromMilliseconds(10),
+                    HttpPollInterval = TimeSpan.FromMilliseconds(20)
+                };
+                var taskId = Path.GetFileName(task);
+                var status = await runner.StartAsync(project, task);
+                Assert(status.State == "failed", "零证据任务应最终 failed 释放运行中占位：" + status.State);
+                Assert(status.Message.Contains("启动证据", StringComparison.Ordinal), "失败原因应可读（含启动证据）：" + status.Message);
+                Assert(status.SessionId == "sess-zero-1", "失败态仍应保留真实 sessionId");
+                var persisted = runner.TryRead(taskId);
+                Assert(persisted is not null && persisted.State == "failed", "零证据失败应持久化");
+                Assert(host.Calls.Count(call => call.Method == "session.create") == 1, "零证据不得重复创建会话");
+                Assert(host.Calls.Count(call => call.Method == "session.prompt") == 1, "零证据不得重复提交提示");
+            }
+        }
+        finally { TryDeleteDirectory(root); }
+    }
+
+    /// <summary>
+    /// 断流后有 HTTP 进度：事件流断开重连耗尽后，HTTP 会话查询显示有步骤/token 或事件 →
+    /// 不误判失败、保持 running，并通过 HTTP 增量回退最终读到可信终态。
+    /// </summary>
+    private static async Task TestHarnessRunnerHttpProgressAfterDisconnectAsync()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "codex-helper-harness-http-prog-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var project = Path.Combine(root, "project");
+            var task = Path.Combine(project, ".codex-helper", "runs", "run-http-prog");
+            Directory.CreateDirectory(task);
+            await File.WriteAllTextAsync(Path.Combine(task, "SPEC.md"), "test");
+            var taskId = Path.GetFileName(task);
+            var historyCalls = 0;
+            await using (var host = new FakeHarnessHost
+            {
+                Respond = (method, _) => method switch
+                {
+                    "session.create" => new JsonObject { ["sessionId"] = "sess-prog-1" },
+                    "session.prompt" => new JsonObject { ["accepted"] = true },
+                    "session.cancel" => new JsonObject { ["accepted"] = true },
+                    // running=true 且带真实步骤进度（sessionStats.steps=3）→ 启动证据。
+                    "session.list" => new JsonObject { ["items"] = new JsonArray(new JsonObject
+                    {
+                        ["sessionId"] = "sess-prog-1",
+                        ["running"] = true,
+                        ["projections"] = new JsonObject { ["values"] = new JsonObject
+                        {
+                            ["sessionStats"] = new JsonObject { ["steps"] = 3 }
+                        }}
+                    })},
+                    // 前几轮只有 turn/start（运行中，非终态），最后一轮读到 turn/end completed。
+                    "session.history" => (++historyCalls >= 5)
+                        ? new JsonObject { ["events"] = new JsonArray(new JsonObject
+                        {
+                            ["event"] = new JsonObject
+                            {
+                                ["type"] = "turn/end",
+                                ["data"] = new JsonObject { ["reason"] = new JsonObject { ["kind"] = "completed" } }
+                            }
+                        }) }
+                        : new JsonObject { ["events"] = new JsonArray(new JsonObject
+                        {
+                            ["event"] = new JsonObject
+                            {
+                                ["type"] = "turn/start",
+                                ["data"] = new JsonObject { ["turn"] = 1 }
+                            }
+                        }) },
+                    _ => new JsonObject()
+                },
+                WsScripts =
+                [
+                    new Queue<string>(["@close"]),
+                    new Queue<string>(["@close"])
+                ]
+            })
+            {
+                await host.StartAsync();
+                var runner = new DeepSeekHarnessRunner(new AppPaths(Path.Combine(root, "app")))
+                {
+                    WebUrl = host.BaseUrl,
+                    RelayProbe = new ConfirmedHarnessRelay(),
+                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。")),
+                    MaxEventReconnects = 1,
+                    EventReconnectDelay = TimeSpan.FromMilliseconds(10),
+                    HttpPollInterval = TimeSpan.FromMilliseconds(20)
+                };
+                // 预写有效报告，HTTP 增量回退读到 completed 后可通过报告门禁进入 awaiting-gpt。
+                WriteValidReport(task, taskId, TestFingerprint(task));
+                var startTask = runner.StartAsync(project, task);
+                // 断流后 HTTP 有进度：保持 running 且统计到步骤，不得误判失败。
+                HarnessTaskStatus? mid = null;
+                await WaitUntilAsync(() =>
+                {
+                    mid = runner.TryRead(taskId);
+                    return mid is not null && mid.State == "running" && mid.Steps == 3;
+                }, message: "断流后 HTTP 有进度应保持 running 且统计到步骤");
+                var status = await startTask;
+                Assert(status.State == "awaiting-gpt", "断流后 HTTP 增量回退应到达 awaiting-gpt：" + status.State);
+                Assert(status.Steps == 3, "HTTP 进度统计应保留：" + status.Steps);
+                Assert(host.Calls.Count(call => call.Method == "session.create") == 1, "断流回退不得重复创建会话");
             }
         }
         finally { TryDeleteDirectory(root); }
@@ -5559,21 +6067,43 @@ internal static class Program
                 Assert(persisted!.SessionId == "sess-orphan-1", "取消后 sessionId 应保留");
             }
 
-            // ---- 2) 运行中状态但缺少会话 ID → 不误报成功、不发取消请求、状态不变。 ----
-            await using (var host = new FakeHarnessHost())
+            // ---- 2) 运行中但尚无会话 ID（会话创建前停止）→ 持久化取消意图，不向 Host 发取消请求，
+            //          且后续 StartAsync 必须在创建会话前兑现取消，绝不创建会话/提交。 ----
+            await using (var host = new FakeHarnessHost
+            {
+                Respond = (method, _) => method switch
+                {
+                    "session.create" => new JsonObject { ["sessionId"] = "sess-cancelled-pre" },
+                    "session.prompt" => new JsonObject { ["accepted"] = true },
+                    _ => new JsonObject()
+                }
+            })
             {
                 await host.StartAsync();
-                var runner = new DeepSeekHarnessRunner(new AppPaths(Path.Combine(root, "app2"))) { WebUrl = host.BaseUrl };
+                var runner = new DeepSeekHarnessRunner(new AppPaths(Path.Combine(root, "app2")))
+                {
+                    WebUrl = host.BaseUrl,
+                    RelayProbe = new ConfirmedHarnessRelay(),
+                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。"))
+                };
                 var noSession = new HarnessTaskStatus(taskId, project, task, "running", "等待提交。",
                     DateTime.UtcNow.AddMinutes(-1), DateTime.UtcNow.AddMinutes(-1), 0, host.BaseUrl);
-                File.WriteAllText(runner.TaskDirectoryFor(taskId),
-                    JsonSerializer.Serialize(noSession, new JsonSerializerOptions { WriteIndented = true, Converters = { new HarnessUtcConverter() } }));
+                HarnessTaskStateStore.WriteStatus(Path.GetDirectoryName(runner.TaskDirectoryFor(taskId))!, noSession);
 
                 var result = await runner.StopTaskAsync(taskId);
-                Assert(!result.Requested && result.Message.Contains("会话 ID 缺失", StringComparison.Ordinal), "缺少会话 ID 应诚实失败：" + result.Message);
-                Assert(!host.Calls.Any(call => call.Method == "session.cancel"), "缺少会话 ID 时不得向 Host 发取消请求");
+                Assert(result.Requested && result.Message.Contains("尚未创建 Harness 会话", StringComparison.Ordinal), "会话创建前停止应记录取消意图：" + result.Message);
+                Assert(!host.Calls.Any(call => call.Method == "session.cancel"), "会话创建前停止不得向 Host 发 session.cancel");
                 var persisted = runner.TryRead(taskId);
-                Assert(persisted is not null && persisted.State == "running", "缺少会话 ID 时状态文件不得被改写");
+                Assert(persisted is not null && persisted.IsRunning
+                    && persisted.SessionState == DeepSeekHarnessRunner.CancelRequestedSessionState, "未创建会话的停止应持久化取消意图：" + persisted?.SessionState);
+
+                // 后续（跨进程）StartAsync 必须兑现取消意图：写 cancelled，绝不再 session.create。
+                var status = await runner.StartAsync(project, task);
+                Assert(status.State == "cancelled" && status.Message.Contains("尚未创建 Harness 会话", StringComparison.Ordinal)
+                    || status.State == "cancelled" && status.Message.Contains("还没有创建 Harness 会话", StringComparison.Ordinal),
+                    "取消意图应在创建会话前兑现：" + status.State + " / " + status.Message);
+                Assert(!host.Calls.Any(call => call.Method == "session.create"), "取消意图兑现后不得创建会话");
+                Assert(!host.Calls.Any(call => call.Method == "session.prompt"), "取消意图兑现后不得提交提示");
             }
 
             // ---- 3) 状态文件不存在 → 不误报成功。 ----
@@ -5614,6 +6144,3488 @@ internal static class Program
                 Assert(liveResult.Requested, "live 任务停止应返回请求成功：" + liveResult.Message);
                 var status = await startTask;
                 Assert(status.State == "cancelled" && status.SessionId == "sess-live-1", "live 停止终态应为 cancelled：" + status.State);
+            }
+        }
+        finally { TryDeleteDirectory(root); }
+    }
+
+    private static async Task TestHarnessTaskCenterReconcileAsync()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "codex-helper-harness-reconcile-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var project = Path.Combine(root, "project");
+            var task = Path.Combine(project, ".codex-helper", "runs", "run-x");
+            Directory.CreateDirectory(task);
+            await File.WriteAllTextAsync(Path.Combine(task, "SPEC.md"), "test");
+            var taskId = Path.GetFileName(task);
+            void WriteFake(DeepSeekHarnessRunner runner, string id, string state, string sessionId, DateTime started, string? fingerprint = null)
+            {
+                var itemTask = Path.Combine(project, ".codex-helper", "runs", id);
+                Directory.CreateDirectory(itemTask);
+                var status = new HarnessTaskStatus(id, Path.Combine(root, "project"), itemTask, state, "会话已创建，正在运行。",
+                    started, started.AddMinutes(1), 0, DeepSeekHarnessVersions.WebHostDefaultUrl, sessionId,
+                    ContractFingerprint: fingerprint);
+                HarnessTaskStateStore.WriteStatus(Path.GetDirectoryName(runner.TaskDirectoryFor(id))!, status);
+            }
+
+            // ---- 1) 多条假 running + 一次 session.list 对账：
+            //      run-a 仍在运行 → 保持 running；run-b 已结束(completed) → completed；
+            //      run-c 已结束(aborted) → cancelled；run-d 已结束(error) → failed；
+            //      run-e 会话不在 Host → failed（绝不伪造 completed）；
+            //      run-f 已停止但 history 没有 turn/end → failed（诚实说明缺少可信终态）；
+            //      run-g 已停止但 history RPC 失败 → failed；run-h 已停止但 history 损坏（无 events）→ failed。
+            var app = new AppPaths(Path.Combine(root, "app"));
+            var now = DateTime.UtcNow;
+
+            await using (var host = new FakeHarnessHost
+            {
+                Respond = (method, payload) => method switch
+                {
+                    "session.list" => new JsonObject
+                    {
+                        ["items"] = new JsonArray(
+                            new JsonObject { ["sessionId"] = "sess-a", ["running"] = true,
+                                ["projections"] = new JsonObject { ["values"] = new JsonObject
+                                    { ["model"] = new JsonObject { ["modelId"] = "deepseek-v4-flash" },
+                                      ["sessionStats"] = new JsonObject { ["steps"] = 5 },
+                                      ["tokenUsage"] = new JsonObject { ["uncachedInputTokens"] = 100, ["cacheReadTokens"] = 200, ["outputTokens"] = 300 } } } },
+                            new JsonObject { ["sessionId"] = "sess-b", ["running"] = false },
+                            new JsonObject { ["sessionId"] = "sess-c", ["running"] = false },
+                            new JsonObject { ["sessionId"] = "sess-d", ["running"] = false },
+                            new JsonObject { ["sessionId"] = "sess-f", ["running"] = false },
+                            new JsonObject { ["sessionId"] = "sess-g", ["running"] = false },
+                            new JsonObject { ["sessionId"] = "sess-h", ["running"] = false }
+                            // sess-e 故意缺失
+                        )
+                    },
+                    "session.history" => (payload?["sessionId"]?.GetValue<string>()) switch
+                    {
+                        "sess-b" => new JsonObject { ["events"] = new JsonArray(new JsonObject
+                            { ["event"] = new JsonObject { ["type"] = "turn/end", ["data"] = new JsonObject { ["reason"] = new JsonObject { ["kind"] = "completed" } } } }) },
+                        "sess-c" => new JsonObject { ["events"] = new JsonArray(new JsonObject
+                            { ["event"] = new JsonObject { ["type"] = "turn/end", ["data"] = new JsonObject { ["reason"] = new JsonObject { ["kind"] = "aborted" } } } }) },
+                        "sess-d" => new JsonObject { ["events"] = new JsonArray(new JsonObject
+                            { ["event"] = new JsonObject { ["type"] = "turn/end", ["data"] = new JsonObject { ["reason"] = new JsonObject { ["kind"] = "internal-error" } } } }) },
+                        // 已停止但 history 没有 turn/end（只有 turn/start）。
+                        "sess-f" => new JsonObject { ["events"] = new JsonArray(new JsonObject
+                            { ["event"] = new JsonObject { ["type"] = "turn/start", ["data"] = new JsonObject() } }) },
+                        // 已停止但 history RPC 失败（业务错误）。
+                        "sess-g" => throw new FakeHostError("internal", "session.history 服务不可用"),
+                        // 已停止但 history 响应损坏（没有 events 字段）。
+                        "sess-h" => new JsonObject { ["broken"] = true },
+                        _ => new JsonObject()
+                    },
+                    _ => new JsonObject()
+                }
+            })
+            {
+                await host.StartAsync();
+                var runner = new DeepSeekHarnessRunner(app) { WebUrl = host.BaseUrl };
+                // run-b 会映射 awaiting-gpt：预写匹配其 taskId/指纹的有效报告（未来时间）通过完成门禁；
+                // 其余 run-* 要么保持 running 要么映射 failed/cancelled，不经过报告门禁。
+                const string reportFingerprint = "REPORT-FINGERPRINT-RUN-B";
+                var runBTask = Path.Combine(project, ".codex-helper", "runs", "run-b");
+                Directory.CreateDirectory(runBTask);
+                WriteValidReport(runBTask, "run-b", reportFingerprint);
+                WriteFake(runner, "run-a", "running", "sess-a", now.AddMinutes(-10));
+                WriteFake(runner, "run-b", "running", "sess-b", now.AddMinutes(-9), reportFingerprint);
+                WriteFake(runner, "run-c", "running", "sess-c", now.AddMinutes(-8));
+                WriteFake(runner, "run-d", "running", "sess-d", now.AddMinutes(-7));
+                WriteFake(runner, "run-e", "running", "sess-e", now.AddMinutes(-6));
+                WriteFake(runner, "run-f", "running", "sess-f", now.AddMinutes(-5));
+                WriteFake(runner, "run-g", "running", "sess-g", now.AddMinutes(-4));
+                WriteFake(runner, "run-h", "running", "sess-h", now.AddMinutes(-3));
+
+                var result = await runner.ReconcileRecentTasksAsync();
+                Assert(result.Written == 8, "应改写 8 条状态：" + result.Message);
+
+                var a = runner.TryRead("run-a");
+                var b = runner.TryRead("run-b");
+                var c = runner.TryRead("run-c");
+                var d = runner.TryRead("run-d");
+                var e = runner.TryRead("run-e");
+                var f = runner.TryRead("run-f");
+                var g = runner.TryRead("run-g");
+                var h = runner.TryRead("run-h");
+                Assert(a is not null && a.State == "running" && a.Model == "deepseek-v4-flash" && a.Steps == 5
+                    && a.UncachedInputTokens == 100 && a.CacheReadTokens == 200 && a.OutputTokens == 300, "运行中会话应保持 running 且刷新统计投影：" + a?.State);
+                Assert(b is not null && b.State == "awaiting-gpt" && b.SessionId == "sess-b", "已结束会话应映射 awaiting-gpt：" + b?.State);
+                Assert(c is not null && c.State == "cancelled" && c.SessionId == "sess-c", "aborted 应映射 cancelled：" + c?.State);
+                Assert(d is not null && d.State == "failed" && d.SessionId == "sess-d", "非成功原因应映射 failed：" + d?.State);
+                Assert(e is not null && e.State == "failed" && e.Message.Contains("不在 Harness Host", StringComparison.Ordinal), "缺失会话应标记 failed 且说明诚实：" + e?.State + " / " + e?.Message);
+                Assert(e is not null && e.State != "completed", "缺失会话绝不伪造 completed");
+                Assert(f is not null && f.State == "failed" && f.Message.Contains("会话已停止，但缺少可信终态", StringComparison.Ordinal)
+                    && f.Message.Contains("不能判定成功", StringComparison.Ordinal), "已停止且 history 没有 turn/end 应写回诚实 failed：" + f?.State + " / " + f?.Message);
+                Assert(g is not null && g.State == "failed" && g.Message.Contains("会话已停止，但缺少可信终态", StringComparison.Ordinal), "history RPC 失败应写回诚实 failed：" + g?.State + " / " + g?.Message);
+                Assert(h is not null && h.State == "failed" && h.Message.Contains("会话已停止，但缺少可信终态", StringComparison.Ordinal), "history 损坏（无 events）应写回诚实 failed：" + h?.State + " / " + h?.Message);
+                Assert(f is not null && !f.IsRunning && g is not null && !g.IsRunning && h is not null && !h.IsRunning, "新终态不得再归类为运行中");
+                Assert(f is not null && f.State != "completed" && g is not null && g.State != "completed" && h is not null && h.State != "completed", "缺少可信终态绝不伪造 completed");
+                // 一次列表对账：session.list 只调用一次。
+                Assert(host.Calls.Count(call => call.Method == "session.list") == 1, "对账应只调用一次 session.list");
+                // history 只对已结束会话调用（b/c/d/f/g/h）。
+                Assert(host.Calls.Count(call => call.Method == "session.history") == 6, "history 应只对已结束会话调用");
+            }
+
+            // ---- 2) Host 不可达：不得改写任何状态。 ----
+            var unreachable = new DeepSeekHarnessRunner(new AppPaths(Path.Combine(root, "app2"))) { WebUrl = "http://127.0.0.1:1" };
+            WriteFake(unreachable, "run-a", "running", "sess-a", DateTime.UtcNow.AddMinutes(-1));
+            var resultUnreachable = await unreachable.ReconcileRecentTasksAsync();
+            Assert(resultUnreachable.Written == 0 && resultUnreachable.Message.Contains("未改写", StringComparison.Ordinal), "Host 不可达应不改写且说明原因：" + resultUnreachable.Message);
+            Assert(unreachable.TryRead("run-a")!.State == "running", "Host 不可达不得改写状态文件");
+
+            // ---- 3) 无活动任务：直接返回，不发任何 RPC。 ----
+            var idleRunner = new DeepSeekHarnessRunner(new AppPaths(Path.Combine(root, "app3")));
+            var idleResult = await idleRunner.ReconcileRecentTasksAsync();
+            Assert(idleResult.Written == 0, "无活动任务不应改写任何状态：" + idleResult.Message);
+        }
+        finally { TryDeleteDirectory(root); }
+    }
+
+    private static async Task TestHarnessDegenerationGuardAsync()
+    {
+        var progressOnly = new HarnessDegenerationDetector();
+        for (var index = 0; index < 10; index++)
+            progressOnly.ObserveToolCall("todo_write", "{\"todos\":[]}");
+        Assert(!progressOnly.IsDegenerate, "todo_write 等进度工具重复调用不得触发覆盖熔断");
+
+        // ---- 只读/查询工具与写入型工具区分：普通重复读取不误判，真正重复写入仍熔断。 ----
+        // 聚合语义：带 toolName 的事件只提交上一次调用，最后一次调用需显式 CommitToolCall 才计次。
+        var reads = new HarnessDegenerationDetector();
+        for (var index = 0; index < 5; index++)
+            reads.ObserveToolCall("read_file", """{"path":"a.txt"}""");
+        reads.CommitToolCall();
+        Assert(!reads.IsDegenerate, "普通重复读取（5 次）不得误判为退化");
+        reads.ObserveToolCall("read_file", """{"path":"a.txt"}""");
+        reads.CommitToolCall();
+        Assert(reads.IsDegenerate && reads.Reason!.Contains("只读", StringComparison.Ordinal),
+            "只读调用需连续重复 6 次才熔断：" + reads.Reason);
+
+        // 连续重复期间出现其他有效进展（写入型工具）→ 连续计数自然重新开始。
+        var interleaved = new HarnessDegenerationDetector();
+        for (var index = 0; index < 3; index++)
+            interleaved.ObserveToolCall("read_file", """{"path":"a.txt"}""");
+        interleaved.ObserveToolCall("edit_file", """{"path":"a.txt","text":"x"}""");
+        for (var index = 0; index < 3; index++)
+            interleaved.ObserveToolCall("read_file", """{"path":"a.txt"}""");
+        Assert(!interleaved.IsDegenerate, "读取与写入进展交错时不得熔断");
+
+        // 写入/编辑是进展证据：相同 write_file 重复调用清除无进展计数，不熔断（不依赖写入熔断覆盖）。
+        var writes = new HarnessDegenerationDetector();
+        for (var index = 0; index < 5; index++)
+            writes.ObserveToolCall("write_file", """{"path":"a.txt","text":"x"}""");
+        writes.CommitToolCall();
+        Assert(!writes.IsDegenerate, "写入型工具重复调用是进展证据，不得熔断");
+        // 真正同阶段相同无进展循环（非进展、非只读工具）仍熔断。
+        var cycle = new HarnessDegenerationDetector();
+        for (var index = 0; index < 3; index++)
+            cycle.ObserveToolCall("inspect", """{"target":"x"}""");
+        cycle.CommitToolCall();
+        Assert(cycle.IsDegenerate && cycle.Reason!.Contains("工具调用", StringComparison.Ordinal),
+            "同阶段相同非进展动作循环应熔断：" + cycle.Reason);
+
+        // 相同工具不同参数（有效进展）不熔断。
+        var differentArgs = new HarnessDegenerationDetector();
+        differentArgs.ObserveToolCall("write_file", """{"path":"a.txt","text":"x"}""");
+        differentArgs.ObserveToolCall("write_file", """{"path":"b.txt","text":"y"}""");
+        differentArgs.ObserveToolCall("write_file", """{"path":"a.txt","text":"x"}""");
+        Assert(!differentArgs.IsDegenerate, "相同工具不同参数不得熔断");
+
+        var root = Path.Combine(Path.GetTempPath(), "codex-helper-harness-degen-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var project = Path.Combine(root, "project");
+            var task = Path.Combine(project, ".codex-helper", "runs", "run-degen");
+            Directory.CreateDirectory(task);
+            await File.WriteAllTextAsync(Path.Combine(task, "SPEC.md"), "test");
+            var taskId = Path.GetFileName(task);
+            void ResetTaskTruth()
+            {
+                var statusPath = Path.Combine(task, HarnessTaskStateStore.StatusFileName);
+                if (File.Exists(statusPath)) File.Delete(statusPath);
+            }
+
+            // ---- 1) 正常文本 / 短词 / 代码符号 / 普通重试（相同工具不同参数、相同调用仅 2 次）不误判。 ----
+            ResetTaskTruth();
+            await using (var host = new FakeHarnessHost
+            {
+                Respond = (method, _) => method switch
+                {
+                    "session.create" => new JsonObject { ["sessionId"] = "sess-degen-ok" },
+                    "session.prompt" => new JsonObject { ["accepted"] = true },
+                    "session.cancel" => new JsonObject { ["accepted"] = true },
+                    _ => new JsonObject()
+                },
+                WsScripts =
+                [
+                    new Queue<string>([
+                        WsFrame("session/subscribed", "sess-degen-ok"),
+                        WsFrame("session/event", "sess-degen-ok", "turn/start", seq: 100),
+                        WsChunkFrame("sess-degen-ok", 101, "assistant/delta", textDelta: "这是第一段正常的说明文本内容，长度足够，验证检测器不会误判。"),
+                        WsChunkFrame("sess-degen-ok", 102, "tool/call", toolName: "edit_file", toolArgs: """{"path":"a.txt","text":"x"}"""),
+                        WsChunkFrame("sess-degen-ok", 103, "tool/call", toolName: "edit_file", toolArgs: """{"path":"b.txt","text":"y"}"""),
+                        WsChunkFrame("sess-degen-ok", 104, "assistant/delta", textDelta: "这是第二段正常的说明文本内容，与前一段完全不同，继续验证。"),
+                        // 短词/代码符号重复：低于显著长度阈值，不得误判。
+                        WsChunkFrame("sess-degen-ok", 105, "assistant/delta", textDelta: "public"),
+                        WsChunkFrame("sess-degen-ok", 106, "assistant/delta", textDelta: "public"),
+                        WsChunkFrame("sess-degen-ok", 107, "assistant/delta", textDelta: "public"),
+                        // 普通重试：相同工具调用只出现 2 次（低于熔断阈值 3）。
+                        WsChunkFrame("sess-degen-ok", 108, "tool/call", toolName: "read_file", toolArgs: """{"path":"c.txt"}"""),
+                        WsChunkFrame("sess-degen-ok", 109, "tool/call", toolName: "read_file", toolArgs: """{"path":"c.txt"}"""),
+                        WsFrame("session/event", "sess-degen-ok", "turn/end", "completed", seq: 110)
+                    ])
+                ]
+            })
+            {
+                await host.StartAsync();
+                // 预写有效报告（未来时间），正常完成路径才可通过报告完成门禁。
+                WriteValidReport(task, taskId, TestFingerprint(task));
+                var runner = new DeepSeekHarnessRunner(new AppPaths(Path.Combine(root, "app-ok")))
+                {
+                    WebUrl = host.BaseUrl,
+                    RelayProbe = new ConfirmedHarnessRelay(),
+                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。"))
+                };
+                var status = await runner.StartAsync(project, task);
+                Assert(status.State == "awaiting-gpt", "正常流不应误判退化：" + status.State + " / " + status.Message);
+                Assert(!host.Calls.Any(call => call.Method == "session.cancel"), "正常流不得发出 session.cancel");
+            }
+
+            // ---- 2) 显著长度文本片段连续重复 3 次 → 熔断：failed + 指定消息 + session.cancel。 ----
+            ResetTaskTruth();
+            await using (var host = new FakeHarnessHost
+            {
+                Respond = (method, _) => method switch
+                {
+                    "session.create" => new JsonObject { ["sessionId"] = "sess-degen-text" },
+                    "session.prompt" => new JsonObject { ["accepted"] = true },
+                    "session.cancel" => new JsonObject { ["accepted"] = true },
+                    _ => new JsonObject()
+                },
+                WsScripts =
+                [
+                    new Queue<string>([
+                        WsFrame("session/subscribed", "sess-degen-text"),
+                        WsFrame("session/event", "sess-degen-text", "turn/start", seq: 200),
+                        WsRealTextChunkFrame("sess-degen-text", 201, "这是重复生成的"),
+                        WsRealTextChunkFrame("sess-degen-text", 202, "显著长度文本片段，"),
+                        WsRealTextChunkFrame("sess-degen-text", 203, "说明模型正在空转输出。"),
+                        WsRealTextChunkFrame("sess-degen-text", 204, "这是重复生成的"),
+                        WsRealTextChunkFrame("sess-degen-text", 205, "显著长度文本片段，"),
+                        WsRealTextChunkFrame("sess-degen-text", 206, "说明模型正在空转输出。"),
+                        WsRealTextChunkFrame("sess-degen-text", 207, "这是重复生成的"),
+                        WsRealTextChunkFrame("sess-degen-text", 208, "显著长度文本片段，"),
+                        WsRealTextChunkFrame("sess-degen-text", 209, "说明模型正在空转输出。")
+                    ])
+                ]
+            })
+            {
+                await host.StartAsync();
+                var runner = new DeepSeekHarnessRunner(new AppPaths(Path.Combine(root, "app-text")))
+                {
+                    WebUrl = host.BaseUrl,
+                    RelayProbe = new ConfirmedHarnessRelay(),
+                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。"))
+                };
+                var status = await runner.StartAsync(project, task);
+                Assert(status.State == "failed", "文本重复应熔断为 failed：" + status.State);
+                Assert(status.Message.Contains("检测到重复生成/重复工具调用，已停止以防继续覆盖，等待 GPT 接管", StringComparison.Ordinal),
+                    "熔断消息必须包含指定的接管提示：" + status.Message);
+                Assert(status.Message.Contains("文本片段", StringComparison.Ordinal), "熔断消息应说明是文本重复：" + status.Message);
+                var persisted = runner.TryRead(taskId);
+                Assert(persisted is not null && persisted.State == "failed", "熔断终态应持久化为 failed：" + persisted?.State);
+                await WaitUntilAsync(() => host.Calls.Any(call => call.Method == "session.cancel"), message: "熔断后应立即收到 session.cancel");
+                Assert(host.Calls.Any(call => call.Method == "session.cancel"
+                    && call.Payload["sessionId"]?.GetValue<string>() == "sess-degen-text"), "session.cancel 应携带退化会话的 sessionId");
+            }
+
+            // ---- 3) 相同工具名 + 规范化参数连续重复（无有效进展，参数空白差异归一）→ 熔断。 ----
+            ResetTaskTruth();
+            await using (var host = new FakeHarnessHost
+            {
+                Respond = (method, _) => method switch
+                {
+                    "session.create" => new JsonObject { ["sessionId"] = "sess-degen-tool" },
+                    "session.prompt" => new JsonObject { ["accepted"] = true },
+                    "session.cancel" => new JsonObject { ["accepted"] = true },
+                    _ => new JsonObject()
+                },
+                WsScripts =
+                [
+                    new Queue<string>([
+                        WsFrame("session/subscribed", "sess-degen-tool"),
+                        WsFrame("session/event", "sess-degen-tool", "turn/start", seq: 300),
+                        // 用非进展、非只读工具（inspect）验证"同阶段 + 同规范化动作 + 无进展"熔断；
+                        // 写入型工具是进展证据，不在此熔断。
+                        WsChunkFrame("sess-degen-tool", 301, "tool/call", toolName: "inspect", toolArgs: """{"target":"x"}"""),
+                        WsChunkFrame("sess-degen-tool", 302, "tool/call", toolName: "inspect", toolArgs: """{"target":"x"}"""),
+                        WsChunkFrame("sess-degen-tool", 303, "tool/call", toolName: "inspect", toolArgs: """{ "target": "x" }"""),
+                        // 聚合语义：带 toolName 的事件只提交上一次调用（前 3 帧计 2 次）；
+                        // 第 4 帧提交第 3 次（规范化后签名相同）→ 达到阈值熔断。
+                        WsChunkFrame("sess-degen-tool", 304, "tool/call", toolName: "inspect", toolArgs: """{"target":"x"}""")
+                    ])
+                ]
+            })
+            {
+                await host.StartAsync();
+                var runner = new DeepSeekHarnessRunner(new AppPaths(Path.Combine(root, "app-tool")))
+                {
+                    WebUrl = host.BaseUrl,
+                    RelayProbe = new ConfirmedHarnessRelay(),
+                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。"))
+                };
+                var status = await runner.StartAsync(project, task);
+                Assert(status.State == "failed", "工具调用重复应熔断为 failed：" + status.State);
+                Assert(status.Message.Contains("检测到重复生成/重复工具调用，已停止以防继续覆盖，等待 GPT 接管", StringComparison.Ordinal),
+                    "工具熔断消息必须包含指定的接管提示：" + status.Message);
+                Assert(status.Message.Contains("工具", StringComparison.Ordinal) && status.Message.Contains("inspect", StringComparison.Ordinal),
+                    "工具熔断消息应说明工具名：" + status.Message);
+                await WaitUntilAsync(() => host.Calls.Any(call => call.Method == "session.cancel"), message: "工具熔断后应立即收到 session.cancel");
+            }
+
+            // ---- 4) 断线重放：旧 seq 去重，重放帧不重复计数、旧终态不推进，最终以新终态完成。 ----
+            ResetTaskTruth();
+            await using (var host = new FakeHarnessHost
+            {
+                Respond = (method, _) => method switch
+                {
+                    "session.create" => new JsonObject { ["sessionId"] = "sess-degen-replay" },
+                    "session.prompt" => new JsonObject { ["accepted"] = true },
+                    "session.cancel" => new JsonObject { ["accepted"] = true },
+                    _ => new JsonObject()
+                },
+                WsScripts =
+                [
+                    new Queue<string>([
+                        WsFrame("session/subscribed", "sess-degen-replay"),
+                        WsFrame("session/event", "sess-degen-replay", "turn/start", seq: 400),
+                        WsChunkFrame("sess-degen-replay", 401, "assistant/delta", textDelta: "这是重放去重验证用的显著长度文本片段。"),
+                        WsChunkFrame("sess-degen-replay", 402, "assistant/delta", textDelta: "这是重放去重验证用的显著长度文本片段。"),
+                        "@close"
+                    ]),
+                    // 重连后重放 401/402（旧序号）+ 旧终态 390（aborted）+ 新终态 403（completed）。
+                    new Queue<string>([
+                        WsChunkFrame("sess-degen-replay", 401, "assistant/delta", textDelta: "这是重放去重验证用的显著长度文本片段。"),
+                        WsChunkFrame("sess-degen-replay", 402, "assistant/delta", textDelta: "这是重放去重验证用的显著长度文本片段。"),
+                        WsFrame("session/event", "sess-degen-replay", "turn/end", "aborted", seq: 390),
+                        WsFrame("session/event", "sess-degen-replay", "turn/end", "completed", seq: 403)
+                    ])
+                ]
+            })
+            {
+                await host.StartAsync();
+                WriteValidReport(task, taskId, TestFingerprint(task));
+                var runner = new DeepSeekHarnessRunner(new AppPaths(Path.Combine(root, "app-replay")))
+                {
+                    WebUrl = host.BaseUrl,
+                    RelayProbe = new ConfirmedHarnessRelay(),
+                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。")),
+                    MaxEventReconnects = 2,
+                    EventReconnectDelay = TimeSpan.FromMilliseconds(50)
+                };
+                var status = await runner.StartAsync(project, task);
+                Assert(status.State == "awaiting-gpt", "重放旧 seq 不得触发熔断或旧终态，应以新终态完成：" + status.State + " / " + status.Message);
+                Assert(!host.Calls.Any(call => call.Method == "session.cancel"), "重放去重后不得发出 session.cancel");
+            }
+        }
+        finally { TryDeleteDirectory(root); }
+    }
+
+    private static async Task TestHarnessResumeVerifyAndSingleFlightAsync()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "codex-helper-harness-resume-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var project = Path.Combine(root, "project");
+            var task = Path.Combine(project, ".codex-helper", "runs", "run-resume");
+            Directory.CreateDirectory(task);
+            await File.WriteAllTextAsync(Path.Combine(task, "SPEC.md"), "test");
+            var taskId = Path.GetFileName(task);
+
+            // 先完成一次正常运行，取得合同指纹。
+            string? fingerprint;
+            await using (var baseHost = new FakeHarnessHost
+            {
+                Respond = (method, _) => method switch
+                {
+                    "session.create" => new JsonObject { ["sessionId"] = "sess-base-1" },
+                    "session.prompt" => new JsonObject { ["accepted"] = true },
+                    _ => new JsonObject()
+                },
+                WsScripts =
+                [
+                    new Queue<string>([
+                        WsFrame("session/subscribed", "sess-base-1"),
+                        WsFrame("session/event", "sess-base-1", "turn/start", seq: 1),
+                        WsFrame("session/event", "sess-base-1", "turn/end", "completed", seq: 2)
+                    ])
+                ]
+            })
+            {
+                await baseHost.StartAsync();
+                // 预写有效报告（未来时间），基线完成的 awaiting-gpt 才可通过报告完成门禁。
+                WriteValidReport(task, taskId, TestFingerprint(task));
+                var baseRunner = new DeepSeekHarnessRunner(new AppPaths(Path.Combine(root, "app-base")))
+                {
+                    WebUrl = baseHost.BaseUrl,
+                    RelayProbe = new ConfirmedHarnessRelay(),
+                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。"))
+                };
+                var baseStatus = await baseRunner.StartAsync(project, task);
+                Assert(baseStatus.State == "awaiting-gpt", "基线运行应等待 GPT 验收：" + baseStatus.State);
+                fingerprint = baseRunner.TryRead(taskId)!.ContractFingerprint;
+                Assert(!string.IsNullOrWhiteSpace(fingerprint), "基线运行应写入合同指纹");
+                Assert(fingerprint == TestFingerprint(task), "测试复刻的指纹算法应与 Runner 一致");
+            }
+
+            void WriteRunning(DeepSeekHarnessRunner runner, string sessionId)
+            {
+                var status = new HarnessTaskStatus(taskId, project, task, "running", "会话已创建，正在运行。",
+                    DateTime.UtcNow.AddMinutes(-1), DateTime.UtcNow.AddMinutes(-1), 0, DeepSeekHarnessVersions.WebHostDefaultUrl, sessionId,
+                    ContractFingerprint: fingerprint);
+                HarnessTaskStateStore.WriteStatus(Path.GetDirectoryName(runner.TaskDirectoryFor(taskId))!, status);
+            }
+
+            // ---- 1) 接回前核验：会话不存在 → 不得接回，不得创建/提交，诚实失败。 ----
+            await using (var host = new FakeHarnessHost
+            {
+                Respond = (method, _) => method switch
+                {
+                    "session.list" => new JsonObject { ["items"] = new JsonArray() },
+                    _ => new JsonObject()
+                }
+            })
+            {
+                await host.StartAsync();
+                var runner = new DeepSeekHarnessRunner(new AppPaths(Path.Combine(root, "app-missing")))
+                {
+                    WebUrl = host.BaseUrl,
+                    RelayProbe = new ConfirmedHarnessRelay(),
+                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。"))
+                };
+                WriteRunning(runner, "sess-resume-1");
+                var status = await runner.StartAsync(project, task);
+                Assert(status.State == "failed" && status.Message.Contains("未接回", StringComparison.Ordinal), "缺失会话不得接回：" + status.State + " / " + status.Message);
+                Assert(!host.Calls.Any(call => call.Method == "session.create"), "接回核验失败时不得创建新会话");
+                Assert(!host.Calls.Any(call => call.Method == "session.prompt"), "接回核验失败时不得提交提示");
+            }
+
+            // ---- 2) 接回前核验：会话已结束（running=false）→ 不得接回。 ----
+            await using (var host = new FakeHarnessHost
+            {
+                Respond = (method, _) => method switch
+                {
+                    "session.list" => new JsonObject { ["items"] = new JsonArray(new JsonObject { ["sessionId"] = "sess-resume-1", ["running"] = false }) },
+                    _ => new JsonObject()
+                }
+            })
+            {
+                await host.StartAsync();
+                var runner = new DeepSeekHarnessRunner(new AppPaths(Path.Combine(root, "app-ended")))
+                {
+                    WebUrl = host.BaseUrl,
+                    RelayProbe = new ConfirmedHarnessRelay(),
+                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。"))
+                };
+                WriteRunning(runner, "sess-resume-1");
+                var status = await runner.StartAsync(project, task);
+                Assert(status.State == "failed" && status.Message.Contains("未接回", StringComparison.Ordinal), "已结束会话不得接回：" + status.State + " / " + status.Message);
+                Assert(!host.Calls.Any(call => call.Method == "session.create"), "已结束会话不得创建新会话");
+                Assert(!host.Calls.Any(call => call.Method == "session.prompt"), "已结束会话不得提交提示");
+            }
+
+            // ---- 3) 接回前核验：会话存在且 running=true → 正常接回，不创建、不重复提交。 ----
+            await using (var host = new FakeHarnessHost
+            {
+                Respond = (method, _) => method switch
+                {
+                    "session.list" => new JsonObject { ["items"] = new JsonArray(new JsonObject { ["sessionId"] = "sess-resume-1", ["running"] = true }) },
+                    "session.cancel" => new JsonObject { ["accepted"] = true },
+                    _ => new JsonObject()
+                },
+                WsScripts =
+                [
+                    new Queue<string>([
+                        WsFrame("session/subscribed", "sess-resume-1"),
+                        WsFrame("session/event", "sess-resume-1", "turn/start", seq: 10),
+                        WsFrame("session/event", "sess-resume-1", "turn/end", "completed", seq: 11)
+                    ])
+                ]
+            })
+            {
+                await host.StartAsync();
+                var runner = new DeepSeekHarnessRunner(new AppPaths(Path.Combine(root, "app-ok")))
+                {
+                    WebUrl = host.BaseUrl,
+                    RelayProbe = new ConfirmedHarnessRelay(),
+                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。"))
+                };
+                WriteRunning(runner, "sess-resume-1");
+                var status = await runner.StartAsync(project, task);
+                Assert(status.State == "awaiting-gpt" && status.SessionId == "sess-resume-1", "running 会话应正常接回并等待 GPT 验收：" + status.State + " / " + status.Message);
+                Assert(host.Calls.Any(call => call.Method == "session.list"), "接回前必须调用 session.list 核验");
+                Assert(!host.Calls.Any(call => call.Method == "session.create"), "接回时不得创建新会话");
+                Assert(!host.Calls.Any(call => call.Method == "session.prompt"), "接回时不得重复提交提示");
+            }
+
+            // ---- 4) 同任务并发启动单飞：只允许一个 Runner 创建会话并提交一次提示。 ----
+            await using (var host = new FakeHarnessHost
+            {
+                Respond = (method, _) => method switch
+                {
+                    "session.create" => new JsonObject { ["sessionId"] = "sess-sf-1" },
+                    "session.prompt" => new JsonObject { ["accepted"] = true },
+                    "session.cancel" => new JsonObject { ["accepted"] = true },
+                    _ => new JsonObject()
+                },
+                WsScripts =
+                [
+                    new Queue<string>([
+                        WsFrame("session/subscribed", "sess-sf-1"),
+                        WsFrame("session/event", "sess-sf-1", "turn/start", seq: 20),
+                        "@delay:400",
+                        WsFrame("session/event", "sess-sf-1", "turn/end", "completed", seq: 21)
+                    ])
+                ]
+            })
+            {
+                await host.StartAsync();
+                var runner = new DeepSeekHarnessRunner(new AppPaths(Path.Combine(root, "app-sf")))
+                {
+                    WebUrl = host.BaseUrl,
+                    RelayProbe = new ConfirmedHarnessRelay(),
+                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。"))
+                };
+                var t1 = runner.StartAsync(project, task);
+                var t2 = runner.StartAsync(project, task);
+                var results = await Task.WhenAll(t1, t2);
+                Assert(results[0].State == "awaiting-gpt" && results[1].State == "awaiting-gpt", "并发启动应都等待 GPT 验收：" + results[0].State + " / " + results[1].State);
+                Assert(host.Calls.Count(call => call.Method == "session.create") == 1, "并发启动只应创建一个会话，实际：" + host.Calls.Count(call => call.Method == "session.create"));
+                Assert(host.Calls.Count(call => call.Method == "session.prompt") == 1, "并发启动只应提交一次提示，实际：" + host.Calls.Count(call => call.Method == "session.prompt"));
+            }
+
+            // ---- 5) 跨进程租约语义：锁被其他进程/Runner 持有时不得创建会话，释放后才继续。 ----
+            await using (var host = new FakeHarnessHost
+            {
+                Respond = (method, _) => method switch
+                {
+                    "session.create" => new JsonObject { ["sessionId"] = "sess-lease-1" },
+                    "session.prompt" => new JsonObject { ["accepted"] = true },
+                    _ => new JsonObject()
+                },
+                WsScripts =
+                [
+                    new Queue<string>([
+                        WsFrame("session/subscribed", "sess-lease-1"),
+                        WsFrame("session/event", "sess-lease-1", "turn/start", seq: 30),
+                        WsFrame("session/event", "sess-lease-1", "turn/end", "completed", seq: 31)
+                    ])
+                ]
+            })
+            {
+                await host.StartAsync();
+                var runner = new DeepSeekHarnessRunner(new AppPaths(Path.Combine(root, "app-lease")))
+                {
+                    WebUrl = host.BaseUrl,
+                    RelayProbe = new ConfirmedHarnessRelay(),
+                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。"))
+                };
+                var leasePath = Path.Combine(task, DeepSeekHarnessRunner.TaskLeaseFileName);
+                await using var held = new FileStream(leasePath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+                var pending = runner.StartAsync(project, task);
+                await Task.Delay(300);
+                Assert(!host.Calls.Any(call => call.Method == "session.create"), "跨进程租约未释放前不得创建会话");
+                await held.DisposeAsync();
+                var status = await pending;
+                Assert(status.State == "awaiting-gpt", "租约释放后任务应等待 GPT 验收：" + status.State + " / " + status.Message);
+                Assert(host.Calls.Count(call => call.Method == "session.create") == 1, "租约释放后只应创建一个会话");
+            }
+        }
+        finally { TryDeleteDirectory(root); }
+    }
+
+    private static async Task TestHarnessHiddenHostAsync()
+    {
+        // ---- 1) 参数解析。 ----
+        var parsed = HarnessHiddenHostCli.TryParse(["--harness-host", "--node", @"C:\Program Files\nodejs\node.exe", "--dsh", @"C:\Users\a\AppData\Roaming\npm\node_modules\@deepseek-ai\dsh\lib\bin.js"], out var error);
+        Assert(parsed is not null && error is null, "合法参数应解析成功：" + error);
+        Assert(parsed!.NodePath == @"C:\Program Files\nodejs\node.exe" && parsed.DshEntryPath == @"C:\Users\a\AppData\Roaming\npm\node_modules\@deepseek-ai\dsh\lib\bin.js", "解析路径应一致");
+        Assert(HarnessHiddenHostCli.TryParse(["--harness-host", "--node", @"C:\node.exe"], out var missing) is null && missing!.Contains("--dsh", StringComparison.Ordinal), "缺少 --dsh 应报错：" + missing);
+        Assert(HarnessHiddenHostCli.TryParse(["--node", @"C:\node.exe", "--dsh", @"C:\dsh\bin.js"], out _) is null, "没有 --harness-host 应返回 null（普通 UI 模式）");
+        Assert(HarnessHiddenHostCli.TryParse(["--harness-host", "--node", @"relative\node.exe", "--dsh", @"C:\dsh\bin.js"], out var relative) is null && relative!.Contains("绝对路径", StringComparison.Ordinal), "相对路径应报错：" + relative);
+        // 路径存在性不在解析阶段校验（状态查询需在文件缺失时仍能识别配置形状）；解析只要求绝对路径形状。
+        Assert(HarnessHiddenHostCli.TryParse(["--harness-host", "--node", @"C:\missing-node.exe", "--dsh", @"C:\dsh\bin.js"], out _) is not null, "解析阶段不校验文件存在性，绝对路径即可解析");
+
+        // ---- 2) 启动信息：无窗口、不经过 Shell、绝对路径参数、输出重定向。 ----
+        var info = DeepSeekHarnessProcess.BuildWebHostStartInfo(@"C:\Program Files\nodejs\node.exe", @"C:\dsh\lib\bin.js");
+        Assert(!info.UseShellExecute, "隐藏宿主必须 UseShellExecute=false");
+        Assert(info.CreateNoWindow, "隐藏宿主必须 CreateNoWindow=true（不弹 Node.js 窗口）");
+        Assert(info.RedirectStandardOutput && info.RedirectStandardError, "隐藏宿主必须排空 stdout/stderr");
+        var args = info.ArgumentList.ToList();
+        Assert(args.SequenceEqual([@"C:\dsh\lib\bin.js", "web", "--host", "127.0.0.1"]), "启动参数应为绝对 dsh + web --host 127.0.0.1：" + string.Join(" ", args));
+
+        // ---- 3) Host 已健康：安静退出 0，不启动任何进程。 ----
+        var launched = false;
+        DeepSeekHarnessHiddenHost.PortProbe = (_, _, _) => Task.FromResult(true);
+        DeepSeekHarnessHiddenHost.Launcher = (_, _) => { launched = true; return null; };
+        var healthyExit = await DeepSeekHarnessHiddenHost.RunAsync(@"C:\node.exe", @"C:\dsh\bin.js");
+        Assert(healthyExit == HarnessHiddenHostCli.ExitOk && !launched, "Host 已健康应安静退出 0 且不启动进程");
+
+        // ---- 4) Host 未运行：启动并等待子进程，退出码随子进程。 ----
+        DeepSeekHarnessHiddenHost.PortProbe = (_, _, _) => Task.FromResult(false);
+        string? capturedNode = null;
+        string? capturedDsh = null;
+        DeepSeekHarnessHiddenHost.Launcher = (node, dsh) =>
+        {
+            capturedNode = node;
+            capturedDsh = dsh;
+            var start = new ProcessStartInfo("cmd.exe") { UseShellExecute = false, CreateNoWindow = true };
+            start.ArgumentList.Add("/c");
+            start.ArgumentList.Add("exit");
+            start.ArgumentList.Add("7");
+            var process = new Process { StartInfo = start };
+            process.Start();
+            return process;
+        };
+        var childExit = await DeepSeekHarnessHiddenHost.RunAsync(@"C:\node.exe", @"C:\dsh\bin.js");
+        Assert(childExit == 7, "应等待子进程并返回其退出码：" + childExit);
+        Assert(capturedNode == @"C:\node.exe" && capturedDsh == @"C:\dsh\bin.js", "启动器应收到绝对 node/dsh 路径");
+
+        // ---- 5) 启动失败：返回失败码。 ----
+        DeepSeekHarnessHiddenHost.Launcher = (_, _) => null;
+        var launchFail = await DeepSeekHarnessHiddenHost.RunAsync(@"C:\node.exe", @"C:\dsh\bin.js");
+        Assert(launchFail == HarnessHiddenHostCli.ExitFailed, "启动失败应返回失败码：" + launchFail);
+    }
+
+    private static Task TestHarnessStartupXmlAsync()
+    {
+        var helperExe = @"C:\Program Files\CodexHelper\CodexHelper.exe";
+        var node = @"C:\Program Files\nodejs\node.exe";
+        var dsh = @"C:\Users\张三\AppData\Roaming\npm\node_modules\@deepseek-ai\dsh\lib\bin.js";
+        var xml = DeepSeekHarnessStartupService.BuildTaskXml(helperExe, node, dsh);
+
+        // 1) XML 合法可解析，Action 是 CodexHelper 隐藏宿主而非 node.exe。
+        var action = DeepSeekHarnessStartupService.ParseTaskAction(xml);
+        Assert(action is not null, "生成的 XML 应可解析出 Exec Action");
+        Assert(action!.Value.Command == helperExe, "Action Command 应为 CodexHelper.exe：" + action.Value.Command);
+        Assert(!DeepSeekHarnessStartupService.IsStaleNodeAction(action.Value.Command, action.Value.Arguments), "隐藏宿主不应被识别为 stale node action");
+
+        // 2) 参数含绝对路径且 XML 转义正确。
+        var tokens = DeepSeekHarnessStartupService.SplitArguments(action.Value.Arguments);
+        Assert(tokens.SequenceEqual(["--harness-host", "--node", node, "--dsh", dsh]), "Arguments 应含隐藏宿主参数与绝对路径：" + string.Join(" ", tokens));
+        // XML 文本中的中文路径与空格应原样保留（UTF-16 声明由文件编码承担，文本本身不转义中文）。
+        Assert(xml.Contains(@"Program Files\nodejs\node.exe", StringComparison.Ordinal) && xml.Contains("张三", StringComparison.Ordinal), "XML 应包含绝对路径与中文路径");
+
+        // 3) XML 转义：路径含 & < > 时生成合法 XML 且往返一致。
+        var weirdXml = DeepSeekHarnessStartupService.BuildTaskXml(helperExe, @"C:\a&b<c>d\node.exe", @"C:\dsh\bin.js");
+        var weirdAction = DeepSeekHarnessStartupService.ParseTaskAction(weirdXml);
+        var weirdTokens = DeepSeekHarnessStartupService.SplitArguments(weirdAction!.Value.Arguments);
+        Assert(weirdTokens[2] == @"C:\a&b<c>d\node.exe", "XML 转义后应往返还原路径：" + weirdTokens[2]);
+
+        // 4) 旧版直接启动 node 的 action 识别为 stale。
+        var oldXml = """
+<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+<Actions Context="Author"><Exec><Command>C:\Program Files\nodejs\node.exe</Command><Arguments>"C:\Users\x\AppData\Roaming\npm\node_modules\@deepseek-ai\dsh\lib\bin.js" web --host 127.0.0.1</Arguments></Exec></Actions>
+</Task>
+""";
+        var oldAction = DeepSeekHarnessStartupService.ParseTaskAction(oldXml);
+        Assert(oldAction is not null && DeepSeekHarnessStartupService.IsStaleNodeAction(oldAction!.Value.Command, oldAction.Value.Arguments), "旧版直接启动 node 的 action 应识别为 stale");
+        var staleStatus = DeepSeekHarnessStartupService.EvaluateTaskDefinition(oldXml, node, dsh);
+        Assert(staleStatus.Exists && !staleStatus.MatchesCurrentPaths && staleStatus.Message.Contains("过时", StringComparison.Ordinal), "旧版任务应判定为 stale 需重新配置：" + staleStatus.Message);
+
+        // 5) EvaluateTaskDefinition：隐藏宿主且路径一致 → 匹配；路径变化 → 不匹配；不可解析 → 需重新配置。
+        var matching = DeepSeekHarnessStartupService.EvaluateTaskDefinition(xml, node, dsh);
+        Assert(matching.Exists && matching.MatchesCurrentPaths, "隐藏宿主路径一致应判定匹配：" + matching.Message);
+        var changed = DeepSeekHarnessStartupService.EvaluateTaskDefinition(xml, @"C:\other\node.exe", dsh);
+        Assert(changed.Exists && !changed.MatchesCurrentPaths && changed.Message.Contains("变化", StringComparison.Ordinal), "路径变化应判定不匹配：" + changed.Message);
+        var broken = DeepSeekHarnessStartupService.EvaluateTaskDefinition("not xml at all", node, dsh);
+        Assert(broken.Exists && !broken.MatchesCurrentPaths && broken.Message.Contains("解析", StringComparison.Ordinal), "不可解析 XML 应判定需重新配置：" + broken.Message);
+        return Task.CompletedTask;
+    }
+
+    private static Task TestHarnessContractOptionsAsync()
+    {
+        var defaults = new AppSettings();
+        Assert(defaults.HarnessExecutionMode == "codex-contract", "Harness 默认应为 Codex 合同模式。");
+        Assert(defaults.HarnessPermissionMode == "danger-full-access", "用户要求完全控制默认开启。");
+        Assert(defaults.HarnessExecutionStrength == "standard", "默认执行强度应为 standard。");
+        Assert(HarnessExecutionOptions.NormalizeMode("bad") == "codex-contract", "非法模式应回退合同模式。");
+        Assert(HarnessExecutionOptions.NormalizePermission("bad") == "danger-full-access", "非法权限应回退完全控制。");
+        Assert(HarnessExecutionOptions.AgentPreset("minimal") == "minimal", "minimal 模式映射错误。");
+
+        var start = DeepSeekHarnessProcess.BuildWebHostStartInfo(@"C:\node.exe", @"C:\dsh\bin.js", "danger-full-access");
+        Assert(start.Environment["DSH_PERMISSION_MODE"] == "danger-full-access", "完全控制必须通过受控环境传递。");
+        Assert(start.Environment["DSH_APPROVAL_POLICY"] == "never", "完全控制应自动取消交互审批。");
+        Assert(!start.ArgumentList.Any(x => x.Contains("danger-full-access", StringComparison.Ordinal)), "权限不得进入命令行。");
+
+        var root = Path.Combine(Path.GetTempPath(), "codex-helper-harness-profile-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var package = Path.Combine(root, "package");
+            var shipped = Path.Combine(package, "config", "agent-presets", "standard");
+            Directory.CreateDirectory(shipped);
+            File.WriteAllText(Path.Combine(package, "package.json"), "{}", Encoding.UTF8);
+            File.WriteAllText(Path.Combine(shipped, "agent.cordis.yml"), "- id: persona\n  name: persona\n  config:\n    text: You are a coding agent powered by the {{model}} model. Your working directory is {{cwd}}.\n", Encoding.UTF8);
+            var entry = Path.Combine(package, "lib", "bin.js");
+            Directory.CreateDirectory(Path.GetDirectoryName(entry)!);
+            File.WriteAllText(entry, string.Empty, Encoding.UTF8);
+            var user = Path.Combine(root, "user");
+            var service = new HarnessContractProfileService(user);
+            service.InstallOrRepair(entry);
+            var first = File.ReadAllText(service.CompositionPath, Encoding.UTF8);
+            service.InstallOrRepair(entry);
+            Assert(first == File.ReadAllText(service.CompositionPath, Encoding.UTF8), "preset 重复安装必须幂等。");
+            Assert(first.Contains("合同实现执行器", StringComparison.Ordinal), "preset 必须包含合同执行边界。");
+            Assert(first.Contains("方案已冻结", StringComparison.Ordinal), "preset 必须声明冻结决策优先。");
+            Assert(first.Contains("5 项", StringComparison.Ordinal), "preset 必须限定一次最多 5 项实施动作。");
+            Assert(first.Contains("集中读取", StringComparison.Ordinal) && first.Contains("批量编辑", StringComparison.Ordinal), "preset 必须要求集中读取与批量编辑。");
+            Assert(first.Contains("同一未变化文件不得重复读取", StringComparison.Ordinal), "preset 必须禁止重复读取未变化文件。");
+            Assert(first.Contains("所有用户可见自然语言", StringComparison.Ordinal) && first.Contains("必须使用简体中文", StringComparison.Ordinal), "preset 必须强制计划、分析与中间态使用简体中文。");
+            Assert(first.Contains("只运行 workerChecks", StringComparison.Ordinal), "preset 必须限定只运行 workerChecks。");
+            Assert(first.Contains("Release build", StringComparison.Ordinal) && first.Contains("完整测试套件", StringComparison.Ordinal), "preset 必须声明默认检查只做 Release build 且不跑完整测试套件。");
+            Assert(first.Contains("EXECUTION_REPORT.md", StringComparison.Ordinal) && first.Contains("等待 GPT 验收", StringComparison.Ordinal), "preset 必须声明结束即报告并等待 GPT 验收。");
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
+        return Task.CompletedTask;
+    }
+
+    /// <summary>执行模式→agentPreset 映射、执行强度检查预算/收敛策略、恢复推荐设置。</summary>
+    private static Task TestHarnessExecutionPolicyAsync()
+    {
+        // 模式 → agentPreset 映射：minimal→minimal；plan→standard；standard→standard；codex-contract 默认请求 standard（安装后由 Runner 覆盖）。
+        Assert(HarnessExecutionOptions.AgentPreset("minimal") == "minimal", "minimal 应映射 minimal。");
+        Assert(HarnessExecutionOptions.AgentPreset("plan") == "standard", "plan 应映射 standard（DSH 无 plan 预设）。");
+        Assert(HarnessExecutionOptions.AgentPreset("standard") == "standard", "standard 应映射 standard。");
+        Assert(HarnessExecutionOptions.AgentPreset("codex-contract") == "standard", "codex-contract 未安装预设时默认请求 standard（绝不请求不存在的预设）。");
+        Assert(HarnessExecutionOptions.AgentPreset("bad") == "standard", "非法模式回退后应映射 standard。");
+
+        // 强度归一化：空/非法回退 standard。
+        Assert(HarnessExecutionOptions.NormalizeStrength("") == "standard", "空强度应回退 standard。");
+        Assert(HarnessExecutionOptions.NormalizeStrength("garbage") == "standard", "非法强度应回退 standard。");
+        Assert(HarnessExecutionOptions.NormalizeStrength("QUICK") == "quick", "强度归一化应忽略大小写。");
+
+        // 强度策略：quick/standard/deep 的检查预算与收敛阈值各不相同，且绝不伪装成模型思考强度。
+        var quick = HarnessExecutionOptions.StrengthInstruction("quick");
+        var standard = HarnessExecutionOptions.StrengthInstruction("standard");
+        var deep = HarnessExecutionOptions.StrengthInstruction("deep");
+        Assert(quick.Contains("quick", StringComparison.Ordinal) && quick.Contains("2 次", StringComparison.Ordinal), "quick 应声明聚焦检查与 2 次收敛：" + quick);
+        Assert(standard.Contains("standard", StringComparison.Ordinal) && standard.Contains("3 次", StringComparison.Ordinal), "standard 应声明按 workerChecks 与 3 次收敛：" + standard);
+        Assert(deep.Contains("deep", StringComparison.Ordinal) && deep.Contains("完整回归", StringComparison.Ordinal) && deep.Contains("4 次", StringComparison.Ordinal), "deep 应声明完整回归与 4 次收敛：" + deep);
+        Assert(!quick.Contains("reasoning_effort", StringComparison.OrdinalIgnoreCase) && !deep.Contains("reasoning_effort", StringComparison.OrdinalIgnoreCase), "强度策略不得伪装成模型思考强度。");
+        Assert(HarnessExecutionOptions.ModelReasoningText == "自动，由模型决定", "思考强度应诚实显示由模型决定。");
+
+        // 无显式 workerChecks 的默认检查规则：只做受影响项目 Release build 一次，不默认完整测试套件，
+        // 无法确定项目时交给 GPT，不递归扫描仓库寻找测试入口。
+        var defaultChecks = HarnessExecutionOptions.DefaultWorkerChecksInstruction();
+        Assert(defaultChecks.Contains("workerChecks", StringComparison.Ordinal) && defaultChecks.Contains("Release build", StringComparison.Ordinal),
+            "默认检查应声明只做受影响项目 Release build：" + defaultChecks);
+        Assert(defaultChecks.Contains("只能逐项执行", StringComparison.Ordinal) && defaultChecks.Contains("严禁追加", StringComparison.Ordinal),
+            "显式 workerChecks 应禁止追加未列出的构建或测试：" + defaultChecks);
+        Assert(defaultChecks.Contains("完整测试套件", StringComparison.Ordinal), "默认检查应禁止自动运行完整测试套件：" + defaultChecks);
+        Assert(defaultChecks.Contains("交给 GPT", StringComparison.Ordinal), "默认检查应说明无法确定项目时交给 GPT：" + defaultChecks);
+        Assert(defaultChecks.Contains("递归扫描", StringComparison.Ordinal), "默认检查应禁止递归扫描仓库寻找测试入口：" + defaultChecks);
+
+        // 恢复推荐设置：权限必须回到 danger-full-access，复用/自动启动/交还 GPT 全部恢复默认开。
+        var settings = new AppSettings
+        {
+            HarnessExecutionMode = "minimal",
+            HarnessPermissionMode = "read-only",
+            HarnessExecutionStrength = "deep",
+            HarnessReuseSession = false,
+            HarnessAutoStartHost = false,
+            HarnessReturnToGptOnFailure = false
+        };
+        HarnessExecutionOptions.RestoreRecommended(settings);
+        Assert(settings.HarnessExecutionMode == "codex-contract", "恢复推荐应回到合同模式。");
+        Assert(settings.HarnessPermissionMode == "danger-full-access", "恢复推荐必须回到完全控制（用户明确要求）。");
+        Assert(settings.HarnessExecutionStrength == "standard", "恢复推荐应回到标准强度。");
+        Assert(settings.HarnessReuseSession && settings.HarnessAutoStartHost && settings.HarnessReturnToGptOnFailure, "恢复推荐应开启会话复用/自动启动/交还 GPT。");
+        return Task.CompletedTask;
+    }
+
+    /// <summary>任务状态必须诚实记录执行模式/权限/强度/会话状态；预设降级时记录 degraded-standard。</summary>
+    private static async Task TestHarnessTaskStatusFieldsAsync()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "codex-helper-harness-status-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var project = Path.Combine(root, "project");
+            var task = Path.Combine(project, ".codex-helper", "runs", "run-status");
+            Directory.CreateDirectory(task);
+            await File.WriteAllTextAsync(Path.Combine(task, "SPEC.md"), "test");
+
+            // 1) 默认设置（无 dsh 入口）→ codex-contract 模式、权限/强度默认、会话状态 creating、agentPreset 请求 standard。
+            await using (var host = new FakeHarnessHost
+            {
+                Respond = (method, _) => method switch
+                {
+                    "session.create" => new JsonObject { ["sessionId"] = "sess-status-1" },
+                    "session.prompt" => new JsonObject { ["accepted"] = true },
+                    _ => new JsonObject()
+                },
+                WsScripts =
+                [
+                    new Queue<string>([
+                        WsFrame("session/subscribed", "sess-status-1"),
+                        WsFrame("session/event", "sess-status-1", "turn/start", seq: 1),
+                        WsFrame("session/event", "sess-status-1", "turn/end", "completed", seq: 2)
+                    ])
+                ]
+            })
+            {
+                await host.StartAsync();
+                // 预写有效报告（未来时间），正常完成的 awaiting-gpt 才可通过报告完成门禁。
+                WriteValidReport(task, Path.GetFileName(task), TestFingerprint(task));
+                var runner = new DeepSeekHarnessRunner(new AppPaths(Path.Combine(root, "app-status")))
+                {
+                    WebUrl = host.BaseUrl,
+                    RelayProbe = new ConfirmedHarnessRelay(),
+                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。"))
+                };
+                var status = await runner.StartAsync(project, task);
+                Assert(status.ExecutionMode == "codex-contract", "任务应记录执行模式：" + status.ExecutionMode);
+                Assert(status.PermissionMode == "danger-full-access", "任务应记录默认权限：" + status.PermissionMode);
+                Assert(status.ExecutionStrength == "standard", "任务应记录默认强度：" + status.ExecutionStrength);
+                var createCall = host.Calls.Single(call => call.Method == "session.create");
+                Assert(createCall.Payload["agentPreset"]?.GetValue<string>() == "standard", "无 dsh 入口时 agentPreset 应为 standard（诚实降级），实际：" + createCall.Payload["agentPreset"]);
+                var persisted = runner.TryRead("run-status");
+                Assert(persisted is not null && persisted.SessionState == "awaiting-gpt", "终态任务应记录 awaiting-gpt 会话状态：" + persisted?.SessionState);
+            }
+
+            // 2) 已完成的同合同任务不得复用（直接返回 completed），且不创建新会话。
+            await using (var host = new FakeHarnessHost
+            {
+                Respond = (_, _) => new JsonObject()
+            })
+            {
+                await host.StartAsync();
+                var runner = new DeepSeekHarnessRunner(new AppPaths(Path.Combine(root, "app-status")))
+                {
+                    WebUrl = host.BaseUrl,
+                    RelayProbe = new ConfirmedHarnessRelay(),
+                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。"))
+                };
+                var status = await runner.StartAsync(project, task);
+                Assert(status.State == "awaiting-gpt" && !host.Calls.Any(call => call.Method == "session.create"), "等待 GPT 验收的任务不得复用或重复创建会话。");
+            }
+        }
+        finally { TryDeleteDirectory(root); }
+    }
+
+    /// <summary>
+    /// 合同会话隔离：不同 taskId/不同合同指纹必须创建新 Session；指纹变化且旧会话已结束 →
+    /// 强制新 Session；指纹变化且旧会话仍运行或同项目其他合同运行 → busy；
+    /// 旧项目亲和（affinity）文件不得导致新合同复用旧 Session。
+    /// </summary>
+    private static async Task TestHarnessContractSessionIsolationAsync()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "codex-helper-harness-isolation-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var project = Path.Combine(root, "project");
+            var taskA = Path.Combine(project, ".codex-helper", "runs", "run-iso-a");
+            var taskB = Path.Combine(project, ".codex-helper", "runs", "run-iso-b");
+            Directory.CreateDirectory(taskA);
+            Directory.CreateDirectory(taskB);
+            await File.WriteAllTextAsync(Path.Combine(taskA, "SPEC.md"), "合同 A 正文");
+            await File.WriteAllTextAsync(Path.Combine(taskB, "SPEC.md"), "合同 B 正文");
+            var taskIdA = Path.GetFileName(taskA);
+            var taskIdB = Path.GetFileName(taskB);
+            // 预写两个任务的报告（未来时间），完成路径才可通过报告门禁。
+            WriteValidReport(taskA, taskIdA, TestFingerprint(taskA));
+            WriteValidReport(taskB, taskIdB, TestFingerprint(taskB));
+
+            // ---- 1) 同项目不同合同（不同 taskId）→ 各自创建不同 Session，绝不共享。 ----
+            await using (var host = new FakeHarnessHost
+            {
+                Respond = (method, _) => method switch
+                {
+                    "session.create" => new JsonObject { ["sessionId"] = "sess-iso-a" },
+                    "session.prompt" => new JsonObject { ["accepted"] = true },
+                    _ => new JsonObject()
+                },
+                WsScripts =
+                [
+                    new Queue<string>([
+                        WsFrame("session/subscribed", "sess-iso-a"),
+                        WsFrame("session/event", "sess-iso-a", "turn/start", seq: 1),
+                        WsFrame("session/event", "sess-iso-a", "turn/end", "completed", seq: 2)
+                    ])
+                ]
+            })
+            {
+                await host.StartAsync();
+                var runner = new DeepSeekHarnessRunner(new AppPaths(Path.Combine(root, "app-iso")))
+                {
+                    WebUrl = host.BaseUrl,
+                    RelayProbe = new ConfirmedHarnessRelay(),
+                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。"))
+                };
+                var a = await runner.StartAsync(project, taskA);
+                Assert(a.State == "awaiting-gpt" && a.SessionId == "sess-iso-a", "合同 A 应独立完成：" + a.State);
+            }
+
+            // 合同 B 用同一项目但不同 taskId：必须创建新 Session（绝不复用合同 A 的会话）。
+            await using (var host = new FakeHarnessHost
+            {
+                Respond = (method, _) => method switch
+                {
+                    "session.create" => new JsonObject { ["sessionId"] = "sess-iso-b" },
+                    "session.prompt" => new JsonObject { ["accepted"] = true },
+                    _ => new JsonObject()
+                },
+                WsScripts =
+                [
+                    new Queue<string>([
+                        WsFrame("session/subscribed", "sess-iso-b"),
+                        WsFrame("session/event", "sess-iso-b", "turn/start", seq: 1),
+                        WsFrame("session/event", "sess-iso-b", "turn/end", "completed", seq: 2)
+                    ])
+                ]
+            })
+            {
+                await host.StartAsync();
+                var runner = new DeepSeekHarnessRunner(new AppPaths(Path.Combine(root, "app-iso")))
+                {
+                    WebUrl = host.BaseUrl,
+                    RelayProbe = new ConfirmedHarnessRelay(),
+                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。"))
+                };
+                var b = await runner.StartAsync(project, taskB);
+                Assert(b.State == "awaiting-gpt" && b.SessionId == "sess-iso-b", "合同 B 应创建独立新会话：" + b.State + " / " + b.SessionId);
+                Assert(host.Calls.Count(call => call.Method == "session.create") == 1, "合同 B 应恰好创建一次会话");
+            }
+
+            // ---- 2) SPEC 变化（指纹变化）且旧会话已结束 → 强制新 Session，不复用旧会话。 ----
+            var taskC = Path.Combine(project, ".codex-helper", "runs", "run-iso-c");
+            Directory.CreateDirectory(taskC);
+            await File.WriteAllTextAsync(Path.Combine(taskC, "SPEC.md"), "合同 C 版本 1");
+            var taskIdC = Path.GetFileName(taskC);
+            var oldFingerprint = TestFingerprint(taskC);
+            await File.WriteAllTextAsync(Path.Combine(taskC, "SPEC.md"), "合同 C 版本 2（SPEC 变化）");
+            var newFingerprint = TestFingerprint(taskC);
+            Assert(oldFingerprint != newFingerprint, "SPEC 变化后指纹必须不同");
+            WriteValidReport(taskC, taskIdC, newFingerprint);
+
+            await using (var host = new FakeHarnessHost
+            {
+                Respond = (method, _) => method switch
+                {
+                    "session.list" => new JsonObject { ["items"] = new JsonArray(new JsonObject { ["sessionId"] = "sess-iso-old", ["running"] = false }) },
+                    "session.create" => new JsonObject { ["sessionId"] = "sess-iso-new" },
+                    "session.prompt" => new JsonObject { ["accepted"] = true },
+                    _ => new JsonObject()
+                },
+                WsScripts =
+                [
+                    new Queue<string>([
+                        WsFrame("session/subscribed", "sess-iso-new"),
+                        WsFrame("session/event", "sess-iso-new", "turn/start", seq: 1),
+                        WsFrame("session/event", "sess-iso-new", "turn/end", "completed", seq: 2)
+                    ])
+                ]
+            })
+            {
+                await host.StartAsync();
+                var runner = new DeepSeekHarnessRunner(new AppPaths(Path.Combine(root, "app-iso")))
+                {
+                    WebUrl = host.BaseUrl,
+                    RelayProbe = new ConfirmedHarnessRelay(),
+                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。"))
+                };
+                // 旧合同（指纹 oldFingerprint）的运行中状态文件。
+                var oldStatus = new HarnessTaskStatus(taskIdC, project, taskC, "running", "旧合同运行中。",
+                    DateTime.UtcNow.AddMinutes(-10), DateTime.UtcNow.AddMinutes(-9), 0, host.BaseUrl, "sess-iso-old",
+                    ContractFingerprint: oldFingerprint);
+                HarnessTaskStateStore.WriteStatus(Path.GetDirectoryName(runner.TaskDirectoryFor(taskIdC))!, oldStatus);
+
+                var c = await runner.StartAsync(project, taskC);
+                Assert(c.State == "awaiting-gpt" && c.SessionId == "sess-iso-new", "指纹变化且旧会话已结束应强制新 Session：" + c.State + " / " + c.SessionId);
+                Assert(host.Calls.Count(call => call.Method == "session.create") == 1, "指纹变化应创建新会话");
+            }
+
+            // ---- 3) SPEC 变化（指纹变化）且旧会话仍在运行 → busy（防并发覆盖，不复用）。 ----
+            await using (var host = new FakeHarnessHost
+            {
+                Respond = (method, _) => method switch
+                {
+                    "session.list" => new JsonObject { ["items"] = new JsonArray(new JsonObject { ["sessionId"] = "sess-iso-old", ["running"] = true }) },
+                    _ => new JsonObject()
+                }
+            })
+            {
+                await host.StartAsync();
+                var runner = new DeepSeekHarnessRunner(new AppPaths(Path.Combine(root, "app-iso")))
+                {
+                    WebUrl = host.BaseUrl,
+                    RelayProbe = new ConfirmedHarnessRelay(),
+                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。"))
+                };
+                var oldStatus = new HarnessTaskStatus(taskIdC, project, taskC, "running", "旧合同运行中。",
+                    DateTime.UtcNow.AddMinutes(-10), DateTime.UtcNow.AddMinutes(-9), 0, host.BaseUrl, "sess-iso-old",
+                    ContractFingerprint: oldFingerprint);
+                HarnessTaskStateStore.WriteStatus(Path.GetDirectoryName(runner.TaskDirectoryFor(taskIdC))!, oldStatus);
+
+                var busy = await runner.StartAsync(project, taskC);
+                Assert(busy.State == "busy" && busy.Message.Contains("正在运行", StringComparison.Ordinal),
+                    "旧合同仍运行时新指纹合同应返回 busy：" + busy.State + " / " + busy.Message
+                    + "；calls=" + string.Join(",", host.Calls.Select(call => call.Method))
+                    + "；persisted=" + runner.TryRead(taskIdC)?.State + "/" + runner.TryRead(taskIdC)?.SessionId);
+                Assert(!host.Calls.Any(call => call.Method == "session.create"), "busy 时不得创建新会话");
+            }
+
+            // ---- 4) 同项目其他 taskId 的合同正在运行 → busy（判断忙碌不以复用旧会话实现）。 ----
+            var taskD = Path.Combine(project, ".codex-helper", "runs", "run-iso-d");
+            Directory.CreateDirectory(taskD);
+            await File.WriteAllTextAsync(Path.Combine(taskD, "SPEC.md"), "合同 D");
+            var taskIdD = Path.GetFileName(taskD);
+            await using (var host = new FakeHarnessHost
+            {
+                Respond = (method, _) => method switch
+                {
+                    "session.list" => new JsonObject { ["items"] = new JsonArray(new JsonObject { ["sessionId"] = "sess-iso-other", ["running"] = true }) },
+                    _ => new JsonObject()
+                }
+            })
+            {
+                await host.StartAsync();
+                var runner = new DeepSeekHarnessRunner(new AppPaths(Path.Combine(root, "app-iso")))
+                {
+                    WebUrl = host.BaseUrl,
+                    RelayProbe = new ConfirmedHarnessRelay(),
+                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。"))
+                };
+                // 同项目另一个任务（run-iso-b 状态文件已被写为 awaiting-gpt，需再造一个 running 的 run-iso-e）。
+                var taskE = Path.Combine(project, ".codex-helper", "runs", "run-iso-e");
+                Directory.CreateDirectory(taskE);
+                await File.WriteAllTextAsync(Path.Combine(taskE, "SPEC.md"), "合同 E");
+                var otherStatus = new HarnessTaskStatus("run-iso-e", project, taskE, "running", "其他合同运行中。",
+                    DateTime.UtcNow.AddMinutes(-5), DateTime.UtcNow.AddMinutes(-4), 0, host.BaseUrl, "sess-iso-other",
+                    ContractFingerprint: TestFingerprint(taskE));
+                File.WriteAllText(runner.TaskDirectoryFor("run-iso-e"),
+                    JsonSerializer.Serialize(otherStatus, new JsonSerializerOptions { WriteIndented = true, Converters = { new HarnessUtcConverter() } }));
+
+                var d = await runner.StartAsync(project, taskD);
+                Assert(d.State == "busy" && d.Message.Contains("正在运行", StringComparison.Ordinal), "同项目其他运行合同应返回 busy：" + d.State + " / " + d.Message);
+                Assert(!host.Calls.Any(call => call.Method == "session.create"), "busy 时不得创建新会话");
+            }
+
+            // ---- 5) 旧 affinity 文件不得导致新合同复用旧 Session：存在旧亲和记录仍创建新会话。 ----
+            await using (var host = new FakeHarnessHost
+            {
+                Respond = (method, _) => method switch
+                {
+                    "session.create" => new JsonObject { ["sessionId"] = "sess-iso-fresh" },
+                    "session.prompt" => new JsonObject { ["accepted"] = true },
+                    _ => new JsonObject()
+                },
+                WsScripts =
+                [
+                    new Queue<string>([
+                        WsFrame("session/subscribed", "sess-iso-fresh"),
+                        WsFrame("session/event", "sess-iso-fresh", "turn/start", seq: 1),
+                        WsFrame("session/event", "sess-iso-fresh", "turn/end", "completed", seq: 2)
+                    ])
+                ]
+            })
+            {
+                await host.StartAsync();
+                var runner = new DeepSeekHarnessRunner(new AppPaths(Path.Combine(root, "app-iso")))
+                {
+                    WebUrl = host.BaseUrl,
+                    RelayProbe = new ConfirmedHarnessRelay(),
+                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。"))
+                };
+                var registry = Path.GetDirectoryName(runner.TaskDirectoryFor(taskIdD))!;
+                var affinityDir = Path.Combine(registry, "project-affinity");
+                Directory.CreateDirectory(affinityDir);
+                var normalized = Path.GetFullPath(project).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar).ToUpperInvariant();
+                var key = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(normalized)));
+                File.WriteAllText(Path.Combine(affinityDir, key + ".json"), """{"SessionId":"sess-iso-stale","ExecutionMode":"codex-contract","PermissionMode":"danger-full-access","State":"idle","UpdatedUtc":"2026-01-01T00:00:00Z"}""", Encoding.UTF8);
+
+                var f = await runner.StartAsync(project, taskD);
+                Assert(f.State == "failed" && f.SessionId == "sess-iso-fresh" && f.Message.Contains("EXECUTION_REPORT", StringComparison.Ordinal),
+                    "旧 affinity 文件不得导致复用旧 Session，且无报告的完成必须被门禁拒绝：" + f.State + " / " + f.SessionId);
+                Assert(host.Calls.Count(call => call.Method == "session.create") == 1, "存在旧 affinity 文件仍应创建新会话");
+            }
+        }
+        finally { TryDeleteDirectory(root); }
+    }
+
+    /// <summary>
+    /// rootCauseKey 组键接回：相同项目且同显式组键已有运行任务时，后续合同必须接回该运行任务
+    /// （不新建会话、不重复提交提示）；未声明/不同组键时保持保守隔离（绝不基于自然语言猜测合并）。
+    /// </summary>
+    private static async Task TestHarnessRootCauseKeyResumeAsync()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "codex-helper-harness-rck-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var project = Path.Combine(root, "project");
+            var taskA = Path.Combine(project, ".codex-helper", "runs", "run-rck-a");
+            var taskB = Path.Combine(project, ".codex-helper", "runs", "run-rck-b");
+            Directory.CreateDirectory(taskA);
+            Directory.CreateDirectory(taskB);
+            await File.WriteAllTextAsync(Path.Combine(taskA, "SPEC.md"), "合同 A（同组键碎片）");
+            await File.WriteAllTextAsync(Path.Combine(taskA, "manifest.json"), """{"rootCauseKey":"group-x"}""", new System.Text.UTF8Encoding(false));
+            await File.WriteAllTextAsync(Path.Combine(taskB, "SPEC.md"), "合同 B（同组键碎片）");
+            await File.WriteAllTextAsync(Path.Combine(taskB, "manifest.json"), """{"rootCauseKey":"group-x"}""", new System.Text.UTF8Encoding(false));
+            var taskIdA = Path.GetFileName(taskA);
+            var taskIdB = Path.GetFileName(taskB);
+            WriteValidReport(taskB, taskIdB, TestFingerprint(taskB));
+
+            // 场景 A：taskB 与运行中的 taskA 同项目且同组键 → 必须接回 taskA 的会话，不新建、不重复提交提示。
+            await using (var host = new FakeHarnessHost
+            {
+                Respond = (method, _) => method switch
+                {
+                    "session.list" => new JsonObject { ["items"] = new JsonArray(new JsonObject { ["sessionId"] = "sess-rck-a", ["running"] = true }) },
+                    _ => new JsonObject()
+                },
+                WsScripts =
+                [
+                    new Queue<string>([
+                        WsFrame("session/subscribed", "sess-rck-a"),
+                        WsFrame("session/event", "sess-rck-a", "turn/start", seq: 1),
+                        WsFrame("session/event", "sess-rck-a", "turn/end", "completed", seq: 2)
+                    ])
+                ]
+            })
+            {
+                await host.StartAsync();
+                var runner = new DeepSeekHarnessRunner(new AppPaths(Path.Combine(root, "app-rck-a")))
+                {
+                    WebUrl = host.BaseUrl,
+                    RelayProbe = new ConfirmedHarnessRelay(),
+                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。"))
+                };
+                // 预写 taskA 的运行中状态文件（同项目、同组键、带真实会话 ID）。
+                var runningA = new HarnessTaskStatus(taskIdA, project, taskA, "running", "同组键任务运行中。",
+                    DateTime.UtcNow.AddMinutes(-10), DateTime.UtcNow.AddMinutes(-9), 0, host.BaseUrl, "sess-rck-a",
+                    RootCauseKey: "group-x", ContractFingerprint: TestFingerprint(taskA));
+                File.WriteAllText(runner.TaskDirectoryFor(taskIdA),
+                    JsonSerializer.Serialize(runningA, new JsonSerializerOptions { WriteIndented = true, Converters = { new HarnessUtcConverter() } }));
+
+                var b = await runner.StartAsync(project, taskB);
+                Assert(b.State == "awaiting-gpt" && b.SessionId == "sess-rck-a", "同组键合同应接回运行任务会话而非新建：" + b.State + " / " + b.SessionId);
+                Assert(!host.Calls.Any(call => call.Method == "session.create"), "组键接回不得创建新会话");
+                Assert(!host.Calls.Any(call => call.Method == "session.prompt"), "组键接回不得重复提交提示");
+            }
+
+            // 场景 B：同项目但不同显式组键，且无任何运行任务 → 保守隔离，创建新会话（绝不合并）。
+            var taskC = Path.Combine(project, ".codex-helper", "runs", "run-rck-c");
+            Directory.CreateDirectory(taskC);
+            await File.WriteAllTextAsync(Path.Combine(taskC, "SPEC.md"), "合同 C（不同组键）");
+            await File.WriteAllTextAsync(Path.Combine(taskC, "manifest.json"), """{"rootCauseKey":"group-y"}""", new System.Text.UTF8Encoding(false));
+            var taskIdC = Path.GetFileName(taskC);
+            WriteValidReport(taskC, taskIdC, TestFingerprint(taskC));
+            await using (var host = new FakeHarnessHost
+            {
+                Respond = (method, _) => method switch
+                {
+                    "session.create" => new JsonObject { ["sessionId"] = "sess-rck-c" },
+                    "session.prompt" => new JsonObject { ["accepted"] = true },
+                    _ => new JsonObject()
+                },
+                WsScripts =
+                [
+                    new Queue<string>([
+                        WsFrame("session/subscribed", "sess-rck-c"),
+                        WsFrame("session/event", "sess-rck-c", "turn/start", seq: 1),
+                        WsFrame("session/event", "sess-rck-c", "turn/end", "completed", seq: 2)
+                    ])
+                ]
+            })
+            {
+                await host.StartAsync();
+                // 新 registry（独立 AppPaths），避免场景 A 的运行任务干扰。
+                var runner = new DeepSeekHarnessRunner(new AppPaths(Path.Combine(root, "app-rck-c")))
+                {
+                    WebUrl = host.BaseUrl,
+                    RelayProbe = new ConfirmedHarnessRelay(),
+                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。"))
+                };
+                var c = await runner.StartAsync(project, taskC);
+                Assert(c.State == "awaiting-gpt" && c.SessionId == "sess-rck-c", "不同组键且无运行任务应创建新会话：" + c.State + " / " + c.SessionId);
+                Assert(host.Calls.Count(call => call.Method == "session.create") == 1, "不同组键应恰好创建一次新会话");
+            }
+        }
+        finally { TryDeleteDirectory(root); }
+    }
+
+    /// <summary>
+    /// 报告完成门禁：有效报告通过 → awaiting-gpt；缺失/陈旧/错误 taskId/错误指纹/缺字段 →
+    /// failed 并说明原因；REVIEW_PACKET 记录校验结果；对账路径同样受门禁约束。
+    /// </summary>
+    private static async Task TestHarnessReportGateAsync()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "codex-helper-harness-gate-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var project = Path.Combine(root, "project");
+            // 各场景独立任务目录（同一项目、同一 registry；终态非运行，互不 busy）。
+            var app = new AppPaths(Path.Combine(root, "app-gate"));
+
+            async Task<HarnessTaskStatus> RunGateScenarioAsync(string taskName, Action<string>? reportWriter, bool expectPacket)
+            {
+                var task = Path.Combine(project, ".codex-helper", "runs", taskName);
+                Directory.CreateDirectory(task);
+                await File.WriteAllTextAsync(Path.Combine(task, "SPEC.md"), "test");
+                var taskId = Path.GetFileName(task);
+                var fingerprint = TestFingerprint(task);
+                var sessionId = "sess-gate-" + taskId;
+                await using var host = new FakeHarnessHost
+                {
+                    Respond = (method, _) => method switch
+                    {
+                        "session.create" => new JsonObject { ["sessionId"] = sessionId },
+                        "session.prompt" => new JsonObject { ["accepted"] = true },
+                        "session.cancel" => new JsonObject { ["accepted"] = true },
+                        _ => new JsonObject()
+                    },
+                    WsScripts =
+                    [
+                        new Queue<string>([
+                            WsFrame("session/subscribed", sessionId),
+                            WsFrame("session/event", sessionId, "turn/start", seq: 1),
+                            WsFrame("session/event", sessionId, "turn/end", "completed", seq: 2)
+                        ])
+                    ]
+                };
+                await host.StartAsync();
+                var runner = new DeepSeekHarnessRunner(app)
+                {
+                    WebUrl = host.BaseUrl,
+                    RelayProbe = new ConfirmedHarnessRelay(),
+                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。"))
+                };
+                reportWriter?.Invoke(task);
+                var status = await runner.StartAsync(project, task);
+                if (expectPacket)
+                    Assert(File.Exists(Path.Combine(task, "REVIEW_PACKET.md")), "完成路径应写入 REVIEW_PACKET.md");
+                return status;
+            }
+
+            // 1) 有效报告（正确 taskId/指纹/字段，未来时间）→ awaiting-gpt，REVIEW_PACKET 记录"通过"。
+            var ok = await RunGateScenarioAsync("run-gate-ok", task => WriteValidReport(task, "run-gate-ok", TestFingerprint(task)), expectPacket: true);
+            Assert(ok.State == "awaiting-gpt", "有效报告应通过完成门禁：" + ok.State + " / " + ok.Message);
+            var packet = await File.ReadAllTextAsync(Path.Combine(project, ".codex-helper", "runs", "run-gate-ok", "REVIEW_PACKET.md"));
+            Assert(packet.Contains("报告校验", StringComparison.Ordinal) && packet.Contains("通过", StringComparison.Ordinal), "REVIEW_PACKET 应记录报告校验通过：" + packet);
+
+            // 2) 报告缺失 → failed + 说明缺失原因。
+            var missing = await RunGateScenarioAsync("run-gate-missing", null, expectPacket: false);
+            Assert(missing.State == "failed" && missing.Message.Contains("未通过完成门禁", StringComparison.Ordinal) && missing.Message.Contains("缺失", StringComparison.Ordinal),
+                "缺失报告不得通过完成门禁：" + missing.State + " / " + missing.Message);
+
+            // 3) 陈旧报告（早于任务开始）→ failed + 陈旧原因。
+            var stale = await RunGateScenarioAsync("run-gate-stale",
+                task => WriteValidReport(task, "run-gate-stale", TestFingerprint(task), lastWriteUtc: DateTime.UtcNow.AddHours(-1)), expectPacket: false);
+            Assert(stale.State == "failed" && stale.Message.Contains("陈旧", StringComparison.Ordinal),
+                "陈旧报告不得通过完成门禁：" + stale.State + " / " + stale.Message);
+
+            // 4) 错误 taskId → failed。
+            var wrongId = await RunGateScenarioAsync("run-gate-wrongid",
+                task => WriteValidReport(task, "run-gate-other-id", TestFingerprint(task)), expectPacket: false);
+            Assert(wrongId.State == "failed" && wrongId.Message.Contains("任务 ID", StringComparison.Ordinal),
+                "错误 taskId 不得通过完成门禁：" + wrongId.State + " / " + wrongId.Message);
+
+            // 5) 错误合同指纹 → failed。
+            var wrongFp = await RunGateScenarioAsync("run-gate-wrongfp",
+                task => WriteValidReport(task, "run-gate-wrongfp", "WRONG-FINGERPRINT"), expectPacket: false);
+            Assert(wrongFp.State == "failed" && wrongFp.Message.Contains("合同指纹", StringComparison.Ordinal),
+                "错误指纹不得通过完成门禁：" + wrongFp.State + " / " + wrongFp.Message);
+
+            // 6) 结构不完整（缺少风险/未完成项字段）→ failed。
+            var incomplete = await RunGateScenarioAsync("run-gate-incomplete", task =>
+            {
+                var path = Path.Combine(task, "EXECUTION_REPORT.md");
+                var text = BuildReportText("run-gate-incomplete", TestFingerprint(task))
+                    .Replace("- 风险/未完成项：无\n", "", StringComparison.Ordinal);
+                File.WriteAllText(path, text, Encoding.UTF8);
+                File.SetLastWriteTimeUtc(path, DateTime.UtcNow.AddMinutes(5));
+            }, expectPacket: false);
+            Assert(incomplete.State == "failed" && incomplete.Message.Contains("风险/未完成项", StringComparison.Ordinal),
+                "缺字段报告不得通过完成门禁：" + incomplete.State + " / " + incomplete.Message);
+
+            // 7) 对账路径：会话已结束且 completed，但报告缺失 → 写回 failed（不得映射为可验收完成）。
+            var reconTask = Path.Combine(project, ".codex-helper", "runs", "run-gate-recon");
+            Directory.CreateDirectory(reconTask);
+            await File.WriteAllTextAsync(Path.Combine(reconTask, "SPEC.md"), "test");
+            await using (var host = new FakeHarnessHost
+            {
+                Respond = (method, _) => method switch
+                {
+                    "session.list" => new JsonObject { ["items"] = new JsonArray(new JsonObject { ["sessionId"] = "sess-gate-recon", ["running"] = false }) },
+                    "session.history" => new JsonObject { ["events"] = new JsonArray(new JsonObject
+                        { ["event"] = new JsonObject { ["type"] = "turn/end", ["data"] = new JsonObject { ["reason"] = new JsonObject { ["kind"] = "completed" } } } }) },
+                    _ => new JsonObject()
+                }
+            })
+            {
+                await host.StartAsync();
+                var runner = new DeepSeekHarnessRunner(new AppPaths(Path.Combine(root, "app-recon"))) { WebUrl = host.BaseUrl };
+                var fake = new HarnessTaskStatus("run-gate-recon", project, reconTask, "running", "运行中。",
+                    DateTime.UtcNow.AddMinutes(-10), DateTime.UtcNow.AddMinutes(-9), 0, host.BaseUrl, "sess-gate-recon",
+                    ContractFingerprint: TestFingerprint(reconTask));
+                File.WriteAllText(runner.TaskDirectoryFor("run-gate-recon"),
+                    JsonSerializer.Serialize(fake, new JsonSerializerOptions { WriteIndented = true, Converters = { new HarnessUtcConverter() } }));
+                await runner.ReconcileRecentTasksAsync();
+                var after = runner.TryRead("run-gate-recon");
+                Assert(after is not null && after.State == "failed" && after.Message.Contains("完成门禁", StringComparison.Ordinal),
+                    "对账映射 completed 时报告缺失应写回 failed：" + after?.State + " / " + after?.Message);
+            }
+        }
+        finally { TryDeleteDirectory(root); }
+    }
+
+    /// <summary>
+    /// 跨任务目录单飞占位：同项目另一个任务目录的 starting（尚无 sessionId）任务只要仍持有本地
+    /// 租约即为项目占位，第二份合同必须返回含旧任务 ID/状态的 busy，绝不创建会话；孤儿（无租约）
+    /// starting 不阻塞新建。
+    /// </summary>
+    private static async Task TestHarnessCrossDirectorySingleflightOccupancyAsync()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "codex-helper-harness-occupancy-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var project = Path.Combine(root, "project");
+            var taskA = Path.Combine(project, ".codex-helper", "runs", "run-occ-a");
+            var taskB = Path.Combine(project, ".codex-helper", "runs", "run-occ-b");
+            Directory.CreateDirectory(taskA);
+            Directory.CreateDirectory(taskB);
+            await File.WriteAllTextAsync(Path.Combine(taskB, "SPEC.md"), "合同 B");
+            var taskIdB = Path.GetFileName(taskB);
+
+            // ---- 1) 任务 A 在 starting 且持有本地租约（另一任务目录正在提交）→ 启动合同 B 返回 busy（含旧任务 ID/状态），不创建会话。 ----
+            await using (var host = new FakeHarnessHost
+            {
+                Respond = (method, _) => method switch
+                {
+                    "session.create" => new JsonObject { ["sessionId"] = "sess-occ-b" },
+                    "session.prompt" => new JsonObject { ["accepted"] = true },
+                    "session.list" => new JsonObject { ["items"] = new JsonArray() },
+                    _ => new JsonObject()
+                }
+            })
+            {
+                await host.StartAsync();
+                var runner = new DeepSeekHarnessRunner(new AppPaths(Path.Combine(root, "app-occ")))
+                {
+                    WebUrl = host.BaseUrl,
+                    RelayProbe = new ConfirmedHarnessRelay(),
+                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。"))
+                };
+                // 任务 A 的 starting 状态：尚无 sessionId，但本地租约被别进程持有（视为提交进行中）。
+                var startingA = new HarnessTaskStatus("run-occ-a", project, taskA, "starting", "正在提交。",
+                    DateTime.UtcNow.AddMinutes(-1), DateTime.UtcNow.AddMinutes(-1), 0, host.BaseUrl,
+                    ContractFingerprint: TestFingerprint(taskA));
+                File.WriteAllText(runner.TaskDirectoryFor("run-occ-a"),
+                    JsonSerializer.Serialize(startingA, new JsonSerializerOptions { WriteIndented = true, Converters = { new HarnessUtcConverter() } }));
+                await using var heldLease = new FileStream(Path.Combine(taskA, DeepSeekHarnessRunner.TaskLeaseFileName),
+                    FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+
+                var busy = await runner.StartAsync(project, taskB);
+                Assert(busy.State == "busy" && busy.Message.Contains("run-occ-a", StringComparison.Ordinal)
+                    && busy.Message.Contains("正在启动", StringComparison.Ordinal), "同项目无会话 starting（持租约）应返回含旧任务 ID 的 busy：" + busy.State + " / " + busy.Message);
+                Assert(!host.Calls.Any(call => call.Method == "session.create"), "跨目录单飞占位时不得创建会话");
+                Assert(!host.Calls.Any(call => call.Method == "session.prompt"), "跨目录单飞占位时不得提交提示");
+            }
+
+            // ---- 2) 孤儿 starting（同项目、无会话、且无人持有租约）→ 不阻塞新建会话，正常提交。 ----
+            await using (var host2 = new FakeHarnessHost
+            {
+                Respond = (method, _) => method switch
+                {
+                    "session.create" => new JsonObject { ["sessionId"] = "sess-occ-orphan-b" },
+                    "session.prompt" => new JsonObject { ["accepted"] = true },
+                    "session.list" => new JsonObject { ["items"] = new JsonArray() },
+                    _ => new JsonObject()
+                },
+                WsScripts =
+                [
+                    new Queue<string>([
+                        WsFrame("session/subscribed", "sess-occ-orphan-b"),
+                        WsFrame("session/event", "sess-occ-orphan-b", "turn/start", seq: 1),
+                        WsFrame("session/event", "sess-occ-orphan-b", "turn/end", "completed", seq: 2)
+                    ])
+                ]
+            })
+            {
+                await host2.StartAsync();
+                var runner2 = new DeepSeekHarnessRunner(new AppPaths(Path.Combine(root, "app-occ2")))
+                {
+                    WebUrl = host2.BaseUrl,
+                    RelayProbe = new ConfirmedHarnessRelay(),
+                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。"))
+                };
+                // 孤儿 starting：无租约（lease 文件不存在）。
+                var orphanA = new HarnessTaskStatus("run-occ-a2", project, taskA, "starting", "崩溃遗留占位。",
+                    DateTime.UtcNow.AddMinutes(-120), DateTime.UtcNow.AddMinutes(-120), 0, host2.BaseUrl,
+                    ContractFingerprint: TestFingerprint(taskA));
+                File.WriteAllText(runner2.TaskDirectoryFor("run-occ-a2"),
+                    JsonSerializer.Serialize(orphanA, new JsonSerializerOptions { WriteIndented = true, Converters = { new HarnessUtcConverter() } }));
+                File.Delete(Path.Combine(taskA, DeepSeekHarnessRunner.TaskLeaseFileName));
+                // 预写有效报告，让 completion 通过报告门禁。
+                WriteValidReport(taskB, taskIdB, TestFingerprint(taskB));
+
+                var status = await runner2.StartAsync(project, taskB);
+                Assert(status.State == "awaiting-gpt" && status.SessionId == "sess-occ-orphan-b", "孤儿 starting 不阻塞，正常提交：" + status.State + " / " + status.Message);
+                Assert(host2.Calls.Count(call => call.Method == "session.create") == 1, "孤儿 starting 不阻塞时应创建会话");
+            }
+
+            // ---- 3) 对账：无会话且租约已释放的孤儿 starting 被诚实清扫为 failed，不再永久阻塞。 ----
+            var runner3 = new DeepSeekHarnessRunner(new AppPaths(Path.Combine(root, "app-occ3")));
+            var sweepOrphan = new HarnessTaskStatus("run-occ-sweep", project, taskA, "starting", "遗留占位。",
+                DateTime.UtcNow.AddMinutes(-60), DateTime.UtcNow.AddMinutes(-60), 0, DeepSeekHarnessVersions.WebHostDefaultUrl);
+            File.WriteAllText(runner3.TaskDirectoryFor("run-occ-sweep"),
+                JsonSerializer.Serialize(sweepOrphan, new JsonSerializerOptions { WriteIndented = true, Converters = { new HarnessUtcConverter() } }));
+            File.Delete(Path.Combine(taskA, DeepSeekHarnessRunner.TaskLeaseFileName));
+            var result = await runner3.ReconcileRecentTasksAsync();
+            var swept = runner3.TryRead("run-occ-sweep");
+            Assert(swept is not null && swept.State == "failed" && swept.Message.Contains("本地租约已释放", StringComparison.Ordinal),
+                "无会话且租约已释放的孤儿 starting 应对账为 failed：" + swept?.State + " / " + swept?.Message);
+            Assert(!swept!.IsRunning, "清扫后的孤儿不得再归类为运行中");
+        }
+        finally { TryDeleteDirectory(root); }
+    }
+
+    /// <summary>
+    /// 原子项目互斥：项目级跨进程租约（projectRoot/.codex-helper/.codex-helper-project.lock）被另一
+    /// 进程/任务占用时，同项目第二个任务（不同任务目录）在创建任何会话之前判 busy（含占用方信息），
+    /// 绝不 session.create/提交。与"先扫描注册表再判断 busy"的非原子流程不同，这是原子互斥。
+    /// </summary>
+    private static async Task TestHarnessProjectLeaseAtomicMutexAsync()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "codex-helper-harness-projectmutex-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var project = Path.Combine(root, "project");
+            var taskB = Path.Combine(project, ".codex-helper", "runs", "run-proj-mutex-b");
+            Directory.CreateDirectory(taskB);
+            await File.WriteAllTextAsync(Path.Combine(taskB, "SPEC.md"), "合同 B");
+            var taskIdB = Path.GetFileName(taskB);
+
+            await using (var host = new FakeHarnessHost
+            {
+                Respond = (method, _) => method switch
+                {
+                    _ => new JsonObject()
+                }
+            })
+            {
+                await host.StartAsync();
+                var runner = new DeepSeekHarnessRunner(new AppPaths(Path.Combine(root, "app-mutex")))
+                {
+                    WebUrl = host.BaseUrl,
+                    RelayProbe = new ConfirmedHarnessRelay(),
+                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。"))
+                };
+                // 模拟另一进程/任务已原子占用项目租约：独占该文件且写入占位方戳（taskId=run-proj-mutex-a）。
+                var leaseDir = Path.Combine(project, ".codex-helper");
+                Directory.CreateDirectory(leaseDir);
+                var lockPath = Path.Combine(leaseDir, DeepSeekHarnessRunner.ProjectLeaseFileName);
+                await using var occupant = new FileStream(lockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.Read,
+                    bufferSize: 1, FileOptions.DeleteOnClose);
+                var stamp = new JsonObject
+                {
+                    ["taskId"] = "run-proj-mutex-a",
+                    ["projectRoot"] = project,
+                    ["hostProcessId"] = Environment.ProcessId,
+                    ["state"] = "starting",
+                    ["atUtc"] = DateTime.UtcNow.ToString("O")
+                };
+                var stampBytes = Encoding.UTF8.GetBytes(stamp.ToJsonString());
+                occupant.Write(stampBytes, 0, stampBytes.Length);
+                occupant.Flush();
+
+                var busy = await runner.StartAsync(project, taskB);
+                Assert(busy.State == "busy" && busy.Message.Contains("原子占用", StringComparison.Ordinal),
+                    "同项目项目租约被占用应返回明确 busy：" + busy.State + " / " + busy.Message);
+                Assert(busy.SessionState == "busy", "busy 应写回 SessionState=busy");
+                Assert(!host.Calls.Any(call => call.Method == "session.create"), "原子互斥判定时不得创建会话");
+                Assert(!host.Calls.Any(call => call.Method == "session.prompt"), "原子互斥判定时不得提交提示");
+            }
+        }
+        finally { TryDeleteDirectory(root); }
+    }
+
+    /// <summary>
+    /// 项目租约崩溃遗留清理 + 机械并行例外：
+    /// 1) 残留锁文件（无持有句柄，模拟崩溃遗留）不永久阻塞——重新获取并正常提交创建会话；
+    /// 2) manifest 显式 mechanicalParallel:true 且 parallelWriteSets≥2 互不重叠时绕过项目级互斥，
+    ///    即使项目租约正被占用也能放行并创建会话。
+    /// </summary>
+    private static async Task TestHarnessProjectLeaseCrashAndParallelAsync()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "codex-helper-harness-projectpar-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var project = Path.Combine(root, "project");
+            var taskResidual = Path.Combine(project, ".codex-helper", "runs", "run-residual");
+            var taskParallel = Path.Combine(project, ".codex-helper", "runs", "run-parallel");
+            Directory.CreateDirectory(taskResidual);
+            Directory.CreateDirectory(taskParallel);
+            var taskIdResidual = Path.GetFileName(taskResidual);
+            var taskIdParallel = Path.GetFileName(taskParallel);
+
+            // ---- 1) 残留锁文件（无句柄）不阻塞：重新打开成功 → 正常提交会话。 ----
+            var leaseDir = Path.Combine(project, ".codex-helper");
+            Directory.CreateDirectory(leaseDir);
+            var lockPath = Path.Combine(leaseDir, DeepSeekHarnessRunner.ProjectLeaseFileName);
+            await File.WriteAllTextAsync(lockPath, "{\"taskId\":\"stale\",\"state\":\"starting\"}");
+
+            await using (var host = new FakeHarnessHost
+            {
+                Respond = (method, _) => method switch
+                {
+                    "session.create" => new JsonObject { ["sessionId"] = "sess-residual-1" },
+                    _ => new JsonObject()
+                },
+                WsScripts =
+                [
+                    new Queue<string>([
+                        WsFrame("session/subscribed", "sess-residual-1"),
+                        WsFrame("session/event", "sess-residual-1", "turn/start", seq: 1),
+                        WsFrame("session/event", "sess-residual-1", "turn/end", "completed", seq: 2)
+                    ])
+                ]
+            })
+            {
+                await host.StartAsync();
+                var runner = new DeepSeekHarnessRunner(new AppPaths(Path.Combine(root, "app-residual")))
+                {
+                    WebUrl = host.BaseUrl,
+                    RelayProbe = new ConfirmedHarnessRelay(),
+                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。"))
+                };
+                await File.WriteAllTextAsync(Path.Combine(taskResidual, "SPEC.md"), "残留锁恢复");
+                WriteValidReport(taskResidual, taskIdResidual, TestFingerprint(taskResidual));
+                Assert(File.Exists(lockPath), "前置：残留锁文件应存在");
+                var status = await runner.StartAsync(project, taskResidual);
+                Assert(status.State == "awaiting-gpt" && status.SessionId == "sess-residual-1",
+                    "残留锁文件不应阻塞重新获取并正常提交：" + status.State);
+                Assert(host.Calls.Count(call => call.Method == "session.create") == 1, "残留锁恢复后应创建会话");
+            }
+
+            // ---- 2) 机械并行例外：项目租约正被占用，但 manifest 显式并行写集互不重叠 → 放行创建会话。 ----
+            await using (var host2 = new FakeHarnessHost
+            {
+                Respond = (method, _) => method switch
+                {
+                    "session.create" => new JsonObject { ["sessionId"] = "sess-parallel-1" },
+                    _ => new JsonObject()
+                },
+                WsScripts =
+                [
+                    new Queue<string>([
+                        WsFrame("session/subscribed", "sess-parallel-1"),
+                        WsFrame("session/event", "sess-parallel-1", "turn/start", seq: 1),
+                        WsFrame("session/event", "sess-parallel-1", "turn/end", "completed", seq: 2)
+                    ])
+                ]
+            })
+            {
+                await host2.StartAsync();
+                var runner = new DeepSeekHarnessRunner(new AppPaths(Path.Combine(root, "app-parallel")))
+                {
+                    WebUrl = host2.BaseUrl,
+                    RelayProbe = new ConfirmedHarnessRelay(),
+                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。"))
+                };
+                // 先持有项目租约（另一进程），本任务 manifest 声明机械并行应放行绕过。
+                await using var occupant = new FileStream(lockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.Read,
+                    bufferSize: 1, FileOptions.DeleteOnClose);
+                await File.WriteAllTextAsync(Path.Combine(taskParallel, "SPEC.md"), "并行例外");
+                await File.WriteAllTextAsync(Path.Combine(taskParallel, "manifest.json"),
+                    "{\"mechanicalParallel\": true, \"parallelWriteSets\": [[\"src/a.cs\"], [\"src/b.cs\"]]}");
+                WriteValidReport(taskParallel, taskIdParallel, TestFingerprint(taskParallel));
+                var status = await runner.StartAsync(project, taskParallel);
+                Assert(status.State == "awaiting-gpt" && status.SessionId == "sess-parallel-1",
+                    "机械并行例外应放行创建会话：" + status.State + " / " + status.Message);
+                Assert(host2.Calls.Count(call => call.Method == "session.create") == 1, "机械并行例外应创建会话");
+            }
+        }
+        finally { TryDeleteDirectory(root); }
+    }
+
+    /// <summary>
+    /// 事件流长时间无帧回退：Host 打开 WebSocket 但长时间不推任何帧（载流静默），Runner 的
+    /// 单连接无帧上限（EventFrameTimeout）抵达后放弃本轮计入重连，重连耗尽后降级到既有
+    /// HTTP 增量轮询并读到可信终态；降级事实写入状态。绝不永久卡在"重连其中一步"。
+    /// </summary>
+    private static async Task TestHarnessEventStreamFrameTimeoutFallbackAsync()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "codex-helper-harness-noframe-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var project = Path.Combine(root, "project");
+            var task = Path.Combine(project, ".codex-helper", "runs", "run-noframe");
+            Directory.CreateDirectory(task);
+            await File.WriteAllTextAsync(Path.Combine(task, "SPEC.md"), "no-frame");
+            var taskId = Path.GetFileName(task);
+            await using (var host = new FakeHarnessHost
+            {
+                Respond = (method, _) => method switch
+                {
+                    "session.create" => new JsonObject { ["sessionId"] = "sess-noframe-1" },
+                    "session.prompt" => new JsonObject { ["accepted"] = true },
+                    "session.cancel" => new JsonObject { ["accepted"] = true },
+                    // WS 长时间无帧：HTTP 兜底读到 running=false + 可信 turn/end（completed）。
+                    "session.list" => new JsonObject { ["items"] = new JsonArray(new JsonObject { ["sessionId"] = "sess-noframe-1", ["running"] = false }) },
+                    "session.history" => new JsonObject { ["events"] = new JsonArray(new JsonObject
+                    {
+                        ["event"] = new JsonObject
+                        {
+                            ["type"] = "turn/end",
+                            ["seq"] = 50,
+                            ["data"] = new JsonObject { ["reason"] = new JsonObject { ["kind"] = "completed" } }
+                        }
+                    }) },
+                    _ => new JsonObject()
+                }
+                // 不提供任何 WS 帧：连接建立后静默（"脚本耗尽 → 保持连接直到客户端关闭"）。
+            })
+            {
+                await host.StartAsync();
+                var runner = new DeepSeekHarnessRunner(new AppPaths(Path.Combine(root, "app")))
+                {
+                    WebUrl = host.BaseUrl,
+                    RelayProbe = new ConfirmedHarnessRelay(),
+                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。")),
+                    MaxEventReconnects = 1,
+                    EventReconnectDelay = TimeSpan.FromMilliseconds(10),
+                    HttpPollInterval = TimeSpan.FromMilliseconds(20),
+                    EventFrameTimeout = TimeSpan.FromMilliseconds(40)
+                };
+                // 预写有效报告，HTTP 兜底读到 completed 后可通过报告门禁进入 awaiting-gpt。
+                WriteValidReport(task, taskId, TestFingerprint(task));
+                var startTask = runner.StartAsync(project, task);
+                // 无帧卡死期间应写入"长时间无新帧"的降级/重连事实。
+                await WaitUntilAsync(() => runner.TryRead(taskId) is { } mid
+                    && (mid.Message.Contains("无新帧", StringComparison.Ordinal) || mid.Message.Contains("HTTP 事件轮询", StringComparison.Ordinal)),
+                    message: "无帧期间应写入降级/重连事实");
+                var status = await startTask;
+                Assert(status.State == "awaiting-gpt", "无帧超时后 HTTP 兜底应到达 awaiting-gpt：" + status.State);
+                Assert(status.SessionId == "sess-noframe-1", "无帧回退场景仍应记录真实 sessionId");
+                Assert(host.Calls.Count(call => call.Method == "session.create") == 1, "无帧回退不得重复创建会话");
+                Assert(host.Calls.Any(call => call.Method == "session.history"), "无帧耗尽后应调用 HTTP session.history 兜底轮询");
+            }
+        }
+        finally { TryDeleteDirectory(root); }
+    }
+
+    /// <summary>
+    /// 会话创建前停止的持久化取消意图：StopTaskAsync 对尚无会话的（含跨进程地位）任务记录取消意图，
+    /// 后续 StartAsync 必须在创建任何会话前兑现取消（cancelled），绝不 session.create/提交。
+    /// </summary>
+    private static async Task TestHarnessPersistedCancelIntentStartAsync()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "codex-helper-harness-cancelintent-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var project = Path.Combine(root, "project");
+            var task = Path.Combine(project, ".codex-helper", "runs", "run-cancel-intent");
+            Directory.CreateDirectory(task);
+            await File.WriteAllTextAsync(Path.Combine(task, "SPEC.md"), "test");
+            var taskId = Path.GetFileName(task);
+
+            // ---- 1) 无会话 starting 停止 → 持久化取消意图；StartAsync 兑现取消，不建会话/不提交。 ----
+            await using (var host = new FakeHarnessHost
+            {
+                Respond = (method, _) => method switch
+                {
+                    "session.create" => new JsonObject { ["sessionId"] = "sess-ci-1" },
+                    "session.prompt" => new JsonObject { ["accepted"] = true },
+                    _ => new JsonObject()
+                }
+            })
+            {
+                await host.StartAsync();
+                var runner = new DeepSeekHarnessRunner(new AppPaths(Path.Combine(root, "app-ci")))
+                {
+                    WebUrl = host.BaseUrl,
+                    RelayProbe = new ConfirmedHarnessRelay(),
+                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。"))
+                };
+                var startingStatus = new HarnessTaskStatus(taskId, project, task, "starting", "正在提交。",
+                    DateTime.UtcNow.AddMinutes(-1), DateTime.UtcNow.AddMinutes(-1), 0, host.BaseUrl);
+                File.WriteAllText(runner.TaskDirectoryFor(taskId),
+                    JsonSerializer.Serialize(startingStatus, new JsonSerializerOptions { WriteIndented = true, Converters = { new HarnessUtcConverter() } }));
+
+                var stop = await runner.StopTaskAsync(taskId);
+                Assert(stop.Requested && stop.Message.Contains("尚未创建 Harness 会话", StringComparison.Ordinal), "无会话 starting 停止应记录取消意图：" + stop.Message);
+                var persisted = runner.TryRead(taskId)!;
+                Assert(persisted.IsRunning && persisted.SessionState == DeepSeekHarnessRunner.CancelRequestedSessionState,
+                    "取消意图应持久化在状态文件：" + persisted.SessionState);
+                Assert(!host.Calls.Any(call => call.Method == "session.cancel"), "会话创建前停止不得向 Host 发 session.cancel");
+
+                var status = await runner.StartAsync(project, task);
+                Assert(status.State == "cancelled" && status.Message.Contains("尚未创建 Harness 会话", StringComparison.Ordinal),
+                    "StartAsync 应兑现取消意图为 cancelled：" + status.State + " / " + status.Message);
+                Assert(!host.Calls.Any(call => call.Method == "session.create"), "兑现取消意图后不得创建会话");
+                Assert(!host.Calls.Any(call => call.Method == "session.prompt"), "兑现取消意图后不得提交提示");
+            }
+        }
+        finally { TryDeleteDirectory(root); }
+    }
+
+    /// <summary>
+    /// HarnessExecutionReportValidator 缩进 Markdown 列表：`- 修改文件：`/`- workerChecks：`/`- 风险/未完成项：`
+    /// 后跟缩进子条目时仍识别为已填入并通过；taskId/指纹/退出码/结构校验保持。
+    /// </summary>
+    private static async Task TestHarnessReportMultilineListAsync()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "codex-helper-harness-reportml-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var task = Path.Combine(root, "project", ".codex-helper", "runs", "run-multiline");
+            Directory.CreateDirectory(task);
+            await File.WriteAllTextAsync(Path.Combine(task, "SPEC.md"), "test");
+            var taskId = "run-multiline";
+            var fingerprint = TestFingerprint(task);
+            var started = DateTime.UtcNow.AddMinutes(-5);
+
+            // 单行写法（兼容既有）通过。
+            var reportPath = Path.Combine(task, "EXECUTION_REPORT.md");
+            File.WriteAllText(reportPath, BuildReportText(taskId, fingerprint), Encoding.UTF8);
+            File.SetLastWriteTimeUtc(reportPath, DateTime.UtcNow);
+            Assert(HarnessExecutionReportValidator.Validate(task, taskId, fingerprint, started).Valid, "单行报告应通过校验");
+
+            // 缩进列表写法：修改文件/workerChecks/风险均为缩进子条目 → 通过。
+            var multiline = $"# EXECUTION_REPORT\n\n- 任务 ID：{taskId}\n- 合同指纹：{fingerprint}\n- 退出码：0\n- 修改文件：\n    - src/CodexHelper.Core/Services/DeepSeekHarnessRunner.cs\n    - tests/CodexHelper.Core.Tests/Program.cs\n- workerChecks：\n    - scripts\\test.ps1（通过）\n    - 每项最多一次\n- 风险/未完成项：\n    - 无\n";
+            File.WriteAllText(reportPath, multiline, Encoding.UTF8);
+            File.SetLastWriteTimeUtc(reportPath, DateTime.UtcNow);
+            var ok = HarnessExecutionReportValidator.Validate(task, taskId, fingerprint, started);
+            Assert(ok.Valid, "缩进列表报告应通过校验：" + ok.Reason);
+
+            // 缩进列表但缺风险子条目（结构不完整）→ 失败。
+            var missingRisk = $"# EXECUTION_REPORT\n\n- 任务 ID：{taskId}\n- 合同指纹：{fingerprint}\n- 退出码：0\n- 修改文件：\n    - src/a.cs\n- workerChecks：\n    - 通过\n- 风险/未完成项：\n";
+            File.WriteAllText(reportPath, missingRisk, Encoding.UTF8);
+            File.SetLastWriteTimeUtc(reportPath, DateTime.UtcNow);
+            var missing = HarnessExecutionReportValidator.Validate(task, taskId, fingerprint, started);
+            Assert(!missing.Valid && missing.Reason.Contains("风险/未完成项", StringComparison.Ordinal), "缩进列表缺风险项应失败：" + missing.Reason);
+
+            // 错误 taskId 即使缩进列表仍失败（结构/归属校验保持）。
+            File.WriteAllText(reportPath, multiline.Replace(taskId, "run-other", StringComparison.Ordinal), Encoding.UTF8);
+            File.SetLastWriteTimeUtc(reportPath, DateTime.UtcNow);
+            var wrongId = HarnessExecutionReportValidator.Validate(task, taskId, fingerprint, started);
+            Assert(!wrongId.Valid && wrongId.Reason.Contains("任务 ID", StringComparison.Ordinal), "缩进列表下错误 taskId 仍应失败：" + wrongId.Reason);
+        }
+        finally { TryDeleteDirectory(root); }
+    }
+
+    /// <summary>
+    /// 退化检测正确性：turn/start 重置 step 级窗口（WS 与 HTTP 轮询一致）；工具调用按一次
+    /// 调用聚合（参数分片不单独计次）；参数超限/截断不参与重复计数；不同 edit 不误判。
+    /// </summary>
+    private static async Task TestHarnessStepResetAndToolAggregationAsync()
+    {
+        // ---- 纯逻辑：turn/start 重置窗口（跨 step 不累计）。 ----
+        var resetDetector = new HarnessDegenerationDetector();
+        resetDetector.ObserveToolCall("write_file", """{"path":"a.txt","text":"x"}""");
+        resetDetector.ObserveToolCall("write_file", """{"path":"a.txt","text":"x"}""");
+        resetDetector.ResetStep();
+        resetDetector.ObserveToolCall("write_file", """{"path":"a.txt","text":"x"}""");
+        resetDetector.ObserveToolCall("write_file", """{"path":"a.txt","text":"x"}""");
+        Assert(!resetDetector.IsDegenerate, "turn/start 重置后跨 step 累计不得熔断");
+
+        // ---- 纯逻辑：工具调用聚合（3 片参数拼成一次调用），三次相同完整调用（非进展工具）仍熔断。 ----
+        var aggregate = new HarnessDegenerationDetector();
+        for (var call = 0; call < 3; call++)
+        {
+            aggregate.ObserveToolCall("inspect", "payload_prefix_");
+            aggregate.ObserveToolCall(null, "middle_");
+            aggregate.ObserveToolCall(null, "suffix");
+            aggregate.CommitToolCall();
+        }
+        Assert(aggregate.IsDegenerate, "分片聚合后三次相同完整调用仍应熔断：" + aggregate.Reason);
+
+        // 两次相同完整调用（分片聚合）不得熔断。
+        var twoCalls = new HarnessDegenerationDetector();
+        for (var call = 0; call < 2; call++)
+        {
+            twoCalls.ObserveToolCall("inspect", "payload_prefix_");
+            twoCalls.ObserveToolCall(null, "middle_");
+            twoCalls.ObserveToolCall(null, "suffix");
+            twoCalls.CommitToolCall();
+        }
+        Assert(!twoCalls.IsDegenerate, "两次相同调用不得熔断");
+
+        // ---- 纯逻辑：参数超限 / 解析层截断标记 → 不参与重复计数（不误判）。 ----
+        var oversize = new HarnessDegenerationDetector();
+        var bigArgs = new string('a', 5000);
+        for (var index = 0; index < 3; index++)
+            oversize.ObserveToolCall("write_file", bigArgs);
+        Assert(!oversize.IsDegenerate, "参数超限的调用不得参与重复计数");
+
+        var truncated = new HarnessDegenerationDetector();
+        for (var index = 0; index < 3; index++)
+            truncated.ObserveToolCall("write_file", new string('a', 1024) + "…");
+        Assert(!truncated.IsDegenerate, "解析层截断（… 后缀）的参数不得参与重复计数");
+
+        // ---- 纯逻辑：不同参数的连续 edit 不误判。 ----
+        var edits = new HarnessDegenerationDetector();
+        edits.ObserveToolCall("edit_file", """{"path":"a.txt","old":"1","new":"A"}""");
+        edits.ObserveToolCall("edit_file", """{"path":"b.txt","old":"2","new":"B"}""");
+        edits.ObserveToolCall("edit_file", """{"path":"c.txt","old":"3","new":"C"}""");
+        Assert(!edits.IsDegenerate, "三次不同 edit 不得熔断");
+
+        var root = Path.Combine(Path.GetTempPath(), "codex-helper-harness-step-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var project = Path.Combine(root, "project");
+            var task = Path.Combine(project, ".codex-helper", "runs", "run-step");
+            Directory.CreateDirectory(task);
+            await File.WriteAllTextAsync(Path.Combine(task, "SPEC.md"), "test");
+            var taskId = Path.GetFileName(task);
+
+            // ---- 事件流（WS）：step1 两次相同写入 → turn/start 重置 → step2 一次相同写入
+            //      + 三次不同 edit → 不熔断，正常完成。 ----
+            await using (var host = new FakeHarnessHost
+            {
+                Respond = (method, _) => method switch
+                {
+                    "session.create" => new JsonObject { ["sessionId"] = "sess-step-ws" },
+                    "session.prompt" => new JsonObject { ["accepted"] = true },
+                    "session.cancel" => new JsonObject { ["accepted"] = true },
+                    _ => new JsonObject()
+                },
+                WsScripts =
+                [
+                    new Queue<string>([
+                        WsFrame("session/subscribed", "sess-step-ws"),
+                        WsFrame("session/event", "sess-step-ws", "turn/start", seq: 1),
+                        WsChunkFrame("sess-step-ws", 2, "tool/call", toolName: "write_file", toolArgs: """{"path":"a.txt","text":"x"}"""),
+                        WsChunkFrame("sess-step-ws", 3, "tool/call", toolName: "write_file", toolArgs: """{"path":"a.txt","text":"x"}"""),
+                        WsFrame("session/event", "sess-step-ws", "turn/start", seq: 4),
+                        WsChunkFrame("sess-step-ws", 5, "tool/call", toolName: "write_file", toolArgs: """{"path":"a.txt","text":"x"}"""),
+                        WsChunkFrame("sess-step-ws", 6, "tool/call", toolName: "edit_file", toolArgs: """{"path":"a.txt","old":"1","new":"A"}"""),
+                        WsChunkFrame("sess-step-ws", 7, "tool/call", toolName: "edit_file", toolArgs: """{"path":"b.txt","old":"2","new":"B"}"""),
+                        WsChunkFrame("sess-step-ws", 8, "tool/call", toolName: "edit_file", toolArgs: """{"path":"c.txt","old":"3","new":"C"}"""),
+                        WsFrame("session/event", "sess-step-ws", "turn/end", "completed", seq: 9)
+                    ])
+                ]
+            })
+            {
+                await host.StartAsync();
+                WriteValidReport(task, taskId, TestFingerprint(task));
+                var runner = new DeepSeekHarnessRunner(new AppPaths(Path.Combine(root, "app-step-ws")))
+                {
+                    WebUrl = host.BaseUrl,
+                    RelayProbe = new ConfirmedHarnessRelay(),
+                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。"))
+                };
+                var status = await runner.StartAsync(project, task);
+                Assert(status.State == "awaiting-gpt", "turn/start 重置与不同 edit 不应熔断：" + status.State + " / " + status.Message);
+                Assert(!host.Calls.Any(call => call.Method == "session.cancel"), "正常流不得发出 session.cancel");
+            }
+
+            // ---- 事件流（HTTP 轮询）：history 中工具调用分片（带 toolName 一次 + 纯参数增量）
+            //      不得重复计数；turn/start 重置与 WS 行为一致；完成需通过报告门禁。 ----
+            await using (var host = new FakeHarnessHost
+            {
+                Respond = (method, _) => method switch
+                {
+                    "session.create" => new JsonObject { ["sessionId"] = "sess-step-http" },
+                    "session.prompt" => new JsonObject { ["accepted"] = true },
+                    "session.cancel" => new JsonObject { ["accepted"] = true },
+                    "session.list" => new JsonObject { ["items"] = new JsonArray(new JsonObject { ["sessionId"] = "sess-step-http", ["running"] = true }) },
+                    "session.history" => new JsonObject { ["events"] = new JsonArray(
+                        new JsonObject { ["event"] = new JsonObject { ["type"] = "turn/start", ["seq"] = 1, ["data"] = new JsonObject() } },
+                        new JsonObject { ["event"] = new JsonObject { ["type"] = "assistant/delta", ["seq"] = 2, ["data"] = new JsonObject { ["toolName"] = "write_file", ["arguments"] = """{"path":"a.txt","text":"x"}""" } } },
+                        // 纯参数增量（无 toolName）：只追加到当前调用，不单独计次。
+                        new JsonObject { ["event"] = new JsonObject { ["type"] = "assistant/delta", ["seq"] = 3, ["data"] = new JsonObject { ["arguments"] = """{"path":"a.txt","text":"x"}""" } } },
+                        new JsonObject { ["event"] = new JsonObject { ["type"] = "turn/start", ["seq"] = 4, ["data"] = new JsonObject() } },
+                        new JsonObject { ["event"] = new JsonObject { ["type"] = "assistant/delta", ["seq"] = 5, ["data"] = new JsonObject { ["toolName"] = "write_file", ["arguments"] = """{"path":"a.txt","text":"x"}""" } } },
+                        new JsonObject { ["event"] = new JsonObject { ["type"] = "turn/end", ["seq"] = 6, ["data"] = new JsonObject { ["reason"] = new JsonObject { ["kind"] = "completed" } } } }
+                    ) },
+                    _ => new JsonObject()
+                },
+                WsScripts =
+                [
+                    new Queue<string>(["@close"]),
+                    new Queue<string>(["@close"])
+                ]
+            })
+            {
+                await host.StartAsync();
+                WriteValidReport(task, taskId, TestFingerprint(task));
+                var runner = new DeepSeekHarnessRunner(new AppPaths(Path.Combine(root, "app-step-http")))
+                {
+                    WebUrl = host.BaseUrl,
+                    RelayProbe = new ConfirmedHarnessRelay(),
+                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。")),
+                    MaxEventReconnects = 1,
+                    EventReconnectDelay = TimeSpan.FromMilliseconds(50)
+                };
+                var status = await runner.StartAsync(project, task);
+                Assert(status.State == "awaiting-gpt", "HTTP 轮询中参数分片不得重复计数，turn/start 重置与 WS 一致：" + status.State + " / " + status.Message);
+                Assert(!host.Calls.Any(call => call.Method == "session.cancel"), "HTTP 轮询正常流不得发出 session.cancel");
+            }
+        }
+        finally { TryDeleteDirectory(root); }
+    }
+
+    /// <summary>
+    /// 阶段进展感知退化防护（SPEC 目标 3）：只有"同阶段 + 同规范化动作 + 无进展证据"才熔断。
+    /// 覆盖：多个相同读取不同目标不停止；写入/检查/报告进展清除重复；阶段转换清除重复；
+    /// 同阶段相同无进展循环停止；大量不重复 reasoning 文本不改变步骤、不触发取消；
+    /// 状态摘要把推理事件与 steps/缓存 token 分离展示。
+    /// </summary>
+    private static Task TestHarnessProgressAwareGuardAsync()
+    {
+        // ---- 1) 多个相同读取但有不同目标（不同参数）不停止。 ----
+        var reads = new HarnessDegenerationDetector();
+        for (var index = 0; index < 8; index++)
+            reads.ObserveToolCall("read_file", $"{{\"path\":\"file{index}.txt\"}}");
+        reads.CommitToolCall();
+        Assert(!reads.IsDegenerate, "多个相同读取但不同目标（不同参数）不得停止");
+
+        // ---- 2) 写入/检查/报告进展清除无进展重复计数。 ----
+        // 写入进展打断相同无进展循环。
+        var writeProgress = new HarnessDegenerationDetector();
+        writeProgress.ObserveToolCall("inspect", """{"target":"x"}""");
+        writeProgress.ObserveToolCall("inspect", """{"target":"x"}""");
+        writeProgress.ObserveToolCall("write_file", """{"path":"a.txt","text":"x"}"""); // 写入 = 进展
+        for (var index = 0; index < 2; index++)
+            writeProgress.ObserveToolCall("inspect", """{"target":"x"}""");
+        writeProgress.CommitToolCall();
+        Assert(!writeProgress.IsDegenerate, "写入进展后重复计数被清除，不得熔断");
+
+        // workerCheck 进展打断相同无进展循环。
+        var workerCheck = new HarnessDegenerationDetector();
+        workerCheck.ObserveToolCall("inspect", """{"target":"x"}""");
+        workerCheck.ObserveToolCall("inspect", """{"target":"x"}""");
+        workerCheck.ObserveToolCall("run_worker_check", """{"name":"c1"}"""); // 检查 = 进展
+        for (var index = 0; index < 2; index++)
+            workerCheck.ObserveToolCall("inspect", """{"target":"x"}""");
+        workerCheck.CommitToolCall();
+        Assert(!workerCheck.IsDegenerate, "检查/workerCheck 进展后重复计数被清除，不得熔断");
+
+        // 报告写入进展打断相同无进展循环。
+        var report = new HarnessDegenerationDetector();
+        report.ObserveToolCall("inspect", """{"target":"x"}""");
+        report.ObserveToolCall("write_file", """{"path":"EXECUTION_REPORT.md","text":"报告"}"""); // 报告写入 = 进展
+        for (var index = 0; index < 2; index++)
+            report.ObserveToolCall("inspect", """{"target":"x"}""");
+        report.CommitToolCall();
+        Assert(!report.IsDegenerate, "报告写入进展后重复计数被清除，不得熔断");
+
+        // 阶段转换（EnterStage）也是进展：进入新阶段后旧阶段的无进展计数不累计。
+        var staged = new HarnessDegenerationDetector();
+        staged.ObserveToolCall("inspect", """{"target":"x"}""");
+        staged.ObserveToolCall("inspect", """{"target":"x"}""");
+        staged.EnterStage("edit"); // 阶段转换 = 进展
+        for (var index = 0; index < 2; index++)
+            staged.ObserveToolCall("inspect", """{"target":"x"}""");
+        staged.CommitToolCall();
+        Assert(!staged.IsDegenerate, "阶段转换后无进展重复计数被清除，不得熔断");
+
+        // 显式 NoteProgress（如检查结果/报告写入）同样清除重复。
+        var noted = new HarnessDegenerationDetector();
+        noted.ObserveToolCall("inspect", """{"target":"x"}""");
+        noted.ObserveToolCall("inspect", """{"target":"x"}""");
+        noted.NoteProgress();
+        for (var index = 0; index < 2; index++)
+            noted.ObserveToolCall("inspect", """{"target":"x"}""");
+        noted.CommitToolCall();
+        Assert(!noted.IsDegenerate, "显式进展证据后重复计数被清除，不得熔断");
+
+        // ---- 3) 真正同阶段相同无进展循环停止。 ----
+        var sameStage = new HarnessDegenerationDetector();
+        for (var index = 0; index < 3; index++)
+            sameStage.ObserveToolCall("inspect", """{"target":"x"}""");
+        sameStage.CommitToolCall();
+        Assert(sameStage.IsDegenerate && sameStage.NoProgressWarnings >= 1, "同阶段相同无进展循环应停止并产生告警");
+
+        // ---- 4) 大量不重复 reasoning 文本不触发取消，也不计入工具调用。 ----
+        var reasoning = new HarnessDegenerationDetector();
+        for (var index = 0; index < 2000; index++)
+            reasoning.ObserveText($"推理内容第 {index} 段：这是一段足够长且彼此不同的 reasoning 文本，避免被当作重复。");
+        reasoning.CommitToolCall();
+        Assert(!reasoning.IsDegenerate, "大量不重复 reasoning 文本不得触发取消");
+        Assert(reasoning.ReasoningEventCount == 2000, "推理事件计数应等于增量次数：" + reasoning.ReasoningEventCount);
+        Assert(reasoning.ToolCallCount == 0, "仅文本增量不应计入工具调用");
+
+        // ---- 5) 摘要快照与状态分离：阶段/工具调用/推理事件/告警数正确，推理事件不作 steps。 ----
+        var summaryDetector = new HarnessDegenerationDetector();
+        summaryDetector.EnterStage("edit");
+        summaryDetector.ObserveToolCall("write_file", """{"path":"a.txt"}"""); // 进展工具也计入工具调用数
+        summaryDetector.ObserveToolCall("inspect", """{"target":"x"}""");
+        summaryDetector.ObserveToolCall("inspect", """{"target":"x"}""");
+        summaryDetector.ObserveToolCall("inspect", """{"target":"x"}""");
+        summaryDetector.CommitToolCall();
+        var summary = summaryDetector.Snapshot();
+        Assert(summary.Stage == "edit", "摘要应记录阶段：" + summary.Stage);
+        Assert(summary.ToolCallCount == 4, "摘要应记录工具调用总数（含进展工具）：" + summary.ToolCallCount);
+        Assert(summary.NoProgressWarnings >= 1, "同阶段无进展重复应产生告警：" + summary.NoProgressWarnings);
+
+        // 推理事件数独立于 steps：即使构造大量推理事件，Steps 也不受影响（数据模型分离）。
+        var status = new HarnessTaskStatus("run-p", @"C:\proj", @"C:\proj\runs\run-p", "running", "执行中",
+            DateTime.UtcNow, DateTime.UtcNow, 0, "http://127.0.0.1:3080",
+            ReasoningEventCount: 6000, CacheReadTokens: 900, Stage: "read", Steps: 3);
+        Assert(status.Steps == 3 && status.ReasoningEventCount == 6000, "推理事件必须与 steps 分离，不得混为进度");
+        Assert(status.CacheReadTokens == 900 && status.ReasoningEventCount == 6000, "缓存 token 与 reasoning 事件不得混为一谈");
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// 全量测试进程退出回归：用过滤条件在本测试进程内快速跑一个测试子进程，
+    /// 看门狗确保子进程链必须结束；同时验证 RunPowerShellAsync 的超时杀树路径不会误杀正常快速子进程。
+    /// </summary>
+    private static async Task TestTestProcessExitRegressionAsync()
+    {
+        // 1) 快速子进程（powershell 打印版本）应在看门狗内正常结束。
+        var start = new System.Diagnostics.ProcessStartInfo("powershell.exe")
+        {
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true
+        };
+        start.ArgumentList.Add("-NoProfile");
+        start.ArgumentList.Add("-Command");
+        start.ArgumentList.Add("'1.19.3'");
+        using (var quick = System.Diagnostics.Process.Start(start)!)
+        {
+            var stdout = quick.StandardOutput.ReadToEndAsync();
+            var exitTask = quick.WaitForExitAsync();
+            var completed = await Task.WhenAny(exitTask, Task.Delay(TestChildProcessWatchdog));
+            Assert(completed == exitTask, "快速子进程应在看门狗内结束。");
+            Assert(quick.ExitCode == 0 && (await stdout).Contains("1.19.3", StringComparison.Ordinal), "快速子进程输出应可读。");
+        }
+
+        // 2) 故意挂死的子进程（Start-Sleep 60）必须在看门狗内被终止进程树，绝不拖垮测试进程。
+        var hang = new System.Diagnostics.ProcessStartInfo("powershell.exe")
+        {
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true
+        };
+        hang.ArgumentList.Add("-NoProfile");
+        hang.ArgumentList.Add("-Command");
+        hang.ArgumentList.Add("Start-Sleep -Seconds 60");
+        var watchdog = TimeSpan.FromSeconds(10);
+        using (var slow = System.Diagnostics.Process.Start(hang)!)
+        {
+            var exitTask = slow.WaitForExitAsync();
+            var completed = await Task.WhenAny(exitTask, Task.Delay(watchdog));
+            Assert(completed != exitTask, "挂死子进程必须触发看门狗。");
+            try { slow.Kill(entireProcessTree: true); } catch { }
+            await exitTask;
+        }
+        Assert(true, "看门狗终止挂死子进程后测试继续，全量测试进程可正常退出。");
+    }
+
+    /// <summary>
+    /// DSH Skills/插件备份恢复全链路：发现规则（配置引用/一级包/scoped/损坏跳过/临时文件与
+    /// 缓存排除/禁止目录不出现）、快照创建、跨用户名恢复到当前设备 DSH Home（中文路径）、
+    /// 已有文件冲突跳过、重解析点目录拒绝、非法插件名与仓库重叠拒绝。
+    /// </summary>
+    private static async Task TestDshExtensionBackupAsync()
+    {
+        await WithTempDirectoryAsync("dsh-backup", async root =>
+        {
+            var home = Path.Combine(root, "我的 DSH Home");
+            Directory.CreateDirectory(Path.Combine(home, "skills", "skill-a"));
+            Directory.CreateDirectory(Path.Combine(home, "skills", "skill-b"));
+            Directory.CreateDirectory(Path.Combine(home, ".agent-presets", "codex-contract"));
+            Directory.CreateDirectory(Path.Combine(home, "profiles", "nested"));
+            Directory.CreateDirectory(Path.Combine(home, "profiles", "link"));
+            Directory.CreateDirectory(Path.Combine(home, "profiles", ".cache"));
+            Directory.CreateDirectory(Path.Combine(home, "profiles", "node_modules", "simple-plugin"));
+            Directory.CreateDirectory(Path.Combine(home, "profiles", "node_modules", "@scope", "my-plugin"));
+            Directory.CreateDirectory(Path.Combine(home, "profiles", "node_modules", "not-a-plugin"));
+            Directory.CreateDirectory(Path.Combine(home, "profiles", "node_modules", "helper-dep"));
+            // 绝对禁止备份的内容：会话、附件、storages、凭据文件。
+            Directory.CreateDirectory(Path.Combine(home, "sessions"));
+            Directory.CreateDirectory(Path.Combine(home, "attachments"));
+            Directory.CreateDirectory(Path.Combine(home, "storages"));
+            await File.WriteAllTextAsync(Path.Combine(home, ".credentials.yaml"), "secret: nope");
+            await File.WriteAllTextAsync(Path.Combine(home, "sessions", "s.jsonl"), "session");
+
+            await File.WriteAllTextAsync(Path.Combine(home, "skills", "skill-a", "SKILL.md"), "# 技能甲\n指导内容");
+            await File.WriteAllTextAsync(Path.Combine(home, "skills", "skill-b", "指导.md"), "技能乙内容");
+            await File.WriteAllTextAsync(Path.Combine(home, ".agent-presets", "codex-contract", "agent.cordis.yml"), "persona: contract");
+            await File.WriteAllTextAsync(Path.Combine(home, ".agent-presets", "codex-contract", "preset.yml"), "name: 合同模式");
+            await File.WriteAllTextAsync(Path.Combine(home, "profiles", "main.yaml"), "plugins:\n  - simple-plugin\n  - \"@scope/my-plugin\"\nname: 主配置");
+            // Profile 配置目录（含 package.json 特征）：其中的 JS 静态 import/require 作为插件候选。
+            await File.WriteAllTextAsync(Path.Combine(home, "profiles", "nested", "package.json"), "{\"name\":\"test-nested-profile\",\"private\":true}");
+            await File.WriteAllTextAsync(Path.Combine(home, "profiles", "nested", "custom.js"), "const p = require('simple-plugin'); export from '@scope/my-plugin';");
+            await File.WriteAllTextAsync(Path.Combine(home, "profiles", "nested", "extra.json"), "{\"plugin\": \"helper-dep\"}");
+            await File.WriteAllTextAsync(Path.Combine(home, "profiles", "link", "keep.txt"), "普通目录里的文件");
+            await File.WriteAllTextAsync(Path.Combine(home, "profiles", "temp.tmp"), "临时文件不应备份");
+            await File.WriteAllTextAsync(Path.Combine(home, "profiles", ".cache", "cached.bin"), "缓存不应备份");
+            await File.WriteAllTextAsync(Path.Combine(home, "profiles", "node_modules", "simple-plugin", "package.json"), "{\"name\":\"simple-plugin\"}");
+            await File.WriteAllTextAsync(Path.Combine(home, "profiles", "node_modules", "simple-plugin", "index.js"), "module.exports = {};");
+            await File.WriteAllTextAsync(Path.Combine(home, "profiles", "node_modules", "@scope", "my-plugin", "package.json"), "{\"name\":\"@scope/my-plugin\"}");
+            await File.WriteAllTextAsync(Path.Combine(home, "profiles", "node_modules", "@scope", "my-plugin", "main.mjs"), "export default {};");
+            // 损坏插件：无 package.json，必须被跳过且不拖垮备份。
+            await File.WriteAllTextAsync(Path.Combine(home, "profiles", "node_modules", "not-a-plugin", "broken.js"), "x");
+            // 依赖包：一级包带 package.json，作为独立插件源（不备份整棵依赖树）。
+            await File.WriteAllTextAsync(Path.Combine(home, "profiles", "node_modules", "helper-dep", "package.json"), "{\"name\":\"helper-dep\"}");
+            await File.WriteAllTextAsync(Path.Combine(home, "profiles", "node_modules", "helper-dep", "lib.js"), "helper");
+
+            var service = new DshExtensionBackupService(home);
+            Assert(service.IsInstalled, "DSH Home 应已安装");
+            var sources = service.DiscoverSources();
+            Assert(sources.Any(source => source.Id == "dsh-skills"), "应发现 DSH skills 数据源");
+            Assert(sources.Any(source => source.Id == "dsh-agent-presets"), "应发现 DSH agent-presets 数据源");
+            Assert(sources.Any(source => source.Id == "dsh-profiles"), "应发现 DSH profiles 数据源");
+            var pluginIds = sources.Where(source => source.Id.StartsWith("dsh-plugin-", StringComparison.Ordinal)).Select(source => source.Id).ToList();
+            Assert(pluginIds.Count == 3, "应识别 3 个插件源（simple-plugin/@scope/my-plugin/helper-dep），实际 " + pluginIds.Count + ": " + string.Join(",", pluginIds));
+            Assert(sources.All(source => !source.Path.StartsWith(Path.Combine(home, "sessions"), StringComparison.OrdinalIgnoreCase)), "不得发现会话目录");
+            Assert(sources.All(source => !source.Path.StartsWith(Path.Combine(home, "attachments"), StringComparison.OrdinalIgnoreCase)), "不得发现附件目录");
+            Assert(sources.All(source => !source.Path.StartsWith(Path.Combine(home, "storages"), StringComparison.OrdinalIgnoreCase)), "不得发现 storages 目录");
+            Assert(sources.All(source => !string.Equals(source.Path, Path.Combine(home, ".credentials.yaml"), StringComparison.OrdinalIgnoreCase)), "不得发现凭据文件");
+            Assert(sources.All(source => !source.Id.Contains("not-a-plugin", StringComparison.OrdinalIgnoreCase)), "无 package.json 的损坏插件必须被跳过");
+            var profilesSource = sources.Single(source => source.Id == "dsh-profiles");
+            Assert(profilesSource.AdditionalExcludedDirectoryNames!.Contains("node_modules"), "profiles 源必须整体排除 node_modules");
+            Assert(profilesSource.AdditionalExcludedFileNames!.Contains(".tmp"), "profiles 源必须排除临时文件");
+
+            // 创建快照并校验内容。
+            var repositoryPath = Path.Combine(root, "repository");
+            var repository = new BackupRepository(repositoryPath);
+            var result = await repository.CreateSnapshotAsync("DSH 测试", sources);
+            Assert(result.Summary.Outcome == OperationOutcome.Success, "DSH 快照应成功：" + string.Join(" | ", result.Manifest.Issues.Select(issue => issue.Message)));
+            var snapshotId = result.Summary.Id;
+            Assert(result.Manifest.Files.Any(file => file.SourceId == "dsh-skills" && file.RelativePath == Path.Combine("skill-a", "SKILL.md")), "快照应包含 skills 内容");
+            Assert(result.Manifest.Files.Any(file => file.SourceId == "dsh-profiles" && file.RelativePath == "temp.tmp") == false, "快照不得包含临时文件");
+            Assert(result.Manifest.Files.Any(file => file.SourceId == "dsh-profiles" && file.RelativePath == Path.Combine(".cache", "cached.bin")) == false, "快照不得包含缓存");
+            Assert(result.Manifest.Files.Any(file => file.SourceId == "dsh-profiles" && file.RelativePath.StartsWith("node_modules" + Path.DirectorySeparatorChar, StringComparison.Ordinal)) == false, "profiles 源不得包含 node_modules 依赖树");
+            Assert(result.Manifest.Files.Any(file => file.SourceId == "dsh-profiles" && file.RelativePath == Path.Combine("link", "keep.txt")), "profiles 源应包含普通目录文件");
+            Assert(result.Manifest.Files.Count(file => file.SourceId.StartsWith("dsh-plugin-", StringComparison.Ordinal) && file.RelativePath == "package.json") == 3, "三个插件源应各包含一个 package.json");
+
+            // 跨用户名迁移恢复：目标 DSH Home 是另一台设备的 Home（中文路径 + 不同目录）。
+            var home2 = Path.Combine(root, "另一台设备的 DSH Home");
+            Directory.CreateDirectory(Path.Combine(home2, "profiles"));
+            // 已有文件冲突：恢复前在目标写不同内容，恢复必须跳过。
+            Directory.CreateDirectory(Path.Combine(home2, "skills", "skill-a"));
+            await File.WriteAllTextAsync(Path.Combine(home2, "skills", "skill-a", "SKILL.md"), "本机已有内容");
+            // 重解析点：把目标 profiles/link 换成 junction 指向别处，恢复必须拒绝。
+            var junctionTarget = Path.Combine(root, "junction-outside");
+            Directory.CreateDirectory(junctionTarget);
+            await File.WriteAllTextAsync(Path.Combine(junctionTarget, "escaped.txt"), "不应写入");
+            var createdJunction = TryCreateJunction(Path.Combine(home2, "profiles", "link"), junctionTarget);
+
+            var service2 = new DshExtensionBackupService(home2);
+            var plan = service2.BuildRestorePlan(result.Manifest);
+            Assert(plan.SourceIds.Count == 6, "恢复计划应包含 6 个 DSH 数据源（Skills、预设、配置和 3 个插件）");
+            Assert(plan.SourceTargetMap["dsh-skills"] == "skills", "skills 应映射到 DSH Home/skills");
+            Assert(plan.SourceTargetMap["dsh-profiles"] == "profiles", "profiles 应映射到 DSH Home/profiles");
+            Assert(plan.SourceTargetMap.Values.Any(value => value == Path.Combine("profiles", "node_modules", "simple-plugin")), "插件应映射到 profiles/node_modules 下");
+            Assert(plan.SourceTargetMap.Values.Any(value => value == Path.Combine("profiles", "node_modules", "@scope", "my-plugin")), "scoped 插件应映射到 profiles/node_modules 下");
+            Assert(plan.SourceTargetMap.Values.Any(value => value == Path.Combine("profiles", "node_modules", "helper-dep")), "一级包插件应映射到 profiles/node_modules 下");
+            Assert(plan.TargetHome == Path.GetFullPath(home2), "恢复目标应是当前设备 DSH Home，而不是快照中的旧路径");
+            Assert(plan.Kinds.Count >= 3, "恢复种类描述应完整");
+
+            var restore = await repository.RestoreAsync(new RestoreRequest(snapshotId, plan.TargetHome, plan.SourceIds, SourceTargetMap: plan.SourceTargetMap));
+            Assert(restore.Outcome == OperationOutcome.PartialSuccess, "存在冲突与重解析点时应为部分成功，实际 " + restore.Outcome + "：" + string.Join(" | ", restore.Issues.Select(issue => issue.Item + " " + issue.Message)));
+            Assert(await File.ReadAllTextAsync(Path.Combine(home2, "skills", "skill-a", "SKILL.md")) == "本机已有内容", "已有文件不得被覆盖");
+            Assert(await File.ReadAllTextAsync(Path.Combine(home2, "skills", "skill-b", "指导.md")) == "技能乙内容", "无冲突文件应恢复");
+            Assert(await File.ReadAllTextAsync(Path.Combine(home2, ".agent-presets", "codex-contract", "preset.yml")) == "name: 合同模式", "Agent 预设应恢复到目标 DSH Home");
+            Assert(await File.ReadAllTextAsync(Path.Combine(home2, "profiles", "main.yaml")) == "plugins:\n  - simple-plugin\n  - \"@scope/my-plugin\"\nname: 主配置", "用户配置应恢复到目标 DSH Home");
+            Assert(await File.ReadAllTextAsync(Path.Combine(home2, "profiles", "node_modules", "simple-plugin", "package.json")) == "{\"name\":\"simple-plugin\"}", "普通插件应恢复到 profiles/node_modules");
+            Assert(await File.ReadAllTextAsync(Path.Combine(home2, "profiles", "node_modules", "@scope", "my-plugin", "main.mjs")) == "export default {};", "scoped 插件应恢复到 profiles/node_modules");
+            Assert(await File.ReadAllTextAsync(Path.Combine(home2, "profiles", "node_modules", "helper-dep", "lib.js")) == "helper", "一级包插件应恢复");
+            if (createdJunction)
+            {
+                Assert(!File.Exists(Path.Combine(junctionTarget, "keep.txt")), "重解析点目录内的文件不得写入 junction 目标");
+                Assert(restore.Issues.Any(issue => issue.Message.Contains("重解析点", StringComparison.Ordinal)), "重解析点拒绝应记录到问题汇总");
+            }
+            else Console.WriteLine("SKIP  重解析点用例（当前环境无法创建 junction）");
+            // 旧用户名绝对路径不得被使用：恢复后旧 Home 不应出现新文件。
+            Assert(!File.Exists(Path.Combine(home, "profiles", "node_modules", "simple-plugin", "index.js.copy")), "不得写入快照中的旧路径");
+
+            // 仓库与 DSH Home 重叠必须拒绝。
+            AssertThrows<InvalidOperationException>(() => DshExtensionBackupService.EnsureTargetOutsideRepository(Path.Combine(root, "repository"), Path.Combine(root, "repository")));
+            AssertThrows<InvalidOperationException>(() => DshExtensionBackupService.EnsureTargetOutsideRepository(Path.Combine(root, "repository"), Path.Combine(root, "repository", "sub")));
+            AssertThrows<InvalidOperationException>(() => DshExtensionBackupService.EnsureTargetOutsideRepository(Path.Combine(root, "repository"), Path.Combine(root)));
+
+            // 非法插件名：构造恶意 manifest，恢复规划必须拒绝。
+            var malicious = new SnapshotManifest
+            {
+                Id = "malicious",
+                Label = "恶意",
+                CreatedUtc = DateTime.UtcNow,
+                DeviceName = "test",
+                CodexHelperVersion = "test",
+                Sources = [new SnapshotSource("dsh-plugin-" + Convert.ToBase64String(Encoding.UTF8.GetBytes("../evil")).TrimEnd('=').Replace('+', '-').Replace('/', '_'), "DSH 插件 ../evil", home)],
+                Outcome = OperationOutcome.Success
+            };
+            await AssertThrowsAsync<InvalidDataException>(() => Task.Run(() => service2.BuildRestorePlan(malicious)));
+
+            // 没有 DSH 数据的快照：恢复规划给出清晰提示。
+            var plainManifest = new SnapshotManifest { Id = "plain", Label = "普通", CreatedUtc = DateTime.UtcNow, DeviceName = "test", CodexHelperVersion = "test", Outcome = OperationOutcome.Success };
+            await AssertThrowsAsync<InvalidOperationException>(() => Task.Run(() => service2.BuildRestorePlan(plainManifest)));
+
+            // 未安装 DSH：DiscoverSources 返回空列表，不抛异常。
+            var notInstalled = new DshExtensionBackupService(Path.Combine(root, "不存在的 DSH Home"));
+            Assert(!notInstalled.IsInstalled, "不存在的 Home 应视为未安装");
+            Assert(notInstalled.DiscoverSources().Count == 0, "未安装时不应发现任何数据源");
+
+            // Junction 本身不是普通目录；先解除测试链接，避免通用临时目录清理
+            // 递归进入链接目标或因重解析点权限而产生假失败。
+            if (createdJunction && Directory.Exists(Path.Combine(home2, "profiles", "link")))
+                Directory.Delete(Path.Combine(home2, "profiles", "link"), recursive: false);
+        });
+    }
+
+    /// <summary>DSH Home 解析：$DSH_HOME 优先，未设置时使用 %USERPROFILE%\.dsh，路径规范化。</summary>
+    private static Task TestDshHomeResolutionAsync()
+    {
+        var previous = Environment.GetEnvironmentVariable("DSH_HOME");
+        try
+        {
+            var custom = Path.Combine(Path.GetTempPath(), "codex-helper-tests", "dsh-home-" + Guid.NewGuid().ToString("N"), "home");
+            Environment.SetEnvironmentVariable("DSH_HOME", custom);
+            Assert(new DshExtensionBackupService().DshHome == Path.GetFullPath(custom), "应优先使用 $DSH_HOME 并规范化路径");
+
+            Environment.SetEnvironmentVariable("DSH_HOME", "  " + custom + "  ");
+            Assert(new DshExtensionBackupService().DshHome == Path.GetFullPath(custom.Trim()), "DSH_HOME 含空白时应规范化后使用");
+
+            Environment.SetEnvironmentVariable("DSH_HOME", null);
+            var expectedDefault = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".dsh");
+            Assert(new DshExtensionBackupService().DshHome == Path.GetFullPath(expectedDefault), "未设置 $DSH_HOME 时应使用 %USERPROFILE%\\.dsh");
+            Assert(new DshExtensionBackupService((string?)null).DshHome == Path.GetFullPath(expectedDefault), "显式 null 时应回退默认路径");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("DSH_HOME", previous);
+        }
+        return Task.CompletedTask;
+    }
+
+    /// <summary>尝试创建目录 junction（无需管理员权限）；失败返回 false，由调用方决定跳过断言。</summary>
+    private static bool TryCreateJunction(string linkPath, string targetPath)
+    {
+        try
+        {
+            var start = new System.Diagnostics.ProcessStartInfo("cmd.exe")
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            };
+            start.ArgumentList.Add("/c");
+            start.ArgumentList.Add("mklink");
+            start.ArgumentList.Add("/J");
+            start.ArgumentList.Add(linkPath);
+            start.ArgumentList.Add(targetPath);
+            using var process = System.Diagnostics.Process.Start(start)!;
+            process.WaitForExit(TestChildProcessWatchdog);
+            if (process.HasExited && process.ExitCode == 0) return true;
+        }
+        catch { }
+        return false;
+    }
+
+    /// <summary>
+    /// helper-setup.json v1 严格解析与校验：合法声明（required+secret）、内嵌/侧车/受信声明、
+    /// 拒绝 secret 默认值、非法枚举、重复 field id、setup none 带字段、setup required 无必填字段、
+    /// 命令默认值、密钥明文、绝对路径、非法 fingerprint；语义版本范围匹配与指纹计算。
+    /// </summary>
+    private static Task TestDshComponentManifestAsync()
+    {
+        var service = new HelperSetupManifestService();
+
+        // 合法声明：required + secret 字段（无默认、export=false）+ providerRef。
+        var valid = service.Parse("""
+            {
+              "schemaVersion": 1,
+              "componentId": "vendor.search",
+              "displayName": "搜索插件",
+              "componentType": "plugin",
+              "setup": "required",
+              "package": { "name": "dsh-search", "versionRange": ">=1.0.0 <2.0.0" },
+              "evidence": ["settings schema requires api key"],
+              "fields": [
+                { "id": "apiKey", "kind": "secret", "label": "API Key", "required": true, "export": false },
+                { "id": "baseUrl", "kind": "url", "label": "Base URL", "required": true },
+                { "id": "model", "kind": "model", "label": "Model", "required": true, "dependsOn": "baseUrl" }
+              ],
+              "validation": { "protocol": "openai-responses", "capabilities": ["models", "text"] }
+            }
+            """);
+        Assert(valid.SchemaVersion == 1 && valid.Fields.Count == 3, "合法声明应解析成功");
+        Assert(valid.Fields.Single(field => field.Id == "apiKey").Export == false, "secret 字段 export 应为 false");
+
+        // 内嵌声明可省略 fingerprint；setup none 不允许字段。
+        var none = service.Parse("""{ "schemaVersion": 1, "componentId": "a.b", "displayName": "无配置", "componentType": "skill", "setup": "none" }""");
+        Assert(none.Setup == "none" && none.Fields.Count == 0, "setup none 声明应合法");
+
+        // 拒绝：secret 默认值。
+        AssertThrows<InvalidDataException>(() => service.Parse("""{ "schemaVersion": 1, "componentId": "a.b", "displayName": "x", "componentType": "plugin", "setup": "required", "fields": [{ "id": "k", "kind": "secret", "label": "K", "required": true, "default": "sk-12345678901234567890", "export": false }] }"""));
+        // 拒绝：非法枚举。
+        AssertThrows<InvalidDataException>(() => service.Parse("""{ "schemaVersion": 1, "componentId": "a.b", "displayName": "x", "componentType": "skill", "setup": "sometimes" }"""));
+        AssertThrows<InvalidDataException>(() => service.Parse("""{ "schemaVersion": 1, "componentId": "a.b", "displayName": "x", "componentType": "skill", "setup": "none", "fields": [{ "id": "k", "kind": "weird", "label": "K" }] }"""));
+        // 拒绝：重复 field id。
+        AssertThrows<InvalidDataException>(() => service.Parse("""{ "schemaVersion": 1, "componentId": "a.b", "displayName": "x", "componentType": "plugin", "setup": "required", "fields": [{ "id": "k", "kind": "url", "label": "K", "required": true }, { "id": "k", "kind": "url", "label": "K2", "required": true }] }"""));
+        // 拒绝：setup none 带字段。
+        AssertThrows<InvalidDataException>(() => service.Parse("""{ "schemaVersion": 1, "componentId": "a.b", "displayName": "x", "componentType": "skill", "setup": "none", "fields": [{ "id": "k", "kind": "url", "label": "K" }] }"""));
+        // 拒绝：setup required 无必填字段。
+        AssertThrows<InvalidDataException>(() => service.Parse("""{ "schemaVersion": 1, "componentId": "a.b", "displayName": "x", "componentType": "plugin", "setup": "required", "fields": [{ "id": "k", "kind": "url", "label": "K", "required": false }] }"""));
+        // 拒绝：命令默认值。
+        AssertThrows<InvalidDataException>(() => service.Parse("""{ "schemaVersion": 1, "componentId": "a.b", "displayName": "x", "componentType": "plugin", "setup": "required", "fields": [{ "id": "cmd", "kind": "text", "label": "C", "required": true, "default": "powershell -c evil" }] }"""));
+        // 拒绝：密钥明文。
+        AssertThrows<InvalidDataException>(() => service.Parse("""{ "schemaVersion": 1, "componentId": "a.b", "displayName": "x", "componentType": "plugin", "setup": "required", "evidence": ["key is sk-abcdefghijklmnopqrstuvwxyz0123456789"], "fields": [{ "id": "k", "kind": "url", "label": "K", "required": true }] }"""));
+        // 拒绝：path 字段绝对路径默认值。
+        AssertThrows<InvalidDataException>(() => service.Parse("""{ "schemaVersion": 1, "componentId": "a.b", "displayName": "x", "componentType": "plugin", "setup": "required", "fields": [{ "id": "p", "kind": "path", "label": "P", "required": true, "default": "C:\\Users\\someone\\secret" }] }"""));
+        // 拒绝：非法 fingerprint。
+        AssertThrows<InvalidDataException>(() => service.Parse("""{ "schemaVersion": 1, "componentId": "a.b", "displayName": "x", "componentType": "plugin", "setup": "none", "package": { "name": "p", "versionRange": "*", "fingerprint": "md5:abcd" } }"""));
+        // 拒绝：未知字段。
+        AssertThrows<InvalidDataException>(() => service.Parse("""{ "schemaVersion": 1, "componentId": "a.b", "displayName": "x", "componentType": "skill", "setup": "none", "extra": true }"""));
+        // 拒绝：超限声明。
+        var huge = "{ \"schemaVersion\": 1, \"componentId\": \"a.b\", \"displayName\": \"" + new string('x', 300 * 1024) + "\", \"componentType\": \"skill\", \"setup\": \"none\" }";
+        AssertThrows<InvalidDataException>(() => service.Parse(huge));
+
+        // 受信侧车：三个内置声明存在且合法。
+        var trusted = HelperSetupManifestService.TrustedSidecars();
+        Assert(trusted.Count == 3, "应提供 3 个内置受信侧车");
+        Assert(trusted.Single(item => item.Package!.Name == "dsh-web-search-opencode-go").Setup == "required", "搜索插件应为 required");
+        Assert(trusted.Single(item => item.Package!.Name == "dsh-vision-bridge").Setup == "optional", "视觉桥接应为 optional");
+        Assert(trusted.Single(item => item.Package!.Name == "dsh-index-polyfill").Setup == "none", "索引补丁应为 none");
+        Assert(trusted.Single(item => item.Package!.Name == "dsh-vision-bridge").Fields.All(field => field.Kind is "providerRef" or "modelRef"), "视觉桥接只复用 provider/model 引用，不得索要 API Key");
+
+        // 语义版本范围。
+        Assert(HelperSetupManifestService.MatchesVersionRange("1.2.3", ">=1.0.0 <2.0.0"), "范围 AND 应匹配");
+        Assert(HelperSetupManifestService.MatchesVersionRange("1.2.3", "^1.2.0"), "^1.2.0 应匹配 1.2.3");
+        Assert(!HelperSetupManifestService.MatchesVersionRange("2.0.0", "^1.2.0"), "^1.2.0 不应匹配 2.0.0");
+        Assert(HelperSetupManifestService.MatchesVersionRange("1.2.3", "~1.2.0"), "~1.2.0 应匹配 1.2.3");
+        Assert(!HelperSetupManifestService.MatchesVersionRange("1.3.0", "~1.2.0"), "~1.2.0 不应匹配 1.3.0");
+        Assert(HelperSetupManifestService.MatchesVersionRange("1.2.3", "1.2.x"), "1.2.x 应匹配 1.2.3");
+        Assert(HelperSetupManifestService.MatchesVersionRange("1.2.3", "*"), "通配应匹配任意版本");
+        Assert(!HelperSetupManifestService.MatchesVersionRange("1.2.3", "garbage range"), "无法解析的范围应不匹配");
+
+        // 预发布版本回归：完全相同的 rc 版本必须匹配（含 = 前缀），禁止放宽到 * 绕过绑定。
+        Assert(HelperSetupManifestService.MatchesVersionRange("0.1.0-rc.6", "0.1.0-rc.6"), "0.1.0-rc.6 应匹配自身");
+        Assert(HelperSetupManifestService.MatchesVersionRange("0.1.0-rc.6", "=0.1.0-rc.6"), "0.1.0-rc.6 应匹配 =0.1.0-rc.6");
+        Assert(!HelperSetupManifestService.MatchesVersionRange("0.1.0-rc.5", "0.1.0-rc.6"), "0.1.0-rc.5 不应匹配 0.1.0-rc.6");
+        // 预发布标识符按 SemVer 比较：数字按数值比较。
+        Assert(HelperSetupManifestService.MatchesVersionRange("0.1.0-rc.10", ">=0.1.0-rc.6"), "rc.10 应按数值大于 rc.6");
+        Assert(HelperSetupManifestService.MatchesVersionRange("0.1.0-rc.6", "<0.1.0-rc.10"), "rc.6 应按数值小于 rc.10");
+        // 数字标识符低于非数字标识符。
+        Assert(HelperSetupManifestService.MatchesVersionRange("0.1.0-1", "<0.1.0-alpha"), "数字标识符应低于非数字标识符");
+        // 稳定版高于同核心预发布版。
+        Assert(HelperSetupManifestService.MatchesVersionRange("0.1.0", ">0.1.0-rc.6"), "稳定版应高于同核心预发布版");
+        Assert(!HelperSetupManifestService.MatchesVersionRange("0.1.0-rc.6", ">=0.1.0"), "预发布版不应满足稳定版下限");
+        // 构建元数据不参与优先级比较。
+        Assert(HelperSetupManifestService.MatchesVersionRange("0.1.0-rc.6+build.7", "=0.1.0-rc.6"), "构建元数据不应影响预发布匹配");
+        Assert(HelperSetupManifestService.MatchesVersionRange("0.1.0+build.1", "0.1.0"), "稳定版构建元数据不应影响精确匹配");
+        // 带预发布约束的 ^ / ~ / AND 范围。
+        Assert(HelperSetupManifestService.MatchesVersionRange("0.1.0-rc.6", "^0.1.0-rc.6"), "^0.1.0-rc.6 应匹配 0.1.0-rc.6");
+        Assert(HelperSetupManifestService.MatchesVersionRange("0.1.0-rc.6", "~0.1.0-rc.6"), "~0.1.0-rc.6 应匹配 0.1.0-rc.6");
+        Assert(!HelperSetupManifestService.MatchesVersionRange("0.1.0-rc.6", "^0.1.0"), "^0.1.0 不应匹配预发布 0.1.0-rc.6");
+        Assert(HelperSetupManifestService.MatchesVersionRange("0.1.0-rc.6", ">=0.1.0-rc.6 <0.2.0"), "AND 范围应匹配预发布版本");
+
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// DSH 组件扫描与状态：skill 内嵌声明、无声明静态提示、preset 内嵌 required、
+    /// 插件受信侧车（required/optional/none）、用户侧车指纹匹配与过期不匹配、
+    /// 声明无效不应用字段；扫描结果序列化后不得包含任何密钥值。
+    /// </summary>
+    private static async Task TestDshComponentScanAsync()
+    {
+        await WithTempDirectoryAsync("dsh-scan", async root =>
+        {
+            var home = Path.Combine(root, "我的 DSH Home");
+            // skill：内嵌 none 声明。
+            var skillDir = Path.Combine(home, "skills", "procedural-skill");
+            Directory.CreateDirectory(skillDir);
+            await File.WriteAllTextAsync(Path.Combine(skillDir, "helper-setup.json"),
+                """{ "schemaVersion": 1, "componentId": "local.skill", "displayName": "程序技能", "componentType": "skill", "setup": "none" }""");
+            await File.WriteAllTextAsync(Path.Combine(skillDir, "SKILL.md"), "# 程序技能\n纯流程指导，无运行时配置。");
+            // skill：无声明但 SKILL.md 提到 API key → 静态提示待人工确认。
+            var hintDir = Path.Combine(home, "skills", "maybe-config");
+            Directory.CreateDirectory(hintDir);
+            await File.WriteAllTextAsync(Path.Combine(hintDir, "SKILL.md"), "# 技能\n需要 API key 才能使用。");
+            // preset：内嵌 required + secret。
+            var presetDir = Path.Combine(home, ".agent-presets", "codex-contract");
+            Directory.CreateDirectory(presetDir);
+            await File.WriteAllTextAsync(Path.Combine(presetDir, "helper-setup.json"),
+                """{ "schemaVersion": 1, "componentId": "local.preset", "displayName": "合同预设", "componentType": "preset", "setup": "required", "fields": [{ "id": "apiKey", "kind": "secret", "label": "API Key", "required": true, "export": false }] }""");
+            await File.WriteAllTextAsync(Path.Combine(presetDir, "preset.yml"), "name: 合同模式");
+            // 插件：受信侧车 dsh-web-search-opencode-go（required）。
+            var searchDir = Path.Combine(home, "profiles", "node_modules", "dsh-web-search-opencode-go");
+            Directory.CreateDirectory(searchDir);
+            await File.WriteAllTextAsync(Path.Combine(searchDir, "package.json"), "{\"name\":\"dsh-web-search-opencode-go\",\"version\":\"0.5.0\",\"main\":\"index.js\"}");
+            await File.WriteAllTextAsync(Path.Combine(searchDir, "index.js"), "module.exports = {};");
+            // 插件：受信侧车 dsh-index-polyfill（none）。
+            var polyDir = Path.Combine(home, "profiles", "node_modules", "dsh-index-polyfill");
+            Directory.CreateDirectory(polyDir);
+            await File.WriteAllTextAsync(Path.Combine(polyDir, "package.json"), "{\"name\":\"dsh-index-polyfill\",\"version\":\"1.0.0\",\"main\":\"index.js\"}");
+            await File.WriteAllTextAsync(Path.Combine(polyDir, "index.js"), "module.exports = {};");
+            // 插件：用户侧车指纹匹配（required）。
+            var legacyDir = Path.Combine(home, "profiles", "node_modules", "legacy-plugin");
+            Directory.CreateDirectory(legacyDir);
+            await File.WriteAllTextAsync(Path.Combine(legacyDir, "package.json"), "{\"name\":\"legacy-plugin\",\"version\":\"2.1.0\",\"main\":\"main.js\"}");
+            await File.WriteAllTextAsync(Path.Combine(legacyDir, "main.js"), "export default {};");
+            var fingerprint = HelperSetupManifestService.ComputeSidecarFingerprint(Path.Combine(legacyDir, "package.json"), Path.Combine(legacyDir, "main.js"));
+            var sidecarRoot = Path.Combine(home, ".helper-setup", "plugins");
+            Directory.CreateDirectory(sidecarRoot);
+            var sidecarId = Convert.ToBase64String(Encoding.UTF8.GetBytes("legacy-plugin")).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+            await File.WriteAllTextAsync(Path.Combine(sidecarRoot, sidecarId + ".helper-setup.json"),
+                $$"""{ "schemaVersion": 1, "componentId": "user.legacy", "displayName": "旧插件", "componentType": "plugin", "setup": "required", "package": { "name": "legacy-plugin", "versionRange": ">=2.0.0 <3.0.0", "fingerprint": "{{fingerprint}}" }, "fields": [{ "id": "apiKey", "kind": "secret", "label": "API Key", "required": true, "export": false }] }""");
+            // 插件：用户侧车过期（指纹不匹配）→ 待人工确认。
+            var staleDir = Path.Combine(home, "profiles", "node_modules", "stale-plugin");
+            Directory.CreateDirectory(staleDir);
+            await File.WriteAllTextAsync(Path.Combine(staleDir, "package.json"), "{\"name\":\"stale-plugin\",\"version\":\"1.0.0\",\"main\":\"index.js\"}");
+            await File.WriteAllTextAsync(Path.Combine(staleDir, "index.js"), "module.exports = {};");
+            var staleId = Convert.ToBase64String(Encoding.UTF8.GetBytes("stale-plugin")).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+            await File.WriteAllTextAsync(Path.Combine(sidecarRoot, staleId + ".helper-setup.json"),
+                """{ "schemaVersion": 1, "componentId": "user.stale", "displayName": "过期插件", "componentType": "plugin", "setup": "required", "package": { "name": "stale-plugin", "versionRange": "*", "fingerprint": "sha256:0000000000000000000000000000000000000000000000000000000000000000" }, "fields": [{ "id": "apiKey", "kind": "secret", "label": "API Key", "required": true, "export": false }] }""");
+            // 插件：声明无效（解析失败）。
+            var badDir = Path.Combine(home, "profiles", "node_modules", "bad-plugin");
+            Directory.CreateDirectory(badDir);
+            await File.WriteAllTextAsync(Path.Combine(badDir, "package.json"), "{\"name\":\"bad-plugin\",\"version\":\"1.0.0\"}");
+            await File.WriteAllTextAsync(Path.Combine(badDir, "helper-setup.json"), "{ \"componentType\": \"plugin\", \"setup\": \"required\" }");
+            // profiles 配置文本：provider 引用满足 required 组件（providerRef），并以注册字段形式
+            // 引用三个非 dsh- 前缀插件使其被发现（普通引号列表项不再是插件注册）。
+            Directory.CreateDirectory(Path.Combine(home, "profiles"));
+            await File.WriteAllTextAsync(Path.Combine(home, "profiles", "main.yaml"), "providers:\n  - deepseek\nmodel: deepseek-v4-flash\nplugins:\n  - plugin: legacy-plugin\n  - plugin: stale-plugin\n  - plugin: bad-plugin\n");
+
+            var scanner = new DshComponentScanner(home);
+            Assert(scanner.IsInstalled, "DSH Home 应已安装");
+            var components = scanner.Scan();
+            Assert(components.Count >= 8, "应扫描到全部组件，实际 " + components.Count);
+
+            var skill = components.Single(item => item.Name == "procedural-skill");
+            Assert(skill.Status == DshComponentStatus.SetupNone && skill.DeclarationSource == DshDeclarationSource.Embedded, "内嵌 none 声明应为无需配置");
+            var hint = components.Single(item => item.Name == "maybe-config");
+            Assert(hint.Status == DshComponentStatus.ManualReview, "静态提示应标记待人工确认");
+            Assert(hint.Setup == DshSetupState.Unknown, "静态提示不得自动提升为 required");
+            Assert(hint.MissingFieldIds.Count == 0, "静态提示不得自动生成缺失字段");
+            var preset = components.Single(item => item.Name == "codex-contract");
+            Assert(preset.Status == DshComponentStatus.RequiredMissing && preset.MissingFieldIds.Contains("apiKey"), "preset required 应待配置且列出缺失字段 id");
+            var search = components.Single(item => item.Name == "dsh-web-search-opencode-go");
+            Assert(search.DeclarationSource == DshDeclarationSource.TrustedSidecar && search.Status == DshComponentStatus.RequiredMissing, "搜索插件应命中受信侧车 required 且待配置");
+            Assert(search.MissingFieldIds.Contains("apiKey") && search.MissingFieldIds.Contains("baseUrl") && search.MissingFieldIds.Contains("model"), "搜索插件缺失字段应包含 apiKey/baseUrl/model");
+            var poly = components.Single(item => item.Name == "dsh-index-polyfill");
+            Assert(poly.DeclarationSource == DshDeclarationSource.TrustedSidecar && poly.Status == DshComponentStatus.SetupNone, "索引补丁应命中受信侧车 none");
+            var legacy = components.Single(item => item.Name == "legacy-plugin");
+            Assert(legacy.DeclarationSource == DshDeclarationSource.UserSidecar && legacy.Status == DshComponentStatus.RequiredMissing, "指纹匹配的用户侧车应应用声明");
+            var stale = components.Single(item => item.Name == "stale-plugin");
+            Assert(stale.Status == DshComponentStatus.ManualReview && stale.Declaration is null, "指纹不匹配的侧车不得应用字段，应待人工确认");
+            Assert(stale.ReviewReason!.Contains("待人工确认", StringComparison.Ordinal), "过期原因应明确提示待人工确认");
+            var bad = components.Single(item => item.Name == "bad-plugin");
+            Assert(bad.Status == DshComponentStatus.InvalidDeclaration && bad.Declaration is null, "解析失败的声明应为声明无效且不应用字段");
+
+            // 扫描结果序列化后不得包含任何密钥值。
+            var serialized = string.Join("\n", components.Select(component => System.Text.Json.JsonSerializer.Serialize(component)));
+            Assert(!serialized.Contains("sk-", StringComparison.Ordinal), "扫描结果不得包含密钥前缀");
+            Assert(!serialized.Contains("secret-value", StringComparison.Ordinal), "扫描结果不得包含密钥值");
+            // 未安装 DSH：空列表，不抛异常。
+            var notInstalled = new DshComponentScanner(Path.Combine(root, "不存在的 DSH Home"));
+            Assert(notInstalled.Scan().Count == 0, "未安装时扫描应返回空列表");
+        });
+    }
+
+    /// <summary>
+    /// 侧车按声明身份发现：可读文件名按 package.name 匹配；Base64 旧文件名仍兼容；
+    /// 同一组件多个匹配侧车 → 待人工确认且不应用；匹配组件的损坏声明 → 声明无效；
+    /// 不相关或无法归属的损坏侧车不影响任何组件；预设按 componentId 精确匹配目录名。
+    /// </summary>
+    private static async Task TestDshSidecarIdentityAsync()
+    {
+        await WithTempDirectoryAsync("dsh-sidecar-identity", async root =>
+        {
+            var home = Path.Combine(root, "DSH Home");
+            var pluginsRoot = Path.Combine(home, "profiles", "node_modules");
+            var sidecarRoot = Path.Combine(home, ".helper-setup", "plugins");
+            Directory.CreateDirectory(sidecarRoot);
+            Directory.CreateDirectory(Path.Combine(home, "profiles"));
+
+            // 可读文件名侧车：声明 package.name 精确匹配 → 应用（required + 正确指纹）。
+            var readableDir = Path.Combine(pluginsRoot, "readable-plugin");
+            Directory.CreateDirectory(readableDir);
+            await File.WriteAllTextAsync(Path.Combine(readableDir, "package.json"), "{\"name\":\"readable-plugin\",\"version\":\"1.2.0\",\"main\":\"index.js\"}");
+            await File.WriteAllTextAsync(Path.Combine(readableDir, "index.js"), "module.exports = {};");
+            var readableFingerprint = HelperSetupManifestService.ComputeSidecarFingerprint(
+                Path.Combine(readableDir, "package.json"), Path.Combine(readableDir, "index.js"));
+            await File.WriteAllTextAsync(Path.Combine(sidecarRoot, "readable-plugin.helper-setup.json"),
+                $$"""{ "schemaVersion": 1, "componentId": "user.readable", "displayName": "可读侧车", "componentType": "plugin", "setup": "required", "package": { "name": "readable-plugin", "versionRange": ">=1.0.0 <2.0.0", "fingerprint": "{{readableFingerprint}}" }, "fields": [{ "id": "apiKey", "kind": "secret", "label": "API Key", "required": true, "export": false }] }""");
+
+            // Base64 旧文件名：可解析声明（package.name 匹配）仍被读取应用。
+            var legacyDir = Path.Combine(pluginsRoot, "legacy-plugin");
+            Directory.CreateDirectory(legacyDir);
+            await File.WriteAllTextAsync(Path.Combine(legacyDir, "package.json"), "{\"name\":\"legacy-plugin\",\"version\":\"2.0.0\",\"main\":\"index.js\"}");
+            await File.WriteAllTextAsync(Path.Combine(legacyDir, "index.js"), "module.exports = {};");
+            var legacyFingerprint = HelperSetupManifestService.ComputeSidecarFingerprint(
+                Path.Combine(legacyDir, "package.json"), Path.Combine(legacyDir, "index.js"));
+            var legacyId = Convert.ToBase64String(Encoding.UTF8.GetBytes("legacy-plugin")).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+            await File.WriteAllTextAsync(Path.Combine(sidecarRoot, legacyId + ".helper-setup.json"),
+                $$"""{ "schemaVersion": 1, "componentId": "user.legacy", "displayName": "旧文件名", "componentType": "plugin", "setup": "optional", "package": { "name": "legacy-plugin", "versionRange": "*", "fingerprint": "{{legacyFingerprint}}" } }""");
+
+            // 重复：两个侧车声明都匹配 dup-plugin → 待人工确认，不应用任何字段。
+            var dupDir = Path.Combine(pluginsRoot, "dup-plugin");
+            Directory.CreateDirectory(dupDir);
+            await File.WriteAllTextAsync(Path.Combine(dupDir, "package.json"), "{\"name\":\"dup-plugin\",\"version\":\"1.0.0\",\"main\":\"index.js\"}");
+            await File.WriteAllTextAsync(Path.Combine(dupDir, "index.js"), "module.exports = {};");
+            var dupFingerprint = HelperSetupManifestService.ComputeSidecarFingerprint(
+                Path.Combine(dupDir, "package.json"), Path.Combine(dupDir, "index.js"));
+            var dupJson = $$"""{ "schemaVersion": 1, "componentId": "user.dup", "displayName": "重复侧车", "componentType": "plugin", "setup": "none", "package": { "name": "dup-plugin", "versionRange": "*", "fingerprint": "{{dupFingerprint}}" } }""";
+            await File.WriteAllTextAsync(Path.Combine(sidecarRoot, "dup-a.helper-setup.json"), dupJson);
+            await File.WriteAllTextAsync(Path.Combine(sidecarRoot, "dup-b.helper-setup.json"), dupJson);
+
+            // 匹配组件的损坏声明：浅读 package.name 可归属 → 声明无效。
+            var brokenDir = Path.Combine(pluginsRoot, "broken-sidecar-plugin");
+            Directory.CreateDirectory(brokenDir);
+            await File.WriteAllTextAsync(Path.Combine(brokenDir, "package.json"), "{\"name\":\"broken-sidecar-plugin\",\"version\":\"1.0.0\",\"main\":\"index.js\"}");
+            await File.WriteAllTextAsync(Path.Combine(brokenDir, "index.js"), "module.exports = {};");
+            await File.WriteAllTextAsync(Path.Combine(sidecarRoot, "broken-sidecar-plugin.helper-setup.json"),
+                """{ "schemaVersion": 1, "componentId": "user.broken", "displayName": "损坏侧车", "componentType": "plugin", "setup": "none", "package": { "name": "broken-sidecar-plugin", "versionRange": "*", "fingerprint": "md5:bad" } }""");
+
+            // 不相关侧车：声明属于其他组件（package.name 不匹配任何已发现插件）→ 忽略。
+            await File.WriteAllTextAsync(Path.Combine(sidecarRoot, "unrelated-owner.helper-setup.json"),
+                """{ "schemaVersion": 1, "componentId": "user.other", "displayName": "其他组件", "componentType": "plugin", "setup": "none", "package": { "name": "some-other-package", "versionRange": "*" } }""");
+            // 无法归属的损坏侧车（非 JSON）：全局诊断忽略，不影响任何组件。
+            await File.WriteAllTextAsync(Path.Combine(sidecarRoot, "garbage.helper-setup.json"), "not json at all {");
+
+            // Profile 注册 4 个插件。
+            await File.WriteAllTextAsync(Path.Combine(home, "profiles", "main.yaml"),
+                "plugins:\n  - plugin: readable-plugin\n  - plugin: legacy-plugin\n  - plugin: dup-plugin\n  - plugin: broken-sidecar-plugin\n");
+
+            var scanner = new DshComponentScanner(home);
+            var components = scanner.Scan();
+            var plugins = components.Where(item => item.Kind == DshComponentType.Plugin).ToList();
+            Assert(plugins.Count == 4, "应只发现 4 个注册插件，实际 " + plugins.Count + ": " + string.Join(",", plugins.Select(item => item.Name)));
+
+            var readable = plugins.Single(item => item.Name == "readable-plugin");
+            Assert(readable.DeclarationSource == DshDeclarationSource.UserSidecar && readable.Status == DshComponentStatus.RequiredMissing, "可读文件名侧车应按 package.name 匹配并应用声明");
+            Assert(readable.MissingFieldIds.Contains("apiKey"), "可读文件名侧车应应用 required 字段");
+            var legacy = plugins.Single(item => item.Name == "legacy-plugin");
+            Assert(legacy.DeclarationSource == DshDeclarationSource.UserSidecar && legacy.Status == DshComponentStatus.OptionalConfig, "Base64 旧文件名侧车应仍被读取应用");
+            var dup = plugins.Single(item => item.Name == "dup-plugin");
+            Assert(dup.Status == DshComponentStatus.ManualReview && dup.Declaration is null, "重复侧车应待人工确认且不应用任何字段");
+            Assert(dup.ReviewReason!.Contains("2 个声明", StringComparison.Ordinal), "重复原因应说明存在多个匹配侧车");
+            var broken = plugins.Single(item => item.Name == "broken-sidecar-plugin");
+            Assert(broken.DeclarationSource == DshDeclarationSource.UserSidecar && broken.Status == DshComponentStatus.InvalidDeclaration && broken.Declaration is null, "匹配组件的损坏侧车应显示声明无效且不应用字段");
+            Assert(components.All(item => item.Status != DshComponentStatus.ManualReview || item.Name == "dup-plugin"), "只有重复侧车组件应待人工确认");
+
+            // 预设侧车：按 componentId 精确匹配预设目录名（displayName 不参与身份）。
+            var presetSidecarRoot = Path.Combine(home, ".helper-setup", "presets");
+            Directory.CreateDirectory(presetSidecarRoot);
+            var presetDir = Path.Combine(home, ".agent-presets", "codex-contract");
+            Directory.CreateDirectory(presetDir);
+            await File.WriteAllTextAsync(Path.Combine(presetSidecarRoot, "codex-contract.helper-setup.json"),
+                """{ "schemaVersion": 1, "componentId": "codex-contract", "displayName": "合同预设", "componentType": "preset", "setup": "required", "fields": [{ "id": "apiKey", "kind": "secret", "label": "API Key", "required": true, "export": false }] }""");
+            await File.WriteAllTextAsync(Path.Combine(presetDir, "preset.yml"), "name: 合同模式");
+            var preset = scanner.Scan().Single(item => item.Name == "codex-contract" && item.Kind == DshComponentType.Preset);
+            Assert(preset.DeclarationSource == DshDeclarationSource.UserSidecar && preset.Status == DshComponentStatus.RequiredMissing, "预设侧车应按 componentId 匹配目录名并应用声明");
+            Assert(preset.MissingFieldIds.Contains("apiKey"), "预设侧车应应用 required 字段");
+        });
+    }
+
+    /// <summary>
+    /// DSH 迁移包导出导入全链路：导出排除凭据/会话/附件/缓存/日志/临时文件/依赖树，
+    /// 预览校验结构，导入到新 Home 无冲突成功、冲突跳过保留本机、损坏 ZIP 拒绝、
+    /// 越界路径拒绝、失败回滚不留下半导入状态。
+    /// </summary>
+    private static async Task TestDshTransferAsync()
+    {
+        await WithTempDirectoryAsync("dsh-transfer", async root =>
+        {
+            var home = Path.Combine(root, "DSH Home");
+            var skillDir = Path.Combine(home, "skills", "skill-a");
+            Directory.CreateDirectory(Path.Combine(skillDir, "nested"));
+            Directory.CreateDirectory(Path.Combine(home, "sessions"));
+            Directory.CreateDirectory(Path.Combine(home, "attachments"));
+            Directory.CreateDirectory(Path.Combine(home, "storages"));
+            await File.WriteAllTextAsync(Path.Combine(home, ".credentials.yaml"), "secret: nope");
+            await File.WriteAllTextAsync(Path.Combine(skillDir, "SKILL.md"), "# 技能甲\n指导内容");
+            await File.WriteAllTextAsync(Path.Combine(skillDir, "nested", "提示.txt"), "深层内容");
+            await File.WriteAllTextAsync(Path.Combine(skillDir, "cache.tmp"), "临时");
+            await File.WriteAllTextAsync(Path.Combine(skillDir, "run.log"), "日志");
+            await File.WriteAllTextAsync(Path.Combine(skillDir, "token.yaml"), "token: 不应迁移");
+            await File.WriteAllTextAsync(Path.Combine(skillDir, "helper-setup.json"),
+                """{ "schemaVersion": 1, "componentId": "local.skill", "displayName": "技能甲", "componentType": "skill", "setup": "none" }""");
+            var pluginDir = Path.Combine(home, "profiles", "node_modules", "dsh-index-polyfill");
+            Directory.CreateDirectory(Path.Combine(pluginDir, "node_modules", "dep"));
+            await File.WriteAllTextAsync(Path.Combine(pluginDir, "package.json"), "{\"name\":\"dsh-index-polyfill\",\"version\":\"1.0.0\",\"main\":\"index.js\"}");
+            await File.WriteAllTextAsync(Path.Combine(pluginDir, "index.js"), "module.exports = {};");
+            await File.WriteAllTextAsync(Path.Combine(pluginDir, "node_modules", "dep", "dep.js"), "依赖树不应迁移");
+
+            var scanner = new DshComponentScanner(home);
+            var components = scanner.Scan();
+            Assert(components.Count >= 2, "应扫描到 skill 与插件组件");
+
+            // 导出。
+            var app = new AppPaths(Path.Combine(root, "app"));
+            var zipPath = Path.Combine(root, DshTransferService.BuildFileName("4.1.0"));
+            var service = new DshTransferService(app);
+            var manifest = await service.ExportAsync(new DshTransferExportRequest(zipPath, components));
+            Assert(File.Exists(zipPath), "迁移包应生成");
+            Assert(manifest.Files.Any(file => file.RelativePath == "SKILL.md"), "应包含 skill 文件");
+            Assert(manifest.Files.Any(file => file.RelativePath == Path.Combine("nested", "提示.txt")), "应包含深层中文路径文件");
+            Assert(!manifest.Files.Any(file => file.RelativePath.Contains("cache.tmp", StringComparison.Ordinal)), "不得包含临时文件");
+            Assert(!manifest.Files.Any(file => file.RelativePath.Contains(".log", StringComparison.Ordinal)), "不得包含日志");
+            Assert(!manifest.Files.Any(file => file.RelativePath.Contains("token", StringComparison.Ordinal)), "不得包含 token 文件");
+            Assert(!manifest.Files.Any(file => file.RelativePath.Contains("credentials", StringComparison.Ordinal)), "不得包含凭据文件");
+            Assert(!manifest.Files.Any(file => file.RelativePath.Contains("node_modules", StringComparison.Ordinal)), "不得包含依赖树");
+            Assert(manifest.Components.All(component => !string.IsNullOrWhiteSpace(component.TargetRelativeRoot)), "组件应带目标相对根");
+
+            // 预览。
+            var preview = await service.PreviewAsync(zipPath);
+            Assert(preview.StructureVerified && preview.Manifest.Files.Count == manifest.Files.Count, "预览应校验通过");
+
+            // 导入到新 Home：无冲突全部导入。
+            var home2 = Path.Combine(root, "另一台设备的 DSH Home");
+            var result = await service.ImportAsync(new DshTransferImportRequest(zipPath, home2));
+            Assert(result.Outcome == OperationOutcome.Success, "无冲突导入应成功：" + string.Join(" | ", result.Issues.Select(issue => issue.Message)));
+            Assert(await File.ReadAllTextAsync(Path.Combine(home2, "skills", "skill-a", "SKILL.md")) == "# 技能甲\n指导内容", "skill 应导入");
+            Assert(await File.ReadAllTextAsync(Path.Combine(home2, "skills", "skill-a", "nested", "提示.txt")) == "深层内容", "中文深层文件应导入");
+            Assert(await File.ReadAllTextAsync(Path.Combine(home2, "profiles", "node_modules", "dsh-index-polyfill", "index.js")) == "module.exports = {};", "插件应导入");
+            Assert(!File.Exists(Path.Combine(home2, ".credentials.yaml")), "不得导入凭据文件");
+            Assert(!Directory.Exists(Path.Combine(home2, "sessions")), "不得导入会话");
+
+            // 冲突：目标已有文件（第一次导入的全部 5 个文件），默认保留本机。
+            Directory.CreateDirectory(Path.Combine(home2, "skills", "skill-a"));
+            await File.WriteAllTextAsync(Path.Combine(home2, "skills", "skill-a", "SKILL.md"), "本机已有内容");
+            var conflictResult = await service.ImportAsync(new DshTransferImportRequest(zipPath, home2));
+            Assert(conflictResult.SkippedConflicts == 5, "应跳过 5 个冲突文件，实际 " + conflictResult.SkippedConflicts);
+            Assert(conflictResult.ImportedFiles == 0, "全部冲突时应无新增导入，实际 " + conflictResult.ImportedFiles);
+            Assert(await File.ReadAllTextAsync(Path.Combine(home2, "skills", "skill-a", "SKILL.md")) == "本机已有内容", "已有文件不得被覆盖");
+
+            // 损坏 ZIP 拒绝。
+            var corrupt = Path.Combine(root, "corrupt.zip");
+            await File.WriteAllBytesAsync(corrupt, [0x50, 0x4B, 0x03, 0x04, 0x01, 0x02, 0x03]);
+            await AssertThrowsAsync<Exception>(() => service.PreviewAsync(corrupt));
+
+            // 越界路径：构造恶意 manifest（RelativePath 为 ../escape）。
+            var evil = Path.Combine(root, "evil.zip");
+            using (var archive = ZipFile.Open(evil, ZipArchiveMode.Create))
+            {
+                var evilManifest = new DshTransferManifest
+                {
+                    TransferId = "evil",
+                    CreatedUtc = DateTime.UtcNow,
+                    DeviceName = "test",
+                    CodexHelperVersion = "test",
+                    Components = [new DshTransferComponent("c1", "skill", "evil", null, "skills/evil", null)],
+                    Files = [new DshTransferFile("c1", "../escape.txt", new string('0', 64), 3, DateTime.UtcNow)]
+                };
+                var entry = archive.CreateEntry("manifest.json");
+                await using var stream = entry.Open();
+                await stream.WriteAsync(JsonStore.Serialize(evilManifest));
+            }
+            await AssertThrowsAsync<InvalidDataException>(() => service.ImportAsync(new DshTransferImportRequest(evil, home2)));
+            Assert(!File.Exists(Path.Combine(root, "escape.txt")), "越界文件不得写入");
+
+            // 哈希不匹配拒绝且不留下半导入状态。
+            var tampered = Path.Combine(root, "tampered.zip");
+            using (var archive = ZipFile.Open(tampered, ZipArchiveMode.Create))
+            {
+                var good = JsonStore.Deserialize<DshTransferManifest>(JsonStore.Serialize(manifest));
+                good.Files[0] = new DshTransferFile(good.Files[0].ComponentId, good.Files[0].RelativePath, new string('f', 64), good.Files[0].Length, good.Files[0].LastWriteTimeUtc);
+                var manifestEntry = archive.CreateEntry("manifest.json");
+                await using (var stream = manifestEntry.Open()) await stream.WriteAsync(JsonStore.Serialize(good));
+                foreach (var file in manifest.Files)
+                {
+                    var component = manifest.Components.First(item => item.Id == file.ComponentId);
+                    var sourcePath = Path.Combine(home, component.TargetRelativeRoot.Replace('/', Path.DirectorySeparatorChar), file.RelativePath.Replace('/', Path.DirectorySeparatorChar));
+                    var entry = archive.CreateEntry($"payload/{file.ComponentId}/{file.RelativePath.Replace('\\', '/')}");
+                    await using var stream = entry.Open();
+                    if (File.Exists(sourcePath)) { await using var source = File.OpenRead(sourcePath); await source.CopyToAsync(stream); }
+                }
+            }
+            await AssertThrowsAsync<InvalidDataException>(() => service.ImportAsync(new DshTransferImportRequest(tampered, home2)));
+        });
+    }
+
+    /// <summary>
+    /// DSH 插件发现的 Profile 注册字段规则：普通引号、注释、字段值、content-type/yaml 不得进入
+    /// 插件集合；YAML 单引号/双引号/无引号的 name/plugin/package 均支持；scoped 插件仅 Profile
+    /// 明确注册时纳入；profiles/node_modules 顶层 dsh-* 惯例继续兼容；损坏/超大 Profile 与
+    /// 重解析点安全处理；DshComponentScanner 与备份发现复用同一份结果。
+    /// </summary>
+    private static async Task TestDshPluginDiscoveryAsync()
+    {
+        await WithTempDirectoryAsync("dsh-plugin-discovery", async root =>
+        {
+            var home = Path.Combine(root, "DSH Home");
+            var plugins = Path.Combine(home, "profiles", "node_modules");
+            // 安装目录：4 个注册插件 + 1 个 dsh-* 惯例插件 + 干扰依赖包（全部真实存在）。
+            foreach (var name in new[] { "dsh-vision-bridge", "dsh-index-polyfill", "dsh-web-search-opencode-go", "content-type", "yaml" })
+            {
+                Directory.CreateDirectory(Path.Combine(plugins, name));
+                await File.WriteAllTextAsync(Path.Combine(plugins, name, "package.json"), "{\"name\":\"" + name + "\"}");
+            }
+            Directory.CreateDirectory(Path.Combine(plugins, "@deepseek-ai"));
+            foreach (var name in new[] { "dsh-host-directory-picker-browse", "dsh-client-ui-directory-picker-browse", "dsh-base", "dsh-web-app" })
+            {
+                Directory.CreateDirectory(Path.Combine(plugins, "@deepseek-ai", name));
+                await File.WriteAllTextAsync(Path.Combine(plugins, "@deepseek-ai", name, "package.json"), "{\"name\":\"@deepseek-ai/" + name + "\"}");
+            }
+            // Profile 配置目录 web/：cordis.patch.yml 注册 4 个插件（无引号/单引号/双引号）；
+            // package.json 的 name 字段与 bundles 数组不得误识别宿主包（bundles 不是注册字段）。
+            Directory.CreateDirectory(Path.Combine(home, "profiles", "web"));
+            await File.WriteAllTextAsync(Path.Combine(home, "profiles", "web", "cordis.patch.yml"), """
+                # 插件注册（注释不得进入插件集合）
+                - insert:
+                    - id: vision-bridge
+                      name: dsh-vision-bridge
+                    - id: directory-picker-browse
+                      name: '@deepseek-ai/dsh-host-directory-picker-browse'
+                    - id: ui-directory-picker-browse
+                      name: "@deepseek-ai/dsh-client-ui-directory-picker-browse"
+                    - id: index-polyfill
+                      name: dsh-index-polyfill
+                """);
+            await File.WriteAllTextAsync(Path.Combine(home, "profiles", "web", "package.json"),
+                """{ "name": "dsh-profile-web", "private": true, "dependencies": {}, "dsh": { "profile": { "bundles": ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app"] } } }""");
+            // 散落的烟测脚本（profiles 根，不属于 Profile 配置）：其静态 import 与字符串
+            // content-type/yaml 不得进入插件集合。
+            await File.WriteAllTextAsync(Path.Combine(home, "profiles", "smoke.mjs"), """
+                // One-shot smoke test: import YAML from "yaml";
+                import { readFile } from "node:fs/promises";
+                import YAML from "yaml";
+                const headers = { "content-type": "application/json", "user-agent": "dsh-web-search-opencode-go/0.1.0-smoke" };
+                """);
+            // 普通引号、注释、字段值：yaml/content-type 不得作为包名。
+            await File.WriteAllTextAsync(Path.Combine(home, "profiles", "notes.yaml"), """
+                # name: dsh-vision-bridge
+                name: 主配置
+                content-type: application/json
+                plugin-list:
+                  - yaml
+                value: "content-type"
+                """);
+            // 超大 Profile：超过扫描上限必须安全跳过。
+            var oversized = Path.Combine(home, "profiles", "huge.yaml");
+            using (var writer = new StreamWriter(oversized, append: false, Encoding.UTF8))
+                await writer.WriteAsync(new string('x', 5 * 1024 * 1024));
+            // 损坏 Profile：无效 UTF-8 序列不得拖垮发现。
+            await File.WriteAllBytesAsync(Path.Combine(home, "profiles", "broken.yaml"), [0xFF, 0xFE, 0x80, 0x00, 0x41]);
+            // 重解析点：junction 指向外部目录，其中的注册文件不得被扫描。
+            var junctionTarget = Path.Combine(root, "junction-outside");
+            Directory.CreateDirectory(junctionTarget);
+            await File.WriteAllTextAsync(Path.Combine(junctionTarget, "extra.yaml"), "plugin: content-type\n");
+            var linkPath = Path.Combine(home, "profiles", "link");
+            var createdJunction = TryCreateJunction(linkPath, junctionTarget);
+
+            var service = new DshExtensionBackupService(home);
+            var discovered = service.DiscoverSources()
+                .Where(source => source.Id.StartsWith("dsh-plugin-", StringComparison.Ordinal))
+                .Select(source => DecodePluginSourceId(source.Id))
+                .OrderBy(name => name, StringComparer.Ordinal)
+                .ToList();
+            Assert(discovered.Count == 5, "真实语义应只保留 5 个插件，实际 " + discovered.Count + ": " + string.Join(",", discovered));
+            Assert(discovered.SequenceEqual(
+                ["@deepseek-ai/dsh-client-ui-directory-picker-browse", "@deepseek-ai/dsh-host-directory-picker-browse", "dsh-index-polyfill", "dsh-vision-bridge", "dsh-web-search-opencode-go"],
+                StringComparer.Ordinal), "插件集合内容不正确：" + string.Join(",", discovered));
+            Assert(!discovered.Contains("content-type", StringComparer.Ordinal) && !discovered.Contains("yaml", StringComparer.Ordinal), "content-type/yaml 不得进入插件集合");
+            Assert(!discovered.Contains("@deepseek-ai/dsh-base", StringComparer.Ordinal) && !discovered.Contains("@deepseek-ai/dsh-web-app", StringComparer.Ordinal), "宿主包不得进入插件集合");
+
+            // DshComponentScanner 复用同一份发现结果（SPEC 第 6 点）。
+            var scanner = new DshComponentScanner(home);
+            var pluginComponents = scanner.Scan().Where(item => item.Kind == DshComponentType.Plugin).Select(item => item.Name).OrderBy(name => name, StringComparer.Ordinal).ToList();
+            Assert(pluginComponents.SequenceEqual(discovered, StringComparer.Ordinal), "组件扫描的插件应与备份发现一致：" + string.Join(",", pluginComponents));
+
+            // 配置目录内 JS 的明确静态 import/require 才作为候选（simple-plugin 通过 require 识别）。
+            Directory.CreateDirectory(Path.Combine(home, "profiles", "config"));
+            await File.WriteAllTextAsync(Path.Combine(home, "profiles", "config", "package.json"), "{\"name\":\"dsh-profile-config\",\"private\":true}");
+            await File.WriteAllTextAsync(Path.Combine(home, "profiles", "config", "load.js"),
+                "const a = require('simple-plugin'); // require('content-type') 是注释不得识别\nimport c from 'no-such-package';");
+            Directory.CreateDirectory(Path.Combine(plugins, "simple-plugin"));
+            await File.WriteAllTextAsync(Path.Combine(plugins, "simple-plugin", "package.json"), "{\"name\":\"simple-plugin\"}");
+            var afterJs = service.DiscoverSources()
+                .Where(source => source.Id.StartsWith("dsh-plugin-", StringComparison.Ordinal))
+                .Select(source => DecodePluginSourceId(source.Id))
+                .ToList();
+            Assert(afterJs.Contains("simple-plugin", StringComparer.Ordinal), "配置目录内 JS 的静态 require 应识别 simple-plugin");
+            Assert(!afterJs.Contains("content-type", StringComparer.Ordinal) && !afterJs.Contains("no-such-package", StringComparer.Ordinal), "注释与未安装的导入不得识别为插件");
+
+            // 明确 plugins:/packages: 列表块：无引号/单引号/双引号项与嵌套块均识别；
+            // dependencies/bundles/plugin-list 键与字段值中的任意引号字符串不得识别；
+            // 列表块中的映射项（- plugin: x）按注册字段识别（行为保持）。
+            foreach (var name in new[] { "helper-tools", "helper-tools-two", "helper-tools-three", "nested-plugin", "dep-only-pkg", "bundle-only-pkg", "list-only-pkg", "quoted-only-pkg", "mapped-item-pkg" })
+            {
+                Directory.CreateDirectory(Path.Combine(plugins, name));
+                await File.WriteAllTextAsync(Path.Combine(plugins, name, "package.json"), "{\"name\":\"" + name + "\"}");
+            }
+            await File.WriteAllTextAsync(Path.Combine(home, "profiles", "web", "list.yaml"), """
+                dsh:
+                  profile:
+                    packages:
+                      - helper-tools
+                      - 'helper-tools-two'
+                      - "helper-tools-three"
+                    plugins:
+                      - nested-plugin
+                """);
+            await File.WriteAllTextAsync(Path.Combine(home, "profiles", "web", "neg.yaml"), """
+                dependencies:
+                  - dep-only-pkg
+                bundles:
+                  - bundle-only-pkg
+                plugin-list:
+                  - list-only-pkg
+                value: "quoted-only-pkg"
+                plugins:
+                  - plugin: mapped-item-pkg
+                """);
+            var afterLists = service.DiscoverSources()
+                .Where(source => source.Id.StartsWith("dsh-plugin-", StringComparison.Ordinal))
+                .Select(source => DecodePluginSourceId(source.Id))
+                .ToList();
+            foreach (var name in new[] { "helper-tools", "helper-tools-two", "helper-tools-three", "nested-plugin", "mapped-item-pkg" })
+                Assert(afterLists.Contains(name, StringComparer.Ordinal), "明确列表块/注册字段应识别 " + name + "，实际：" + string.Join(",", afterLists));
+            foreach (var name in new[] { "dep-only-pkg", "bundle-only-pkg", "list-only-pkg", "quoted-only-pkg" })
+                Assert(!afterLists.Contains(name, StringComparer.Ordinal), "dependencies/bundles/plugin-list/字段值不得识别 " + name + "，实际：" + string.Join(",", afterLists));
+
+            // 清理 junction，避免临时目录清理递归进入链接目标。
+            if (createdJunction && Directory.Exists(linkPath))
+                Directory.Delete(linkPath, recursive: false);
+        });
+    }
+
+    /// <summary>从 dsh-plugin- 数据源 id 解码插件包名（与服务端 EncodePackageName 对称）。</summary>
+    private static string DecodePluginSourceId(string sourceId)
+    {
+        var encoded = sourceId["dsh-plugin-".Length..].Replace('-', '+').Replace('_', '/');
+        encoded = encoded.PadRight((encoded.Length + 3) / 4 * 4, '=');
+        return Encoding.UTF8.GetString(Convert.FromBase64String(encoded));
+    }
+
+    /// <summary>
+    /// DSH 扫描预算与排除：profiles 下放置大量被排除目录/伪配置，不得识别其中插件且扫描有界；
+    /// 根目录合法配置仍在预算内被识别；超过文件预算的子目录不再遍历。
+    /// 文件预算与实现常量 DshExtensionBackupService.MaxConfigScanFiles（2000）同步：根目录共
+    /// 2000 个候选文件（main.yaml + 1999 个填充）全部在预算内被处理，子目录必然在预算耗尽后不被遍历。
+    /// </summary>
+    private static async Task TestDshScanBudgetAndExclusionsAsync()
+    {
+        await WithTempDirectoryAsync("dsh-scan-budget", async root =>
+        {
+            var home = Path.Combine(root, "DSH Home");
+            var plugins = Path.Combine(home, "profiles", "node_modules");
+            foreach (var name in new[] { "budget-plugin", "budget-plugin-late", "budget-plugin-secret" })
+            {
+                Directory.CreateDirectory(Path.Combine(plugins, name));
+                await File.WriteAllTextAsync(Path.Combine(plugins, name, "package.json"), "{\"name\":\"" + name + "\"}");
+            }
+            Directory.CreateDirectory(Path.Combine(home, "profiles"));
+            // 合法根配置：预算内必须识别。
+            await File.WriteAllTextAsync(Path.Combine(home, "profiles", "main.yaml"), "plugins:\n  - budget-plugin\n");
+            // 被排除的非配置数据目录：伪配置（含深层）引用已安装插件，不得递归也不得识别。
+            foreach (var name in new[] { "sessions", "attachments", "storages", "cache", ".cache", "logs", "log", "temp", "tmp", ".temp", ".tmp", "runs", ".runs", "workdir", "workspace", ".git", "__pycache__", ".helper-setup", ".system" })
+            {
+                var directory = Path.Combine(home, "profiles", name);
+                Directory.CreateDirectory(directory);
+                await File.WriteAllTextAsync(Path.Combine(directory, "fake.yaml"), "plugins:\n  - budget-plugin-secret\n");
+                Directory.CreateDirectory(Path.Combine(directory, "deep"));
+                await File.WriteAllTextAsync(Path.Combine(directory, "deep", "fake.json"), "{\"plugin\":\"budget-plugin-secret\"}");
+            }
+            // 文件预算：根目录放置 1999 个填充文件（与 main.yaml 合计 2000，全部在预算内被处理），
+            // 子目录中的引用必然在预算耗尽后不被遍历（扫描有界）。
+            for (var index = 0; index < 1999; index++)
+                File.WriteAllText(Path.Combine(home, "profiles", $"filler{index:D4}.yaml"), "name: 填充\n");
+            Directory.CreateDirectory(Path.Combine(home, "profiles", "bulk"));
+            await File.WriteAllTextAsync(Path.Combine(home, "profiles", "bulk", "late.yaml"), "plugins:\n  - budget-plugin-late\n");
+
+            var service = new DshExtensionBackupService(home);
+            var discovered = service.DiscoverSources()
+                .Where(source => source.Id.StartsWith("dsh-plugin-", StringComparison.Ordinal))
+                .Select(source => DecodePluginSourceId(source.Id))
+                .ToList();
+            Assert(discovered.Contains("budget-plugin", StringComparer.Ordinal), "根配置引用的插件应被识别，实际：" + string.Join(",", discovered));
+            Assert(!discovered.Contains("budget-plugin-secret", StringComparer.Ordinal), "被排除目录中的伪配置不得识别插件，实际：" + string.Join(",", discovered));
+            Assert(!discovered.Contains("budget-plugin-late", StringComparer.Ordinal), "超过文件预算的子目录不得再遍历识别插件，实际：" + string.Join(",", discovered));
+
+            // 组件扫描同样有界且不包含被排除/超预算插件。
+            var scanner = new DshComponentScanner(home);
+            var pluginComponents = scanner.Scan().Where(item => item.Kind == DshComponentType.Plugin).Select(item => item.Name).ToList();
+            Assert(pluginComponents.Contains("budget-plugin", StringComparer.Ordinal), "组件扫描应发现根配置插件，实际：" + string.Join(",", pluginComponents));
+            Assert(!pluginComponents.Contains("budget-plugin-secret", StringComparer.Ordinal) && !pluginComponents.Contains("budget-plugin-late", StringComparer.Ordinal), "组件扫描不得包含被排除/超预算插件，实际：" + string.Join(",", pluginComponents));
+        });
+    }
+
+    /// <summary>DSH 组件扫描取消：目录/文件/组件循环及时响应 CancellationToken，已取消的 token 立即中止。</summary>
+    private static async Task TestDshScanCancellationAsync()
+    {
+        await WithTempDirectoryAsync("dsh-scan-cancel", async root =>
+        {
+            var home = Path.Combine(root, "DSH Home");
+            Directory.CreateDirectory(Path.Combine(home, "profiles"));
+            for (var index = 0; index < 100; index++)
+            {
+                var directory = Path.Combine(home, "profiles", "dir" + index);
+                Directory.CreateDirectory(directory);
+                File.WriteAllText(Path.Combine(directory, "config.yaml"), "providers:\n  - provider-" + index + "\n");
+            }
+            var scanner = new DshComponentScanner(home);
+            using var cancelled = new CancellationTokenSource();
+            cancelled.Cancel();
+            await AssertThrowsAsync<OperationCanceledException>(() => Task.Run(() => scanner.Scan(cancelled.Token)));
+        });
+    }
+
+    /// <summary>
+    /// 滚轮链纯逻辑（ScrollChainLogic.ShouldPassWheel）：
+    /// 无溢出向外传递、顶部向上传递、底部向下传递、中间不传递、空/非法视口不崩溃、delta 0 不传递。
+    /// </summary>
+    private static Task TestScrollChainLogicAsync()
+    {
+        // 无溢出（extent <= viewport，含滚动条禁用/空内容）：任何方向都向外传递。
+        Assert(ScrollChainLogic.ShouldPassWheel(100, 100, 0, 120), "无溢出向上滚轮应向外传递");
+        Assert(ScrollChainLogic.ShouldPassWheel(100, 100, 0, -120), "无溢出向下滚轮应向外传递");
+        Assert(ScrollChainLogic.ShouldPassWheel(80, 200, 0, 120), "内容低于可视区应向外传递");
+        // 顶部向上：已到顶还向上滚 → 向外传递。
+        Assert(ScrollChainLogic.ShouldPassWheel(100, 50, 0, 120), "顶部向上滚轮应向外传递");
+        // 底部向下：已到底还向下滚 → 向外传递。
+        Assert(ScrollChainLogic.ShouldPassWheel(100, 50, 50, -120), "底部向下滚轮应向外传递");
+        // 中间：内层仍可按该方向滚动 → 由内层消费，不传递。
+        Assert(!ScrollChainLogic.ShouldPassWheel(100, 50, 25, 120), "中间向上滚轮不应传递");
+        Assert(!ScrollChainLogic.ShouldPassWheel(100, 50, 25, -120), "中间向下滚轮不应传递");
+        // 空内容/非法视口：不崩溃且向外传递。
+        Assert(ScrollChainLogic.ShouldPassWheel(0, 0, 0, 120), "空可视区滚轮应向外传递且不崩溃");
+        Assert(ScrollChainLogic.ShouldPassWheel(100, 0, 0, -120), "非法可视区滚轮应向外传递且不崩溃");
+        // delta == 0：无滚动意图，不传递。
+        Assert(!ScrollChainLogic.ShouldPassWheel(100, 50, 0, 0), "delta 为 0 不应传递");
+        Assert(!ScrollChainLogic.ShouldPassWheel(100, 50, 50, 0), "delta 为 0（边界处）不应传递");
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Harness 启动失败诊断：纯函数（ANSI 清洗/敏感脱敏/插件失败分类/中文摘要）与
+    /// LaunchWebHost 异步排空有界尾部、EnsureWebHostReadyAsync 提前退出统一诊断集成。
+    /// 覆盖：正常启动、退出码、插件崩溃、ANSI、超长输出、敏感字段脱敏、空输出。
+    /// </summary>
+    private static async Task TestHarnessStartupDiagnosticsAsync()
+    {
+        // ---- 1) 清洗：去 ANSI（CSI/OSC）与控制字符，保留可读文本与换行。 ----
+        var ansi = "\u001b[31mERROR\u001b[0m line\u001b]0;title\u0007 tail";
+        Assert(HarnessOutputDiagnostics.Clean(ansi) == "ERROR line tail", "ANSI/OSC 与控制字符应被清除：" + HarnessOutputDiagnostics.Clean(ansi));
+        Assert(HarnessOutputDiagnostics.Clean("a\u0000b\u0001c\n") == "abc\n", "控制字符应清除、换行保留：" + HarnessOutputDiagnostics.Clean("a\u0000b\u0001c\n"));
+
+        // ---- 2) 脱敏：Authorization/Bearer、api_key、credentials、sk- 等敏感值不得出现在输出中。 ----
+        var sensitive = "Authorization: Bearer sk-abcdefgh12345678\napi_key=super-secret-value\ncredentials=user:pass\nplain text";
+        var redacted = HarnessOutputDiagnostics.Redact(sensitive);
+        Assert(!redacted.Contains("sk-abcdefgh12345678", StringComparison.Ordinal), "sk- 密钥必须脱敏：" + redacted);
+        Assert(!redacted.Contains("super-secret-value", StringComparison.Ordinal), "api_key 值必须脱敏：" + redacted);
+        Assert(!redacted.Contains("user:pass", StringComparison.Ordinal), "credentials 值必须脱敏：" + redacted);
+        Assert(redacted.Contains("[REDACTED]", StringComparison.Ordinal), "脱敏后应保留 [REDACTED] 标记：" + redacted);
+        Assert(redacted.Contains("plain text", StringComparison.Ordinal), "普通文本应原样保留：" + redacted);
+
+        // ---- 3) 插件失败识别与包名提取（node_modules 路径 / 仅 entry did not activate / 正常输出不误判）。 ----
+        var pluginErr = "Error: plugin tree failed to load\n  at C:\\Users\\x\\AppData\\Roaming\\npm\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js\nError: entry did not activate: ./dist/index.js";
+        var plugin = HarnessOutputDiagnostics.TryDetectPluginFailure(HarnessOutputDiagnostics.Clean(pluginErr));
+        Assert(plugin is not null && plugin.Package == "@deepseek-ai/dsh", "应识别插件失败并提取包名：" + plugin?.Package);
+        var bare = HarnessOutputDiagnostics.TryDetectPluginFailure("entry did not activate: ./dist/index.js");
+        Assert(bare is not null && string.IsNullOrEmpty(bare.Package), "entry did not activate 应识别（包名可缺失）");
+        Assert(HarnessOutputDiagnostics.TryDetectPluginFailure("normal startup log line") is null, "正常输出不应误判插件失败");
+
+        // ---- 4) 摘要：退出码、超长输出有界、空输出、无 ANSI、敏感脱敏、插件提示。 ----
+        var longStderr = string.Concat(Enumerable.Repeat("error line content 中文 ", 600));
+        var longSummary = HarnessOutputDiagnostics.BuildExitSummary(3, "stdout-line", longStderr);
+        Assert(longSummary.Contains("退出码 3", StringComparison.Ordinal), "摘要应包含退出码：" + longSummary);
+        Assert(longSummary.Length < 2000, "超长输出摘要必须有界：" + longSummary.Length);
+        Assert(longSummary.Contains(longStderr[^20..], StringComparison.Ordinal), "摘要应保留输出尾部内容");
+        var emptySummary = HarnessOutputDiagnostics.BuildExitSummary(5, null, string.Empty);
+        Assert(emptySummary.Contains("退出码 5", StringComparison.Ordinal) && emptySummary.Contains("未产生任何输出", StringComparison.Ordinal), "空输出摘要：" + emptySummary);
+        var ansiSummary = HarnessOutputDiagnostics.BuildExitSummary(1, null, "\u001b[31mfatal\u001b[0m " + sensitive);
+        Assert(!ansiSummary.Contains("\u001b", StringComparison.Ordinal) && !ansiSummary.Contains("sk-abcdefgh12345678", StringComparison.Ordinal) && !ansiSummary.Contains("super-secret-value", StringComparison.Ordinal), "摘要必须无 ANSI 且脱敏：" + ansiSummary);
+        var pluginSummary = HarnessOutputDiagnostics.BuildExitSummary(1, null, pluginErr);
+        Assert(pluginSummary.Contains("@deepseek-ai/dsh", StringComparison.Ordinal) && pluginSummary.Contains("停用或修复", StringComparison.Ordinal), "插件失败摘要应提示停用/修复：" + pluginSummary);
+
+        // ---- 5/6) 真实进程（node 可用时）：LaunchWebHost 异步排空有界尾部 + EnsureWebHostReadyAsync 提前退出统一诊断。 ----
+        var root = Path.Combine(Path.GetTempPath(), "codex-helper-harness-diagnostics-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            // node 是 Helper Harness 的真实运行环境；缺失时跳过真实进程断言（纯函数断言已覆盖清洗/脱敏/分类/摘要）。
+            var nodeVersion = string.Empty;
+            try
+            {
+                var probe = await DeepSeekHarnessProcess.RunAsync("node", ["--version"], timeout: TimeSpan.FromSeconds(10));
+                if (probe.ExitCode == 0) nodeVersion = probe.StdOut.TrimStart('\uFEFF').Trim();
+            }
+            catch { }
+            if (nodeVersion.StartsWith("v", StringComparison.Ordinal))
+            {
+                var script = Path.Combine(root, "host.mjs");
+                await File.WriteAllTextAsync(script, "console.log('HOST_STDOUT_LINE');\nconsole.error('HOST_STDERR_LINE');\nprocess.exitCode = 7;\n", new UTF8Encoding(false));
+                var process = DeepSeekHarnessProcess.LaunchWebHost("node", script);
+                Assert(process is not null, "LaunchWebHost 应成功启动子进程");
+                var host = process!;
+                using (host)
+                {
+                    await host.WaitForExitAsync();
+                    await DeepSeekHarnessProcess.WaitOutputDrainedAsync(host, TimeSpan.FromSeconds(5));
+                    var output = DeepSeekHarnessProcess.GetCapturedOutput(host);
+                    Assert(output is not null, "LaunchWebHost 启动的进程应有输出捕获");
+                    Assert(output!.StdoutTail.Contains("HOST_STDOUT_LINE", StringComparison.Ordinal), "stdout 尾部应捕获：" + output.StdoutTail);
+                    Assert(output.StderrTail.Contains("HOST_STDERR_LINE", StringComparison.Ordinal), "stderr 尾部应捕获：" + output.StderrTail);
+                    Assert(host.ExitCode == 7, "退出码应跟随子进程：" + host.ExitCode);
+                    var summary = HarnessOutputDiagnostics.BuildExitSummary(host.ExitCode, output.StdoutTail, output.StderrTail);
+                    Assert(summary.Contains("退出码 7", StringComparison.Ordinal) && summary.Contains("HOST_STDERR_LINE", StringComparison.Ordinal), "集成摘要应包含退出码与输出尾部：" + summary);
+                }
+
+                // EnsureWebHostReadyAsync 提前退出：返回统一诊断（一键配置/开启协作共用该消息）。
+                var fakeNode = Path.Combine(root, "node.exe");
+                var dshEntry = Path.Combine(root, "dsh", "lib", "bin.js");
+                Directory.CreateDirectory(Path.GetDirectoryName(dshEntry)!);
+                await File.WriteAllTextAsync(fakeNode, "fake");
+                await File.WriteAllTextAsync(dshEntry, "fake");
+                await File.WriteAllTextAsync(Path.Combine(root, "dsh", "package.json"), "{\"version\":\"0.1.0-rc.6\"}");
+                var exitScript = Path.Combine(root, "exit3.mjs");
+                await File.WriteAllTextAsync(exitScript, "console.error('BOOT_FAIL');\nprocess.exitCode = 3;\n", new UTF8Encoding(false));
+                var service = new DeepSeekHarnessService(new AppPaths(Path.Combine(root, "app")))
+                {
+                    DiscoveryFactory = () => new DeepSeekHarnessDiscovery
+                    {
+                        FileExists = path => File.Exists(path),
+                        PathDirectoryReader = () => Array.Empty<string>(),
+                        SpecialFolder = _ => root
+                    },
+                    NodeVersionReader = _ => "v24.19.0",
+                    DshVersionReader = _ => "0.1.0-rc.6",
+                    WebProfileReader = (_, _) => "Commands: web",
+                    WebHostPortProbe = (_, _, _) => Task.FromResult(false),
+                    RelayFactory = () => new UnconfirmedHarnessRelay(),
+                    WebHostLauncher = (_, _) => DeepSeekHarnessProcess.LaunchWebHost("node", exitScript)
+                };
+                var ready = await service.EnsureWebHostReadyAsync(fakeNode, dshEntry);
+                Assert(!ready.Ready && ready.Message.Contains("退出码 3", StringComparison.Ordinal) && ready.Message.Contains("BOOT_FAIL", StringComparison.Ordinal), "提前退出应返回统一诊断摘要：" + ready.Message);
+                service.StopWebHost();
+            }
+            else
+            {
+                Console.WriteLine("SKIP  真实进程部分：未找到 node（纯函数断言已覆盖清洗/脱敏/分类/摘要）。");
+            }
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    /// <summary>
+    /// 目录真相源与旧状态迁移（交付 1）：HARNESS_STATUS.json 为状态真相源、harness-tasks 仅作兼容索引；
+    /// 旧注册表状态可读且自动迁移到任务目录，真源优先、真源损坏宽容回退；PROGRESS.json 初始化/投影协议
+    /// （初始化写入 pending 清单，事件投影保留 worker 检查进度，可信终态归一 stage=done）。
+    /// </summary>
+    private static Task TestHarnessTaskStateStoreAsync()
+    {
+        return WithTempDirectoryAsync("harness-store", async root =>
+        {
+            var project = Path.Combine(root, "project");
+            var task = Path.Combine(project, ".codex-helper", "runs", "run-store");
+            Directory.CreateDirectory(task);
+            var registry = Path.Combine(root, "app", "harness-tasks");
+            Directory.CreateDirectory(registry);
+            var options = new JsonSerializerOptions { WriteIndented = true, Converters = { new HarnessUtcConverter() } };
+
+            // 1) 旧注册表状态兼容读取（legacy-registry），并自动迁移为任务目录真相源。
+            var legacy = new HarnessTaskStatus("run-store", project, task, "running", "旧注册表状态。",
+                DateTime.UtcNow.AddMinutes(-5), DateTime.UtcNow.AddMinutes(-1), 0, "http://127.0.0.1:3080",
+                SessionId: "sess-legacy", ContractFingerprint: TestFingerprint(task));
+            File.WriteAllText(Path.Combine(registry, "run-store.json"), JsonSerializer.Serialize(legacy, options));
+            var read = HarnessTaskStateStore.TryReadStatus(registry, "run-store");
+            Assert(read is not null && read.StateSource == "legacy-registry" && read.SessionId == "sess-legacy", "旧注册表状态应兼容读取（legacy-registry）。");
+            Assert(File.Exists(Path.Combine(task, HarnessTaskStateStore.StatusFileName)), "旧状态读取时应自动迁移为任务目录真相源。");
+
+            // 2) 真相源优先：真源内容更新后读回真源值（task-directory）。
+            var truth = read! with { State = "awaiting-gpt", Message = "真源已更新。", UpdatedUtc = DateTime.UtcNow };
+            File.WriteAllText(Path.Combine(task, HarnessTaskStateStore.StatusFileName), JsonSerializer.Serialize(truth, options));
+            var truthRead = HarnessTaskStateStore.TryReadStatus(registry, "run-store");
+            Assert(truthRead is not null && truthRead.StateSource == "task-directory" && truthRead.State == "awaiting-gpt", "真源存在时应优先任务目录真相源。");
+
+            // 3) 双写：WriteStatus 同时更新真源与兼容索引，且能被 PowerShell ConvertFrom-Json 读取（标准 JSON）。
+            var updated = truthRead! with { State = "failed", Message = "双写。", UpdatedUtc = DateTime.UtcNow };
+            HarnessTaskStateStore.WriteStatus(registry, updated);
+            Assert(File.Exists(Path.Combine(task, HarnessTaskStateStore.StatusFileName)) && File.Exists(Path.Combine(registry, "run-store.json")), "双写应同时更新真源与兼容索引。");
+            await AssertPowerShellReadsJsonAsync(Path.Combine(task, HarnessTaskStateStore.StatusFileName));
+
+            // 4) 真源损坏 → 宽容回退注册表索引，不抛异常。
+            File.WriteAllText(Path.Combine(task, HarnessTaskStateStore.StatusFileName), "{broken");
+            var fallback = HarnessTaskStateStore.TryReadStatus(registry, "run-store");
+            Assert(fallback is not null && fallback.State == "failed" && fallback.StateSource == "legacy-registry", "真源损坏应回退注册表索引。");
+
+            // 5) PROGRESS 协议：初始化写入 pending 检查清单与总额；事件投影保留 worker 检查进度；终态归一 stage=done。
+            HarnessTaskStateStore.EnsureProgress(task, "run-store", ["test-a", "test-b"]);
+            var progress = HarnessTaskStateStore.TryReadProgress(task)!;
+            Assert(progress.TotalChecks == 2 && progress.Checks is { Count: 2 } && progress.Checks.All(c => c.Status == "pending"), "PROGRESS 初始化应写入 pending 检查清单。");
+            File.WriteAllText(Path.Combine(task, HarnessTaskStateStore.ProgressFileName),
+                JsonSerializer.Serialize(new HarnessProgressFile(1, "run-store", "editing", "worker 进行中", DateTime.UtcNow, 1, 2, "test-b",
+                    [new HarnessProgressCheckItem("test-a", "passed"), new HarnessProgressCheckItem("test-b", "running")]), options), new UTF8Encoding(false));
+            HarnessTaskStateStore.ProjectProgress(task, updated with { State = "awaiting-gpt", Stage = "report", UpdatedUtc = DateTime.UtcNow });
+            var final = HarnessTaskStateStore.TryReadProgress(task)!;
+            Assert(final.Stage == "done" && final.CompletedChecks == 1 && final.CurrentCheck == "test-b", "终态投影应归一 stage=done 并保留 worker 检查进度。");
+        });
+    }
+
+    /// <summary>
+    /// 合同体检与 WORKER_ACCEPTANCE 派生（交付 2）：四份合同文件校验、manifest workerChecks 去重、
+    /// 视觉/GUI/发布职责移交 GPT、HANDOFF 要求截图交付时阻止并给出中文原因；派生文档不披露视觉项、
+    /// 执行规则包含 PROGRESS 原子更新要求。
+    /// </summary>
+    private static Task TestHarnessContractHealthAsync()
+    {
+        return WithTempDirectoryAsync("harness-contract-health", async root =>
+        {
+            var project = Path.Combine(root, "p");
+            var task = Path.Combine(project, ".codex-helper", "runs", "run-health");
+            Directory.CreateDirectory(task);
+            await File.WriteAllTextAsync(Path.Combine(task, "SPEC.md"), "spec");
+            await File.WriteAllTextAsync(Path.Combine(task, "HANDOFF.md"), "允许读取：src；允许修改：src；直接依赖：无。");
+            await File.WriteAllTextAsync(Path.Combine(task, "manifest.json"), "{}");
+
+            // 1) 空 workerChecks → 默认检查规则写入派生文档。
+            var health = HarnessContractHealth.Inspect(task);
+            Assert(!health.Blocked && health.WorkerChecks.Count == 0, "空 workerChecks 应通过体检：" + (health.BlockReason ?? "无"));
+            HarnessContractHealth.WriteWorkerAcceptance(task, health);
+            var wa = await File.ReadAllTextAsync(Path.Combine(task, HarnessContractHealth.WorkerAcceptanceFileName));
+            Assert(wa.Contains("无显式 workerChecks", StringComparison.Ordinal) && wa.Contains("Release 配置构建", StringComparison.Ordinal), "默认检查规则应写入 WORKER_ACCEPTANCE。");
+            Assert(wa.Contains("PROGRESS.json", StringComparison.Ordinal), "WORKER_ACCEPTANCE 执行规则应包含 PROGRESS 原子更新要求。");
+
+            // 2) 重复去重 + 视觉职责移交，派生文档不披露视觉项正文。
+            await File.WriteAllTextAsync(Path.Combine(task, "manifest.json"), """{"workerChecks":["dotnet build","dotnet build","screenshot the app"]}""");
+            var dedup = HarnessContractHealth.Inspect(task);
+            Assert(dedup.Normalized && dedup.WorkerChecks.SequenceEqual(["dotnet build"]) && dedup.DelegatedToGpt.Count == 1, "重复应去重、截图检查应移交 GPT。");
+            HarnessContractHealth.WriteWorkerAcceptance(task, dedup);
+            var wa2 = await File.ReadAllTextAsync(Path.Combine(task, HarnessContractHealth.WorkerAcceptanceFileName));
+            Assert(wa2.Split('\n').Count(line => line.TrimEnd() == "- dotnet build") == 1 && !wa2.Contains("screenshot the app", StringComparison.Ordinal), "WORKER_ACCEPTANCE 应去重且不披露视觉项。");
+
+            // 3) 要求截图交付 → 无法安全归一化，阻止并给出中文原因。
+            await File.WriteAllTextAsync(Path.Combine(task, "HANDOFF.md"), "实现执行器必须截图交付验收证据。");
+            var blocked = HarnessContractHealth.Inspect(task);
+            Assert(blocked.Blocked && blocked.BlockReason!.Contains("截图", StringComparison.Ordinal), "要求截图交付应阻止并给出中文原因。");
+
+            // 4) SPEC.md 缺失 → 阻止。
+            var noSpec = Path.Combine(project, ".codex-helper", "runs", "run-nospec");
+            Directory.CreateDirectory(noSpec);
+            var blockedSpec = HarnessContractHealth.Inspect(noSpec);
+            Assert(blockedSpec.Blocked && blockedSpec.BlockReason!.Contains("SPEC.md", StringComparison.Ordinal), "SPEC 缺失应阻止。");
+        });
+    }
+
+    /// <summary>
+    /// 事件到 PROGRESS.json（交付 3）：真实 WS 事件（turn/start、工具调用、turn/end）驱动任务目录
+    /// PROGRESS.json 的 stage/summary/updatedUtc 与检查清单（来自归一化 WORKER_ACCEPTANCE），
+    /// 可信终态归一 stage=done；同时验证状态真相源落任务目录与 WORKER_ACCEPTANCE 派生。
+    /// </summary>
+    private static async Task TestHarnessProgressFromEventsAsync()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "codex-helper-harness-progress-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var project = Path.Combine(root, "中文项目");
+            var task = Path.Combine(project, ".codex-helper", "runs", "run-progress-events");
+            Directory.CreateDirectory(task);
+            await File.WriteAllTextAsync(Path.Combine(task, "SPEC.md"), "合同正文-绝不进入命令行或提示");
+            await File.WriteAllTextAsync(Path.Combine(task, "HANDOFF.md"), "允许读取：src；允许修改：src；直接依赖：无。");
+            await File.WriteAllTextAsync(Path.Combine(task, "manifest.json"), """{"workerChecks":["scripts\\test.ps1"]}""");
+            var taskId = Path.GetFileName(task);
+
+            await using (var host = new FakeHarnessHost
+            {
+                Respond = (method, _) => method switch
+                {
+                    "session.create" => new JsonObject { ["sessionId"] = "sess-progress-1" },
+                    "session.prompt" => new JsonObject { ["accepted"] = true },
+                    _ => new JsonObject()
+                },
+                WsScripts =
+                [
+                    new Queue<string>([
+                        WsFrame("session/subscribed", "sess-progress-1"),
+                        WsFrame("session/event", "sess-progress-1", "turn/start", seq: 1),
+                        WsChunkFrame("sess-progress-1", 2, "tool_call", toolName: "apply_patch", toolArgs: "{\"file\":\"a.cs\"}"),
+                        "@delay:50",
+                        WsFrame("session/event", "sess-progress-1", "turn/end", "completed", seq: 3)
+                    ])
+                ]
+            })
+            {
+                await host.StartAsync();
+                var runner = new DeepSeekHarnessRunner(new AppPaths(Path.Combine(root, "app")))
+                {
+                    WebUrl = host.BaseUrl,
+                    RelayProbe = new ConfirmedHarnessRelay(),
+                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。"))
+                };
+                WriteValidReport(task, taskId, TestFingerprint(task));
+                var startTask = runner.StartAsync(project, task);
+                // 运行中：真实工具事件已投影 PROGRESS stage=edit（来自 MapToolStage），检查清单来自归一化 workerChecks。
+                await WaitUntilAsync(() => HarnessTaskStateStore.TryReadProgress(task) is { Stage: "edit" }, message: "真实工具事件应投影 PROGRESS stage=edit");
+                var mid = HarnessTaskStateStore.TryReadProgress(task)!;
+                Assert(mid.TotalChecks == 1 && mid.Checks is { Count: 1 } && mid.Checks[0].Status == "pending", "PROGRESS 应含归一化 workerChecks 清单：" + mid.TotalChecks);
+                Assert(!string.IsNullOrWhiteSpace(mid.Summary), "PROGRESS summary 应来自真实消息。");
+                Assert(File.Exists(Path.Combine(task, HarnessTaskStateStore.StatusFileName)), "运行中真实状态应落任务目录真相源。");
+                Assert(File.Exists(Path.Combine(task, HarnessContractHealth.WorkerAcceptanceFileName)), "合同体检应派生 WORKER_ACCEPTANCE.md。");
+
+                var status = await startTask;
+                Assert(status.State == "awaiting-gpt", "事件完成应进入 awaiting-gpt：" + status.State);
+                var final = HarnessTaskStateStore.TryReadProgress(task)!;
+                Assert(final.Stage == "done", "可信终态应投影 PROGRESS stage=done：" + final.Stage);
+                Assert(host.Calls.Count(call => call.Method == "session.create") == 1, "事件投影不得触发额外会话创建");
+            }
+        }
+        finally { TryDeleteDirectory(root); }
+    }
+
+    /// <summary>
+    /// 断流 HTTP 回退保持 PROGRESS 状态协议（交付 3）：WS 无帧 → 重连耗尽 → HTTP 增量轮询读取真实事件，
+    /// PROGRESS.json 继续更新并最终归一 stage=done；不虚假完成也不无限“运行中”，降级事实写入状态消息。
+    /// </summary>
+    private static async Task TestHarnessProgressDisconnectFallbackAsync()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "codex-helper-harness-progress-http-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var project = Path.Combine(root, "project");
+            var task = Path.Combine(project, ".codex-helper", "runs", "run-http-progress");
+            Directory.CreateDirectory(task);
+            await File.WriteAllTextAsync(Path.Combine(task, "SPEC.md"), "test");
+            await File.WriteAllTextAsync(Path.Combine(task, "manifest.json"), "{}");
+            var taskId = Path.GetFileName(task);
+            var historyEvents = new JsonArray(
+                new JsonObject { ["event"] = new JsonObject { ["type"] = "turn/start", ["seq"] = 1 } },
+                new JsonObject { ["event"] = new JsonObject { ["type"] = "assistant/chunk", ["seq"] = 2, ["data"] = new JsonObject { ["toolName"] = "apply_patch" } } },
+                new JsonObject { ["event"] = new JsonObject { ["type"] = "turn/end", ["seq"] = 3, ["data"] = new JsonObject { ["reason"] = new JsonObject { ["kind"] = "completed" } } } });
+            await using (var host = new FakeHarnessHost
+            {
+                Respond = (method, _) => method switch
+                {
+                    "session.create" => new JsonObject { ["sessionId"] = "sess-http-progress" },
+                    "session.prompt" => new JsonObject { ["accepted"] = true },
+                    "session.list" => new JsonObject { ["items"] = new JsonArray(new JsonObject { ["sessionId"] = "sess-http-progress", ["running"] = true }) },
+                    "session.history" => new JsonObject { ["events"] = historyEvents },
+                    _ => new JsonObject()
+                }
+            })
+            {
+                await host.StartAsync();
+                var runner = new DeepSeekHarnessRunner(new AppPaths(Path.Combine(root, "app")))
+                {
+                    WebUrl = host.BaseUrl,
+                    RelayProbe = new ConfirmedHarnessRelay(),
+                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。")),
+                    MaxEventReconnects = 1,
+                    EventReconnectDelay = TimeSpan.FromMilliseconds(10),
+                    HttpPollInterval = TimeSpan.FromMilliseconds(20),
+                    EventFrameTimeout = TimeSpan.FromMilliseconds(40)
+                };
+                WriteValidReport(task, taskId, TestFingerprint(task));
+                var startTask = runner.StartAsync(project, task);
+                // 断流应写明降级事实并转入 HTTP 回退；PROGRESS 仍由真实事件驱动更新，不因断流停滞。
+                await WaitUntilAsync(() => runner.TryRead(taskId) is { } mid
+                    && (mid.Message.Contains("HTTP", StringComparison.Ordinal) || mid.Message.Contains("事件流不可用", StringComparison.Ordinal)),
+                    message: "断流应写明降级事实并转入 HTTP 回退");
+                await WaitUntilAsync(() => HarnessTaskStateStore.TryReadProgress(task) is { Stage: not null } progress && progress.Stage != "starting", message: "断流后 HTTP 回退应继续投影 PROGRESS 阶段");
+                var status = await startTask;
+                Assert(status.State == "awaiting-gpt", "HTTP 回退应到达 awaiting-gpt：" + status.State);
+                var final = HarnessTaskStateStore.TryReadProgress(task)!;
+                Assert(final.Stage == "done", "HTTP 回退终态应投影 PROGRESS stage=done：" + final.Stage);
+            }
+        }
+        finally { TryDeleteDirectory(root); }
+    }
+
+    /// <summary>
+    /// 停止旧任务后新任务可启动（交付 4）：旧合同停止期间持久化取消意图（状态文件 + active 记录
+    /// cancel-requested），StartAsync 兑现取消为 cancelled 且不建会话；旧 session 核验终止后同项目
+    /// 新任务正常提交，旧任务终态不被新任务 starting 覆盖；终态后 active 记录清除。
+    /// </summary>
+    private static async Task TestHarnessStopThenNewTaskStartsAsync()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "codex-helper-harness-stopnew-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var project = Path.Combine(root, "project");
+            var taskA = Path.Combine(project, ".codex-helper", "runs", "run-stop-a");
+            var taskB = Path.Combine(project, ".codex-helper", "runs", "run-stop-b");
+            Directory.CreateDirectory(taskA);
+            Directory.CreateDirectory(taskB);
+            var taskIdA = Path.GetFileName(taskA);
+            var taskIdB = Path.GetFileName(taskB);
+            await File.WriteAllTextAsync(Path.Combine(taskA, "SPEC.md"), "合同 A");
+            await File.WriteAllTextAsync(Path.Combine(taskB, "SPEC.md"), "合同 B");
+            await File.WriteAllTextAsync(Path.Combine(taskB, "HANDOFF.md"), "允许读取：src；允许修改：src；直接依赖：无。");
+
+            await using (var host = new FakeHarnessHost
+            {
+                Respond = (method, _) => method switch
+                {
+                    "session.create" => new JsonObject { ["sessionId"] = "sess-stop-b" },
+                    "session.prompt" => new JsonObject { ["accepted"] = true },
+                    "session.list" => new JsonObject { ["items"] = new JsonArray(
+                        new JsonObject { ["sessionId"] = "sess-stop-a", ["running"] = false },
+                        new JsonObject { ["sessionId"] = "sess-stop-b", ["running"] = true }) },
+                    _ => new JsonObject()
+                },
+                WsScripts =
+                [
+                    new Queue<string>([
+                        WsFrame("session/subscribed", "sess-stop-b"),
+                        WsFrame("session/event", "sess-stop-b", "turn/start", seq: 1),
+                        WsFrame("session/event", "sess-stop-b", "turn/end", "completed", seq: 2)
+                    ])
+                ]
+            })
+            {
+                await host.StartAsync();
+                var runner = new DeepSeekHarnessRunner(new AppPaths(Path.Combine(root, "app")))
+                {
+                    WebUrl = host.BaseUrl,
+                    RelayProbe = new ConfirmedHarnessRelay(),
+                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。"))
+                };
+                // 旧任务 A：停止期间持久化取消意图（状态文件 + active 记录），新 starting 不得覆盖。
+                var cancelledA = new HarnessTaskStatus(taskIdA, project, taskA, "starting", "收到停止请求，等待会话创建前终止（尚未创建 Harness 会话）。",
+                    DateTime.UtcNow.AddMinutes(-10), DateTime.UtcNow.AddMinutes(-5), 0, host.BaseUrl,
+                    SessionId: "sess-stop-a", SessionState: DeepSeekHarnessRunner.CancelRequestedSessionState, ContractFingerprint: TestFingerprint(taskA));
+                HarnessTaskStateStore.WriteStatus(Path.Combine(root, "app", "harness-tasks"), cancelledA);
+                HarnessTaskStateStore.WriteActiveRecord(project, taskIdA, "sess-stop-a", "cancel-requested");
+
+                // 停止期间不得被新 starting 覆盖：再次提交同合同 → 兑现取消意图，不建会话不提交。
+                var resumed = await runner.StartAsync(project, taskA);
+                Assert(resumed.State == "cancelled" && resumed.Message.Contains("未提交", StringComparison.Ordinal), "旧合同应兑现取消意图：" + resumed.State + " / " + resumed.Message);
+                Assert(!host.Calls.Any(call => call.Method == "session.create"), "兑现旧合同取消时不得创建新会话");
+                Assert(runner.TryRead(taskIdA)!.State == "cancelled", "旧任务终态应为 cancelled");
+
+                // 新任务 B：旧 session 已核验终止（running=false）且项目未被占 → 正常提交，不 busy。
+                WriteValidReport(taskB, taskIdB, TestFingerprint(taskB));
+                var statusB = await runner.StartAsync(project, taskB);
+                Assert(statusB.State == "awaiting-gpt" && statusB.SessionId == "sess-stop-b", "停止旧任务且核验终止后，新任务应可启动：" + statusB.State + " / " + statusB.Message);
+                Assert(host.Calls.Count(call => call.Method == "session.create") == 1, "新任务应只创建一次会话");
+                Assert(runner.TryRead(taskIdA)!.State == "cancelled", "旧任务终态不得被新任务 starting 覆盖");
+                Assert(HarnessTaskStateStore.TryReadActiveRecord(project) is null, "全部终态后 active 记录应清除");
+            }
+        }
+        finally { TryDeleteDirectory(root); }
+    }
+
+    /// <summary>
+    /// 任务中心不重复提交（交付 5）：运行中对账与重复 StartAsync（同合同已终态/运行中接回）都不会
+    /// 产生第二次 session.create 或 session.prompt；任务中心刷新只读取同一状态协议。
+    /// </summary>
+    private static async Task TestHarnessTaskCenterNoResubmitAsync()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "codex-helper-harness-noresubmit-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var project = Path.Combine(root, "project");
+            var task = Path.Combine(project, ".codex-helper", "runs", "run-noresubmit");
+            Directory.CreateDirectory(task);
+            await File.WriteAllTextAsync(Path.Combine(task, "SPEC.md"), "test");
+            var taskId = Path.GetFileName(task);
+            await using (var host = new FakeHarnessHost
+            {
+                Respond = (method, _) => method switch
+                {
+                    "session.create" => new JsonObject { ["sessionId"] = "sess-nore" },
+                    "session.prompt" => new JsonObject { ["accepted"] = true },
+                    "session.list" => new JsonObject { ["items"] = new JsonArray(new JsonObject { ["sessionId"] = "sess-nore", ["running"] = true }) },
+                    _ => new JsonObject()
+                },
+                WsScripts =
+                [
+                    new Queue<string>([
+                        WsFrame("session/subscribed", "sess-nore"),
+                        "@wait:session.prompt",
+                        WsFrame("session/event", "sess-nore", "turn/start", seq: 1),
+                        "@delay:30",
+                        WsFrame("session/event", "sess-nore", "turn/end", "completed", seq: 2)
+                    ])
+                ]
+            })
+            {
+                await host.StartAsync();
+                var runner = new DeepSeekHarnessRunner(new AppPaths(Path.Combine(root, "app")))
+                {
+                    WebUrl = host.BaseUrl,
+                    RelayProbe = new ConfirmedHarnessRelay(),
+                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。"))
+                };
+                WriteValidReport(task, taskId, TestFingerprint(task));
+                var first = runner.StartAsync(project, task);
+                await WaitUntilAsync(() => runner.TryRead(taskId) is { } mid && mid.State == "running", message: "任务应进入 running");
+                // 任务中心刷新语义：运行中对账（不提交，不创建会话）。
+                await runner.ReconcileRecentTasksAsync();
+                Assert(host.Calls.Count(call => call.Method == "session.create") == 1 && host.Calls.Count(call => call.Method == "session.prompt") == 1, "刷新对账不得二次创建会话/提交提示");
+                var status1 = await first;
+                Assert(status1.State == "awaiting-gpt", "首次任务应完成：" + status1.State);
+                // 再次启动同一合同（任务中心场景）：已终态直接返回既有终态，不重复提交。
+                var second = await runner.StartAsync(project, task);
+                Assert(second.State == "awaiting-gpt", "重复启动同一已完成合同应返回既有终态：" + second.State);
+                Assert(host.Calls.Count(call => call.Method == "session.create") == 1, "重复启动不得二次创建会话");
+                Assert(host.Calls.Count(call => call.Method == "session.prompt") == 1, "重复启动不得二次提交提示");
+            }
+        }
+        finally { TryDeleteDirectory(root); }
+    }
+
+    /// <summary>
+    /// active-harness-task 记录语义（交付 4）：启动占位写入记录（带真实 sessionId），同项目第二任务
+    /// busy 时不覆盖活动记录；用户停止 → 终态后记录清除。启动/接回/停止/对账统一引用该记录。
+    /// </summary>
+    private static async Task TestHarnessActiveTaskRecordAsync()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "codex-helper-harness-activerecord-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var project = Path.Combine(root, "project");
+            var taskA = Path.Combine(project, ".codex-helper", "runs", "run-active-a");
+            var taskB = Path.Combine(project, ".codex-helper", "runs", "run-active-b");
+            Directory.CreateDirectory(taskA);
+            Directory.CreateDirectory(taskB);
+            var taskIdA = Path.GetFileName(taskA);
+            var taskIdB = Path.GetFileName(taskB);
+            await File.WriteAllTextAsync(Path.Combine(taskA, "SPEC.md"), "合同 A");
+            await File.WriteAllTextAsync(Path.Combine(taskB, "SPEC.md"), "合同 B");
+
+            await using (var host = new FakeHarnessHost
+            {
+                Respond = (method, _) => method switch
+                {
+                    "session.create" => new JsonObject { ["sessionId"] = "sess-active-a" },
+                    "session.prompt" => new JsonObject { ["accepted"] = true },
+                    "session.cancel" => new JsonObject { ["accepted"] = true },
+                    "session.list" => new JsonObject { ["items"] = new JsonArray() },
+                    _ => new JsonObject()
+                },
+                WsScripts =
+                [
+                    new Queue<string>([
+                        WsFrame("session/subscribed", "sess-active-a"),
+                        WsFrame("session/event", "sess-active-a", "turn/start", seq: 1),
+                        "@wait:session.cancel",
+                        WsFrame("session/event", "sess-active-a", "turn/end", "aborted", seq: 2)
+                    ])
+                ]
+            })
+            {
+                await host.StartAsync();
+                var runner = new DeepSeekHarnessRunner(new AppPaths(Path.Combine(root, "app")))
+                {
+                    WebUrl = host.BaseUrl,
+                    RelayProbe = new ConfirmedHarnessRelay(),
+                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。"))
+                };
+                var startA = runner.StartAsync(project, taskA);
+                await WaitUntilAsync(() => runner.TryRead(taskIdA) is { } mid && mid.State == "running", message: "任务 A 应进入 running");
+                var active = HarnessTaskStateStore.TryReadActiveRecord(project);
+                Assert(active is not null && active.TaskId == taskIdA && active.SessionId == "sess-active-a", "启动期间 active 记录应属于运行任务且带真实 sessionId");
+
+                // 同项目第二任务：项目租约被 A 原子占用 → busy，active 记录不被覆盖。
+                var busy = await runner.StartAsync(project, taskB);
+                Assert(busy.State == "busy", "同项目第二任务应 busy：" + busy.Message);
+                var active2 = HarnessTaskStateStore.TryReadActiveRecord(project);
+                Assert(active2 is not null && active2.TaskId == taskIdA, "busy 判定不得覆盖活动任务记录");
+
+                // 用户停止任务 A → 终态 cancelled，active 记录清除。
+                var stop = await runner.StopTaskAsync(taskIdA);
+                Assert(stop.Requested, "停止请求应发出：" + stop.Message);
+                var statusA = await startA;
+                Assert(statusA.State == "cancelled", "停止后终态应为 cancelled：" + statusA.State);
+                await WaitUntilAsync(() => HarnessTaskStateStore.TryReadActiveRecord(project) is null, message: "终态后 active 记录应清除");
             }
         }
         finally { TryDeleteDirectory(root); }

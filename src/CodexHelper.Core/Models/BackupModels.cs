@@ -5,7 +5,8 @@ public sealed record BackupSource(
     string DisplayName,
     string Path,
     bool UseDevelopmentExcludes = false,
-    IReadOnlyList<string>? AdditionalExcludedDirectoryNames = null);
+    IReadOnlyList<string>? AdditionalExcludedDirectoryNames = null,
+    IReadOnlyList<string>? AdditionalExcludedFileNames = null);
 
 public sealed class SnapshotManifest
 {
@@ -55,7 +56,8 @@ public sealed record RestoreRequest(
     string SnapshotId,
     string DestinationRoot,
     IReadOnlyCollection<string>? SourceIds = null,
-    bool OverwriteExisting = false);
+    bool OverwriteExisting = false,
+    IReadOnlyDictionary<string, string>? SourceTargetMap = null);
 
 public sealed record RestoreResult(
     OperationOutcome Outcome,

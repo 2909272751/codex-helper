@@ -190,13 +190,30 @@ public sealed class BackupRepository
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var file = selected[index];
-                var destination = PathSafety.CombineWithin(destinationRoot, Path.Combine(file.SourceId, file.RelativePath));
+                var sourceTarget = request.SourceTargetMap is not null && request.SourceTargetMap.TryGetValue(file.SourceId, out var mapped) && !string.IsNullOrWhiteSpace(mapped)
+                    ? mapped
+                    : file.SourceId;
+                var destination = PathSafety.CombineWithin(destinationRoot, Path.Combine(sourceTarget, file.RelativePath));
                 progress?.Report(new OperationProgress("恢复", file.RelativePath, index, selected.Count, restoredBytes, "正在解密并校验文件"));
                 try
                 {
-                    if (File.Exists(destination) && !request.OverwriteExisting)
+                    if (File.Exists(destination))
                     {
-                        issues.Add(new OperationIssue(destination, "目标已存在，已安全跳过。", true));
+                        if ((File.GetAttributes(destination) & FileAttributes.ReparsePoint) != 0)
+                        {
+                            issues.Add(new OperationIssue(destination, "目标文件是符号链接或重解析点，已拒绝覆盖。", false));
+                            continue;
+                        }
+                        if (!request.OverwriteExisting)
+                        {
+                            issues.Add(new OperationIssue(destination, "目标已存在，已安全跳过。", true));
+                            continue;
+                        }
+                    }
+                    var reparseDirectory = FindReparsePointDirectory(destinationRoot, destination);
+                    if (reparseDirectory is not null)
+                    {
+                        issues.Add(new OperationIssue(destination, $"目标路径包含符号链接/重解析点目录，已拒绝：{reparseDirectory}", false));
                         continue;
                     }
                     Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
@@ -310,6 +327,7 @@ public sealed class BackupRepository
                 {
                     var info = new FileInfo(file);
                     if ((info.Attributes & FileAttributes.ReparsePoint) != 0) continue;
+                    if (IsExcludedFileName(info.Name, source.AdditionalExcludedFileNames)) continue;
                     yield return new FileCandidate(source, file, Path.GetRelativePath(full, file));
                 }
             }
@@ -344,6 +362,48 @@ public sealed class BackupRepository
         var plain = CryptoEnvelope.Decrypt(envelope, key, Encoding.UTF8.GetBytes(associatedData));
         try { return JsonStore.Deserialize<T>(plain); }
         finally { CryptographicOperations.ZeroMemory(plain); }
+    }
+
+    /// <summary>
+    /// 从恢复根到目标父目录逐级检查中间目录是否为符号链接/重解析点（junction 等），
+    /// 防止恢复写入逃逸到 DSH Home 之外；恢复根自身不受限制（可能位于 OneDrive 等重解析点下）。
+    /// </summary>
+    private static string? FindReparsePointDirectory(string destinationRoot, string destination)
+    {
+        var relative = Path.GetRelativePath(destinationRoot, Path.GetDirectoryName(destination) ?? destination);
+        if (string.IsNullOrWhiteSpace(relative) || relative == ".") return null;
+        var current = destinationRoot;
+        foreach (var part in relative.Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries))
+        {
+            current = Path.Combine(current, part);
+            if (!Directory.Exists(current)) continue;
+            var info = new DirectoryInfo(current);
+            if ((info.Attributes & FileAttributes.ReparsePoint) != 0) return current;
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// 文件级排除匹配：以 '~' 开头按前缀匹配（Office/编辑器临时文件），以 '.' 开头按后缀匹配
+    /// （扩展名，如 .tmp），其余按文件名精确匹配；大小写不敏感。
+    /// </summary>
+    private static bool IsExcludedFileName(string name, IReadOnlyList<string>? patterns)
+    {
+        if (patterns is null || patterns.Count == 0) return false;
+        foreach (var pattern in patterns)
+        {
+            if (string.IsNullOrEmpty(pattern)) continue;
+            if (pattern.StartsWith('~'))
+            {
+                if (name.StartsWith(pattern, StringComparison.OrdinalIgnoreCase)) return true;
+            }
+            else if (pattern.Length > 1 && pattern[0] == '.')
+            {
+                if (name.EndsWith(pattern, StringComparison.OrdinalIgnoreCase)) return true;
+            }
+            else if (string.Equals(name, pattern, StringComparison.OrdinalIgnoreCase)) return true;
+        }
+        return false;
     }
 
     private static string SafeMessage(Exception ex) => ex switch

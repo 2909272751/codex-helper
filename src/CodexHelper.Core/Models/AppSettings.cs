@@ -37,6 +37,15 @@ public sealed class AppSettings
     public string HarnessNodePath { get; set; } = string.Empty;
     /// <summary>用户显式选择的 dsh JS 入口（lib/bin.js）路径（Harness 模式；空表示用自动发现）。</summary>
     public string HarnessDshEntryPath { get; set; } = string.Empty;
+    /// <summary>Harness 执行模式：codex-contract / standard / minimal / plan。</summary>
+    public string HarnessExecutionMode { get; set; } = "codex-contract";
+    /// <summary>Harness 权限模式。用户要求推荐设置默认启用完全控制。</summary>
+    public string HarnessPermissionMode { get; set; } = "danger-full-access";
+    /// <summary>Helper 合同执行强度：quick / standard / deep；不是模型 reasoning_effort。</summary>
+    public string HarnessExecutionStrength { get; set; } = "standard";
+    public bool HarnessReuseSession { get; set; } = true;
+    public bool HarnessAutoStartHost { get; set; } = true;
+    public bool HarnessReturnToGptOnFailure { get; set; } = true;
 }
 
 public static class CodexRootResolver

@@ -8,4 +8,9 @@
   <ItemGroup>
     <ProjectReference Include="..\CodexHelper.Core\CodexHelper.Core.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <Content Include="Assets\harness-event-relay.mjs">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
 </Project>

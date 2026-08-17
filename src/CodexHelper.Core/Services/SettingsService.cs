@@ -74,6 +74,9 @@ public sealed class SettingsService
         settings.WorkspaceRoots = NormalizeDistinct(settings.WorkspaceRoots);
         settings.ProtectedProjectPaths = NormalizeDistinct(settings.ProtectedProjectPaths);
         settings.CollaborationMode = CollaborationModeExtensions.ParseCollaborationMode(settings.CollaborationMode).ToPersisted();
+        settings.HarnessExecutionMode = HarnessExecutionOptions.NormalizeMode(settings.HarnessExecutionMode);
+        settings.HarnessPermissionMode = HarnessExecutionOptions.NormalizePermission(settings.HarnessPermissionMode);
+        settings.HarnessExecutionStrength = HarnessExecutionOptions.NormalizeStrength(settings.HarnessExecutionStrength);
         if (!string.IsNullOrWhiteSpace(settings.HarnessNodePath))
             settings.HarnessNodePath = Path.GetFullPath(settings.HarnessNodePath);
         store.Save(paths.SettingsPath, settings);
@@ -85,4 +88,3 @@ public sealed class SettingsService
         .Distinct(StringComparer.OrdinalIgnoreCase)
         .ToList();
 }
-

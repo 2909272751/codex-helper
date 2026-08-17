@@ -28,11 +28,8 @@ public sealed class HarnessRunnerLocator
         if (!string.IsNullOrWhiteSpace(baseDirectory))
             candidates.Add(Path.Combine(baseDirectory, RunnerFileName));
 
-        var localAppData = SafeGet(LocalAppDataProvider);
-        if (!string.IsNullOrWhiteSpace(localAppData))
-            candidates.Add(Path.Combine(localAppData, "Programs", "Codex Helper", RunnerFileName));
-
-        // 开发输出：从进程目录向上找仓库根（含 CodexHelper.sln），检查 Release/Debug 输出。
+        // 开发输出优先：从进程目录向上找仓库根（含 CodexHelper.sln），检查 Release/Debug 输出。
+        // 仓库内开发时优先使用当前仓库 Release/Debug Runner，再回退安装版（与 invoke-harness.ps1 一致）。
         var directory = baseDirectory;
         for (var i = 0; i < MaxRepositorySearchDepth && !string.IsNullOrWhiteSpace(directory); i++)
         {
@@ -52,6 +49,10 @@ public sealed class HarnessRunnerLocator
             if (string.IsNullOrEmpty(parent) || string.Equals(parent, directory, StringComparison.Ordinal)) break;
             directory = parent;
         }
+
+        var localAppData = SafeGet(LocalAppDataProvider);
+        if (!string.IsNullOrWhiteSpace(localAppData))
+            candidates.Add(Path.Combine(localAppData, "Programs", "Codex Helper", RunnerFileName));
 
         foreach (var candidate in candidates)
         {

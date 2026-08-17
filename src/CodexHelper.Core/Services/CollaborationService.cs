@@ -121,7 +121,7 @@ public sealed class CollaborationService
         existing = RemoveMarkedBlock(existing, HarnessGuidanceStart, HarnessGuidanceEnd).TrimEnd();
         var block = $$"""
 {{HarnessGuidanceStart}}
-For implementation tasks that change project files, GPT is the planner and judge. This device uses the DeepSeek Harness (developer preview) as the implementation executor. GPT keeps the same planning/acceptance boundary as Reasonix: GPT plans, Harness implements, GPT independently re-runs focused acceptance. Route tasks through the managed `harness-executor` skill runner with only the absolute project root and the unique task directory; the task body is read only from files (SPEC.md/HANDOFF.md/manifest.json), never passed on the command line. Do not automate task submission by clicking the Harness Web UI. If runtime capability probing cannot confirm task submission, event stream and cancellation, honestly report "Web available but automatic relay unavailable" instead of claiming real-time collaboration or falling back to invisible headless. Only listen on 127.0.0.1; closing the browser does not stop the task. Credentials, API keys and task bodies must never appear on the command line; pass credentials only via controlled environment variables / existing secure storage; redact logs. GPT owns visual acceptance and gptChecks/releaseChecks; the Harness runner performs implementation and workerChecks only. Harness version 0.1.0-rc.5 is only the known compatibility baseline: newer valid semantic versions may be used when runtime capability probing passes; never silently use the literal `latest`. Node requirement is >=22.19.0 (LTS) or >=24.0.0.
+For implementation tasks that change project files, GPT is the planner and judge. This device uses the DeepSeek Harness (developer preview) as the implementation executor. GPT keeps the same planning/acceptance boundary as Reasonix: GPT plans, Harness implements, GPT independently re-runs focused acceptance. Only medium-to-large implementation tasks must be routed to the Harness: small low-risk changes (at most 2 files / about 80 lines, no public API, data format, install, release or security-boundary changes, no cross-module design) are implemented and accepted directly by GPT, unless the user explicitly requests the Harness. Route tasks through the managed `harness-executor` skill runner with only the absolute project root and the unique task directory; the task body is read only from files (SPEC.md/HANDOFF.md/manifest.json), never passed on the command line. Do not automate task submission by clicking the Harness Web UI. If runtime capability probing cannot confirm task submission, event stream and cancellation, honestly report "Web available but automatic relay unavailable" instead of claiming real-time collaboration or falling back to invisible headless. Only listen on 127.0.0.1; closing the browser does not stop the task. Credentials, API keys and task bodies must never appear on the command line; pass credentials only via controlled environment variables / existing secure storage; redact logs. GPT owns visual acceptance and gptChecks/releaseChecks; the Harness runner performs implementation and workerChecks only. A finished Harness session is awaiting-gpt, not product completion: GPT must independently inspect the diff and run focused acceptance before the delivery is considered complete. Harness version 0.1.0-rc.5 is only the known compatibility baseline: newer valid semantic versions may be used when runtime capability probing passes; never silently use the literal `latest`. Node requirement is >=22.19.0 (LTS) or >=24.0.0.
 {{HarnessVisualBoundaryRule}}
 {{HarnessGuidanceEnd}}
 """;
@@ -181,11 +181,15 @@ if (-not [IO.File]::Exists((Join-Path $task 'SPEC.md'))) { throw '任务目录�
 
 function Find-HarnessRunner {
     $candidates = @()
-    # 1) 与脚本同目录（脚本被放入安装目录时）。
-    $candidates += Join-Path $PSScriptRoot 'CodexHelper.HarnessRunner.exe'
-    # 2) Helper 标准安装目录。
-    $candidates += Join-Path $env:LOCALAPPDATA 'Programs\Codex Helper\CodexHelper.HarnessRunner.exe'
-    # 3) 开发输出：从脚本位置向上找仓库根（CodexHelper.sln），检查 Release/Debug 输出。
+    # Development contract: when the requested project is Codex Helper itself,
+    # use its freshly built Runner before the installed copy.
+    if ([IO.File]::Exists((Join-Path $project 'CodexHelper.sln'))) {
+        foreach ($config in @('Release', 'Debug')) {
+            $candidates += Join-Path $project ("src\CodexHelper.HarnessRunner\bin\" + $config + "\net8.0-windows\CodexHelper.HarnessRunner.exe")
+        }
+    }
+    # 1) 开发输出优先：从脚本位置向上找仓库根（CodexHelper.sln），
+    #    仓库内开发时使用当前仓库 Release/Debug Runner，先于安装版。
     $dir = $PSScriptRoot
     for ($i = 0; $i -lt 8; $i++) {
         if ([IO.File]::Exists((Join-Path $dir 'CodexHelper.sln'))) {
@@ -195,9 +199,13 @@ function Find-HarnessRunner {
             break
         }
         $parent = Split-Path $dir -Parent
-        if ($parent -eq $dir) { break }
+        if ([string]::IsNullOrWhiteSpace($parent) -or $parent -eq $dir) { break }
         $dir = $parent
     }
+    # 2) 与脚本同目录（脚本被放入安装目录时）。
+    $candidates += Join-Path $PSScriptRoot 'CodexHelper.HarnessRunner.exe'
+    # 3) Helper 标准安装目录（回退）。
+    $candidates += Join-Path $env:LOCALAPPDATA 'Programs\Codex Helper\CodexHelper.HarnessRunner.exe'
     foreach ($candidate in $candidates) {
         if ([IO.File]::Exists($candidate)) { return $candidate }
     }
@@ -232,6 +240,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File invoke-harness.ps1 -Proj
 
 ## 任务合同与进度
 
+- 仅中大型实现任务必须委派给 Harness：微小低风险修改（预计不超过 2 个文件、约 80 行，不改公共接口/数据格式/安装发布/安全边界，无需跨模块设计）由 GPT 直接实现并验收；用户明确指定 Harness 时除外。
 - 任务合同（SPEC.md）与交接说明（HANDOFF.md）位于任务目录内；合同与进度说明优先使用简体中文。
 - 只读取 SPEC.md、HANDOFF.md、manifest.json（绝不读取 ACCEPTANCE.md；视觉验收由 GPT 独立进行）。
 - 完成后检查实际改动文件，并只重跑受影响的聚焦验收检查（增量验收）；高风险、发布、安全或合同强制项必须跑完整回归。

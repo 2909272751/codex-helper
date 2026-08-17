@@ -2,17 +2,17 @@
 
 Codex Helper 是面向 Windows 10/11 的 Codex 专属工作台，统一管理官方账号、第三方 Responses API、重要项目、个人 Skills、Codex 配置、加密增量备份与批量迁移。
 
-当前开发版本：`4.0.1`
+当前开发版本：`4.3.0`
 
 ![Codex Helper Logo](assets/CodexHelper-256.png)
 
 ## 下载安装
 
-**Codex Helper v4.0.1** 精简一键安装包（GitHub Release）：
+**Codex Helper v4.3.0** 精简一键安装包（GitHub Release，当前稳定版）：
 
-- 精简安装包：`codex-helper-v4.0.1-setup.exe`（依赖 Windows x64 的 **.NET 8 Desktop Runtime**，安装 .NET 8 SDK 也可满足）
-- [打开 v4.0.1 Release 页面](https://github.com/2909272751/codex-helper/releases/tag/v4.0.1)
-- [直接下载精简安装包](https://github.com/2909272751/codex-helper/releases/download/v4.0.1/codex-helper-v4.0.1-setup.exe)
+- 精简安装包：`codex-helper-v4.3.0-setup.exe`（依赖 Windows x64 的 **.NET 8 Desktop Runtime**，安装 .NET 8 SDK 也可满足）
+- [打开 v4.3.0 Release 页面](https://github.com/2909272751/codex-helper/releases/tag/v4.3.0)
+- [直接下载精简安装包](https://github.com/2909272751/codex-helper/releases/download/v4.3.0/codex-helper-v4.3.0-setup.exe)
 - [微软官方 .NET 8 下载页](https://dotnet.microsoft.com/zh-cn/download/dotnet/8.0)
 
 > 若安装器提示缺少运行库，请先安装 **.NET 8 Desktop Runtime（Windows x64）**，再重新打开并运行本安装包。自 `v3.3.3` 起项目只发布精简安装包与对应的 SHA-256 校验文件，不再提供完整离线安装包或便携 ZIP。
@@ -30,6 +30,10 @@ Codex Helper 是面向 Windows 10/11 的 Codex 专属工作台，统一管理官
 选择 Reasonix 时：实现类任务按规模三档路由——微任务（≤2 文件 / 约 80 行、低风险、无跨模块接口）由 GPT 直接实现；其余交给单个 Reasonix 合同；仅中大型且含两个独立模块、接口冻结、写集合不重叠、可机械合并时才 Reasonix 有限并行。页面可管理 Reasonix 默认模型、权限、执行强度、最近任务（停止/重试/返回原任务）以及 DeepSeek 缓存统计。
 
 选择 DeepSeek Harness 时：GPT 仍负责规划与验收，Harness 负责实现；任务优先进入同一个持久 Web Host 会话，用户可在官方 Harness Web UI 实时查看事件并干预。Harness 设置分区只检测并启动你已有环境中的 Node/Harness，**不安装** Node、npm 包或 Harness；**可用性由入口与能力探测决定**——Harness 是否可用不再用版本硬白名单，而是由实际入口、CLI、Web profile 与中继能力探测决定，版本只用于风险提示和诊断（以已知基线 `@deepseek-ai/dsh@0.1.0-rc.5` 为参照分档：已知基线 / 同系列新版本 / 跨次版本未验证 / 跨主版本未验证 / 非法损坏，禁止静默使用 `latest`）。入口完整且必要能力通过时，未知新版本（如 rc.7、0.1.0、0.2.0）也可直接使用，界面显示“新版本已验证”；跨主版本显示更醒目的警告。Node 需 `22.19+`（LTS）或 `24+`；Web Host 仅监听 `127.0.0.1`。探测使用绝对 `node.exe` + dsh `lib/bin.js` 做无副作用 `--version`/`--help` 检查（不依赖 PATH、不安装或更新包），结果按 node/dsh 入口路径、文件时间/大小与实际版本缓存，升级或文件变化自动失效，损坏/无权限/旧结构安全重建，且绝不写入凭据、环境变量值或任务正文；“重新检测”会强制绕过缓存。当前机器没有 Node 是正常降级场景：诊断会解释缺少什么并提供官方下载入口，开启按钮不会误报成功。Web Host 状态与自动中继状态分开：CLI/Web profile 通过只代表能启动 Web；只有任务提交、事件流、取消全部由运行时能力探测确认才宣称“实时协作可用”，否则界面诚实显示“Web 可用但自动中继不可用”，不伪造会话或回退成不可见 headless 后仍声称实时可见。
+
+Harness 卡片提供“一键配置 Codex + Harness”：保存已探测的绝对 Node/CLI 路径、启用 Harness 协作规则、立即启动并健康检查本机 Host，同时为当前 Windows 用户创建低权限计划任务。计划任务执行已安装的 `CodexHelper.exe` 隐藏宿主模式（`--harness-host --node <绝对路径> --dsh <绝对路径>`），隐藏宿主先探测 `127.0.0.1:3080`：Host 已健康则安静退出，否则无窗口（`CreateNoWindow`、不经过 Shell）启动绝对 `node.exe + dsh web --host 127.0.0.1` 并等待子进程——不再每分钟直接启动控制台版 `node.exe`，避免 Node.js 窗口闪现；不依赖 Reasonix、终端、PATH 或 Helper 常驻。登录时启动，并每分钟做一次无重入补位（`IgnoreNew`），Host 意外退出后可自动恢复。任务无运行时长上限、允许电池供电、失败最多按一分钟间隔重启三次。旧版直接启动 `node.exe` 的计划任务会被识别为 stale，重新配置即替换。“移除登录自启动”只删除后续自启动，不终止当前任务或 Host；公司策略禁止计划任务时会明确报错，不静默退化到启动文件夹。
+
+Harness 任务中心刷新时会把本地 `running/starting` 状态与 Host 的真实 `session.list`/`session.history` 对账：一次列表核对所有活动记录，真实会话已结束时自动写回 completed/cancelled/failed（按 history 最后一个 `turn/end` 的 reason.kind 映射），会话在 Host 中不存在时诚实标记失败、绝不伪造完成；Host 不可达或响应不可信时不改写任何状态，列表仍按本地状态文件展示（离线兼容）。
 
 `3.3.1` 修复 Reasonix 1.19.x 在“完全权限”下因旧权限参数而于首轮模型调用前立即退出的问题；完全权限现在使用经实际写文件验证的兼容模式。
 
@@ -78,6 +82,7 @@ Helper 会从多个来源自动发现 Reasonix CLI（不进行全盘递归扫描
 - 官方账号健康详情提供套餐、双额度窗口、重置时间和本机检测历史；可串行刷新全部官方账号。
 - API 切换同时同步 `config.toml`、状态数据库与会话 JSONL，任何一步失败都回滚。
 - 自动发现个人 Skills、Codex 关键数据与 Git 项目，一键创建认证加密增量快照。
+- 一键备份同时保护 DeepSeek Harness（DSH）用户 Skills、Agent 预设、Profile 配置与用户插件（来自 `$DSH_HOME`，默认 `~/.dsh`），并可把快照中的 DSH 数据安全恢复到当前设备的 DSH Home；批量迁移包可选包含 DSH Skills 与插件。均不含账号密钥、会话和附件。
 - `.chbundle` 批量导出/导入；账号令牌和 API Key 在已加密迁移包内再次独立加密。
 - 直接迁移旧版 `codex-account-switcher` 与 `codex-api-switcher` 数据，导入后不自动激活。
 - 独立 Rescue 程序可在主程序无法启动时将快照恢复到新目录。

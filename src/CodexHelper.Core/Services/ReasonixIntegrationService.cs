@@ -1066,6 +1066,10 @@ $script:startedUtc=$started
 $script:remainingPercent=$null; $script:currentCheck=''
 $script:contractDiagnostic=$null; $script:contractNormalized=$false; $script:contractBlocked=$false; $script:contractBlockReason=$null
 $script:gitBaseline=$null
+# 真实进展守卫（no-progress）状态：同一模型回合内无进展事件计数/触发标记/阈值与观察快照。
+# 阈值按“无进展事件数量”定义，不是固定时长或任务步骤上限。
+$script:noProgressCount=0; $script:noProgressTriggered=$false; $script:noProgressThreshold=600
+$script:progressSnapshotReady=$null; $script:reportFingerprint=$null; $script:progressFingerprint=$null; $script:changesFingerprint=$null
 function Get-Progress {
   $progressPath=Join-Path $task 'PROGRESS.json'
   if(-not [IO.File]::Exists($progressPath)){ return $null }
@@ -1323,7 +1327,13 @@ function Resolve-ExecutionPlan {
     $b=0; if($budgetRaw -and [int]::TryParse([string]$budgetRaw,[ref]$b) -and $b -gt 0){ $budget=$b }
     if($manifest.PSObject.Properties['estimatedSteps'] -and -not $manifest.PSObject.Properties['budgetSteps'] -and -not $manifest.PSObject.Properties['executionBudgetSteps'] -and -not $manifest.PSObject.Properties['maxSteps'] -and -not $manifest.PSObject.Properties['executionMaxSteps']){ $script:manifestDiagnostic='manifest.json 使用了不支持的 estimatedSteps 字段，预算按推断处理（请改用 budgetSteps）' }
     $checksRaw=if($manifest.PSObject.Properties['workerChecks']){$manifest.workerChecks}elseif($manifest.PSObject.Properties['executionWorkerChecks']){$manifest.executionWorkerChecks}else{$null}
-    if($checksRaw -and $checksRaw -is [System.Array]){ $checks=@($checksRaw | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }) }
+    # 单项 workerChecks 修复：Windows PowerShell 5.1 的 ConvertFrom-Json 会把单元素 JSON 数组解包为标量，
+    # 必须把标量包回数组，否则单项合同会被错误降级为“无显式 workerChecks”。空数组/缺失字段保持空、
+    # 多项保持数组、旧 executionWorkerChecks 别名继续兼容。
+    if($null-ne$checksRaw){
+      if($checksRaw -is [System.Array]){ $checks=@($checksRaw | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }) }
+      elseif(-not [string]::IsNullOrWhiteSpace([string]$checksRaw)){ $checks=@([string]$checksRaw) }
+    }
   }
   if(-not $intensity){
     $default='auto'
@@ -1530,6 +1540,84 @@ function Get-ChangedFiles {
     return $changed
   }catch{ return @() }
 }
+function Get-ReportFingerprint {
+  # EXECUTION_REPORT.md 写入指纹（最近写入时间+大小），供真实进展守卫检测“报告写入”。
+  if([IO.File]::Exists($report)){
+    try{ $info=[IO.FileInfo]::new($report); return ([string]$info.LastWriteTimeUtc.Ticks)+'|'+$info.Length }catch{ return '' }
+  }
+  return ''
+}
+function Get-ProjectChangesFingerprint {
+  # 轻量项目修改指纹：git 脏文件（tracked modified + untracked）列表 + 大小 + 最近写入时间。
+  # 运行时元数据（.codex-helper/runs）必须排除：events.jsonl、metrics.json、状态/报告会随事件流
+  # 自己增长，若计入会把“日志持续写入”误判成源码进展，导致 no-progress 永远无法触发。
+  # 不做内容哈希，避免守卫在循环内造成性能尖刺；git 不可用（基线 $null）时返回空，绝不误报推进。
+  if($null-eq$script:gitBaseline){ return '' }
+  try{
+    $tracked=@(& git -C $project diff --name-only HEAD 2>$null)
+    $untracked=@(& git -C $project ls-files --others --exclude-standard 2>$null)
+    $files=@(($tracked + $untracked) |
+      Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+      ForEach-Object { $_.Trim() } |
+      Where-Object { $_ -notmatch '^(?i:\.codex-helper[\\/](runs|runtime|sessions)([\\/]|$))' } |
+      Select-Object -Unique)
+    $parts=New-Object System.Collections.Generic.List[string]
+    foreach($f in $files){
+      $full=Join-Path $project $f
+      if([IO.File]::Exists($full)){
+        try{
+          $info=[IO.FileInfo]::new($full)
+          $parts.Add($f.ToLowerInvariant()+'='+$info.Length+':'+$info.LastWriteTimeUtc.Ticks)
+        }catch{ $parts.Add($f.ToLowerInvariant()+'=unreadable') }
+      } else { $parts.Add($f.ToLowerInvariant()+'=missing') }
+    }
+    return ($parts | Sort-Object) -join '|'
+  }catch{ return $script:changesFingerprint }
+}
+function Test-RealProgress {
+  # 真实进展检测：项目实际修改（git 指纹）/标准进度文件更新（PROGRESS.json updatedUtc/stage/checks）/报告写入
+  # （EXECUTION_REPORT.md 出现或变化）任一发生即视为有效推进并重置观察窗口。首次调用只建立基线快照，不算推进。
+  if($null-eq$script:progressSnapshotReady){
+    $script:progressSnapshotReady=$true
+    $script:reportFingerprint=Get-ReportFingerprint
+    $script:progressFingerprint=$null
+    $p1=Get-Progress
+    if($null-ne$p1){ $script:progressFingerprint=[string]$p1.updatedUtc+'|'+$p1.stage+'|'+$p1.completedChecks+'|'+$p1.totalChecks }
+    $script:changesFingerprint=Get-ProjectChangesFingerprint
+    return $false
+  }
+  $rf=Get-ReportFingerprint
+  if($rf -ne $script:reportFingerprint){ $script:reportFingerprint=$rf; return $true }
+  $pf=$null
+  $p2=Get-Progress
+  if($null-ne$p2){ $pf=[string]$p2.updatedUtc+'|'+$p2.stage+'|'+$p2.completedChecks+'|'+$p2.totalChecks }
+  if($pf -ne $script:progressFingerprint){ $script:progressFingerprint=$pf; return $true }
+  $cf=Get-ProjectChangesFingerprint
+  if($cf -ne $script:changesFingerprint){ $script:changesFingerprint=$cf; return $true }
+  return $false
+}
+function Stop-ReasonixTree {
+  # 终止本宿主派生的 Reasonix CLI 及后代进程树（no-progress 终止时调用），避免无进展循环残留占用模型/资源。
+  try{
+    $all=@(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
+    if($all.Count -eq 0){ return }
+    $ids=New-Object 'System.Collections.Generic.HashSet[int]'
+    foreach($p in $all){
+      if([int]$p.ProcessId -eq $PID){ continue }
+      $ancestor=[int]$p.ParentProcessId; $guard=0
+      while($ancestor -gt 0 -and $guard -lt 64){
+        if($ancestor -eq $PID){ [void]$ids.Add([int]$p.ProcessId); break }
+        $parent=@($all | Where-Object { [int]$_.ProcessId -eq $ancestor } | Select-Object -First 1)
+        if($parent.Count -eq 0){ break }
+        $ancestor=[int]$parent[0].ParentProcessId; $guard++
+      }
+    }
+    foreach($id in $ids){
+      try{ Stop-Process -Id $id -Force -ErrorAction SilentlyContinue }catch{}
+      try{ & taskkill /PID $id /T /F 2>$null | Out-Null }catch{}
+    }
+  }catch{}
+}
 function Recommend-AcceptanceScope {
   # 影响范围增量验收映射（B5）：与 C# ReasonixAcceptanceScope.Recommend 同规则。
   param([string[]]$files)
@@ -1685,7 +1773,17 @@ try{
   $runArgs += $permissionArgs
   # Reasonix 1.19.x requires every option before the final task text.
   $runArgs+=@('--events-jsonl','--metrics',$metrics,$prompt)
-  & '{{{executable.Replace("'", "''")}}}' @runArgs 2>$helperErr | ForEach-Object {
+  # PowerShell 直接调用 .cmd/.bat 在部分宿主（尤其测试与受限桌面）会报“程序无法运行”。
+  # 实际 Reasonix 是 .exe，但为兼容可验证的包装器/旧安装入口，批处理文件显式交给 cmd.exe。
+  $reasonixExecutable='{{{executable.Replace("'", "''")}}}'
+  # 用脚本块承接分支后再接管道，避免 PowerShell 把 `else { ... } |` 解析成无效语法。
+  & {
+    if($reasonixExecutable -match '(?i)\.(cmd|bat)$'){
+      & cmd.exe '/d' '/c' $reasonixExecutable @runArgs 2>$helperErr
+    } else {
+      & $reasonixExecutable @runArgs 2>$helperErr
+    }
+  } | ForEach-Object {
     $line=$_.ToString()
     [IO.File]::AppendAllText($events,$line+[Environment]::NewLine,[Text.UTF8Encoding]::new($false))
     $script:count++
@@ -1712,6 +1810,28 @@ try{
         $script:cacheHit+= [long]($obj.usage.cache_hit_tokens)
       }
     }
+    # ——真实进展守卫（no-progress）——同一模型回合内持续出现大量 reasoning/text/tool 等消耗性事件，但
+    # PROGRESS.json、EXECUTION_REPORT.md 与项目实际修改均无任何有效推进时，以明确 no-progress 失败态结束
+    # 并写入失败报告、终止/清理子进程；它不是固定时长或任务步骤上限。项目修改/标准进度文件更新/workerCheck
+    # 进度/报告写入/模型新回合（turn_started）/明确终态（run_done|final_readiness）任一发生即重置观察窗口。
+    if(-not $script:noProgressTriggered -and -not [string]::IsNullOrWhiteSpace($kind)){
+      if($kind -eq 'turn_started' -or $kind -eq 'run_done' -or $isFinalReadiness){
+        $script:noProgressCount=0
+      }
+      else{
+        if(($script:count % 25) -eq 0 -and (Test-RealProgress)){ $script:noProgressCount=0 }
+        if(@('reasoning','reasoning_summary','text','assistant_message','message','tool_call','tool_use','tool_dispatch','tool_result','usage','notice') -contains $kind){ $script:noProgressCount++ }
+        if($script:noProgressCount -ge $script:noProgressThreshold){
+          $script:noProgressTriggered=$true
+          $script:lastStage='blocked'
+          $script:failureKind='no-progress'
+          $script:failureSummary="同一模型回合内连续 $($script:noProgressCount) 个推理/文本/工具事件，但 PROGRESS.json、EXECUTION_REPORT.md 与项目实际修改均无有效推进；已按真实进展守卫终止（阈值 $($script:noProgressThreshold) 个无进展事件，非固定时长或步数上限）。"
+          [IO.File]::AppendAllText($events,'{"kind":"helper_no_progress","state":"terminated","message":"No real progress within one model turn; terminating runner (threshold '+$script:noProgressThreshold+' no-progress events; not a fixed duration or step cap)."}'+[Environment]::NewLine,[Text.UTF8Encoding]::new($false))
+          Save-Status 'failed' 'blocked' ('Reasonix 真实进展守卫触发：同一模型回合内无有效推进，已终止并清理子进程。'+$script:failureSummary)
+          break
+        }
+      }
+    }
     if([string]::IsNullOrWhiteSpace($script:reasonixSession)){ Register-DesktopSession }
     if(($script:count % 50) -eq 0 -or $script:stepCount -ne $script:lastSavedSteps){ $script:lastSavedSteps=$script:stepCount; Save-Status 'running' 'executing' ("Processed $($script:count) events") }
     if($script:planBudget -gt 0){
@@ -1727,6 +1847,10 @@ try{
       }
     }
   }
+  # no-progress 守卫触发的管道兜底清理：break 已使 PowerShell 以正常机制断开上游 CLI 管道，
+  # 此时不再处于管道写上下文，显式清理宿主派生的整棵 CLI 进程树，避免无进展循环残留占用。
+  # （在管道内直接强杀上游 native 命令会让 $ErrorActionPreference='Stop' 抛“程序无法运行”异常，故移到此处。）
+  if($script:noProgressTriggered){ Stop-ReasonixTree }
   $exit=$LASTEXITCODE
   $reportExists=[IO.File]::Exists($report)
   $metricsText=if([IO.File]::Exists($metrics)){[IO.File]::ReadAllText($metrics)}else{'not generated'}
@@ -1785,7 +1909,14 @@ GPT must read EXECUTION_REPORT.md, inspect actual changes, and independently rer
   Register-DesktopSession
   # 失败分类（B2）：绝不假装知道测试失败；脱敏摘要，不含完整 stderr/命令/正文/秘密。
   $script:failureKind=$null; $script:failureSummary=$null
-  if($reportExists){
+  if($script:noProgressTriggered){
+    # 真实进展守卫终止：明确 no-progress 失败态（即使报告恰在终止前出现也不伪装修复），
+    # 摘要与失败报告已在触发点/此处落盘，绝不进入自动恢复或“等待重试”语义。
+    $script:failureKind='no-progress'
+    $script:failureSummary="同一模型回合内连续 $($script:noProgressCount) 个推理/文本/工具事件无有效推进，已终止并清理子进程（阈值 $($script:noProgressThreshold) 个无进展事件，非固定时长或步数上限）。"
+    Write-FailureReport $script:failureKind $script:failureSummary $exit
+  }
+  elseif($reportExists){
     if($exit -ne 0){
       # 谨慎分类：仅当 exit=1、事件出现 final_readiness 且存在实际活动（tool/step 证据）时，才把退出码视为
       # "Reasonix 最终门禁未通过"（等待 GPT 复核），而不是普通代码开发失败或伪装成功。
@@ -1831,7 +1962,11 @@ GPT must read EXECUTION_REPORT.md, inspect actual changes, and independently rer
       Save-Status 'failed' 'awaiting-gpt-review' ("Reasonix exited with code $exit but delivered EXECUTION_REPORT.md; GPT can review. Desktop: "+$script:desktopDiagnostic)
     }
   } else {
-    if($exit -eq 0){
+    if($script:noProgressTriggered){
+      $script:returnState='executor-error'
+      Save-Status 'failed' 'blocked' ('Reasonix 真实进展守卫终止：同一模型回合内无有效推进，已终止并清理子进程。'+$script:failureSummary)
+    }
+    elseif($exit -eq 0){
       $script:returnState='same-turn-resume'
       Save-Status 'failed' 'failed' 'Reasonix exited 0 but EXECUTION_REPORT.md was not produced'
     } else {
@@ -1840,11 +1975,20 @@ GPT must read EXECUTION_REPORT.md, inspect actual changes, and independently rer
     }
   }
 }
-catch{ 
-  $script:failureKind='host-error'; $script:failureSummary='Reasonix host caught an exception before completing.'
-  $errDetail=$_.Exception.Message
-  try{ if([IO.File]::Exists($helperErr)){ $stderrText=[IO.File]::ReadAllText($helperErr,[Text.Encoding]::UTF8); if(-not [string]::IsNullOrWhiteSpace($stderrText)){ $errDetail=$errDetail+' | stderr: '+$stderrText.Trim() } } }catch{}
-  Save-Status 'failed' 'error' ($errDetail+' | trace: '+$_.ScriptStackTrace)
+catch{
+  # no-progress 触发后主动终止上游 native 进程，PowerShell 可能把该预期的断管道表述为
+  # “程序无法运行”。这不是宿主错误，必须保留 no-progress 语义并正常收敛。
+  if($script:noProgressTriggered){
+    $script:failureKind='no-progress'
+    $script:failureSummary="同一模型回合内连续 $($script:noProgressCount) 个推理/文本/工具事件无有效推进，已终止并清理子进程（阈值 $($script:noProgressThreshold) 个无进展事件，非固定时长或步数上限）。"
+    try{ Write-FailureReport $script:failureKind $script:failureSummary 1 }catch{}
+    Save-Status 'failed' 'blocked' ('Reasonix 真实进展守卫终止：同一模型回合内无有效推进，已终止并清理子进程。'+$script:failureSummary)
+  } else {
+    $script:failureKind='host-error'; $script:failureSummary='Reasonix host caught an exception before completing.'
+    $errDetail=$_.Exception.Message
+    try{ if([IO.File]::Exists($helperErr)){ $stderrText=[IO.File]::ReadAllText($helperErr,[Text.Encoding]::UTF8); if(-not [string]::IsNullOrWhiteSpace($stderrText)){ $errDetail=$errDetail+' | stderr: '+$stderrText.Trim() } } }catch{}
+    Save-Status 'failed' 'error' ($errDetail+' | trace: '+$_.ScriptStackTrace)
+  }
 }
 finally{ if($null-ne$stream){$stream.Dispose()} }
 """;

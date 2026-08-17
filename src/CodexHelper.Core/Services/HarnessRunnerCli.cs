@@ -81,9 +81,13 @@ public static class HarnessRunnerCli
         return new(projectRoot, taskDirectory, null);
     }
 
-    /// <summary>把任务终态映射为退出码：completed→0、cancelled→2、其余（failed/未知）→1。</summary>
+    /// <summary>
+    /// 把任务终态映射为退出码：completed/awaiting-gpt→0（成功，等待 GPT 验收）、cancelled→2、
+    /// 其余（failed/未知）→1。
+    /// </summary>
     public static int MapExitCode(string state)
-        => string.Equals(state, "completed", StringComparison.OrdinalIgnoreCase) ? ExitCompleted
+        => string.Equals(state, "completed", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(state, "awaiting-gpt", StringComparison.OrdinalIgnoreCase) ? ExitCompleted
          : string.Equals(state, "cancelled", StringComparison.OrdinalIgnoreCase) ? ExitCancelled
          : ExitFailed;
 
@@ -96,6 +100,7 @@ public static class HarnessRunnerCli
     {
         var stateText = (status.State ?? string.Empty).ToLowerInvariant() switch
         {
+            "awaiting-gpt" => "等待 GPT 验收",
             "completed" => "已完成",
             "cancelled" => "已取消",
             "failed" => "失败",

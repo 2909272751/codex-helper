@@ -50,6 +50,7 @@ public partial class MainWindow : Window
     private DeepSeekHarnessStatus? harnessStatus;
     private DeepSeekHarnessService? harnessService;
     private DeepSeekHarnessRunner? harnessRunner;
+    private DeepSeekHarnessStartupService? harnessStartupService;
     private bool harnessRefreshInFlight;
     private bool reasonixRefreshInFlight;
     private HarnessTaskStatus? selectedHarnessTask;
@@ -58,10 +59,15 @@ public partial class MainWindow : Window
     private bool harnessTaskRefreshInFlight;
     private bool harnessTaskRefreshQueued;
     private string? harnessTaskRenderedFingerprint;
+    private IReadOnlyList<DshComponentInfo> dshComponents = Array.Empty<DshComponentInfo>();
+    private CancellationTokenSource? dshScanCts;
 
     public MainWindow()
     {
         InitializeComponent();
+        // 全局滚轮链：内层 DataGrid/ListBox/只读多行 TextBox 到顶/底或不可滚动时，
+        // 把滚轮转发给唯一主 ScrollViewer；内层仍可滚动时保持原生（见 ScrollWheelChain）。
+        ScrollWheelChain.Attach(MainScrollViewer);
         VersionText.Text = "v" + (Assembly.GetEntryAssembly()?.GetName().Version?.ToString(3) ?? "—");
         logger = new AppLogger(appPaths);
         settingsService = new SettingsService(appPaths);
@@ -69,6 +75,7 @@ public partial class MainWindow : Window
         Loaded += async (_, _) => await InitializeAsync();
         Closed += (_, _) =>
         {
+            dshScanCts?.Cancel();
             taskRefreshCoordinator.Close();
         };
     }
@@ -99,9 +106,12 @@ public partial class MainWindow : Window
             projects = discoveredProjects;
             RefreshConnections(loadCollaboration: false);
             RefreshSnapshots();
+            RefreshDshSnapshots();
+            RefreshDshComponents();
             RefreshDashboard();
             InventoryGrid.ItemsSource = inventory;
             ProjectsGrid.ItemsSource = projects;
+            UpdateProjectActionButtons();
         }
         catch (Exception ex)
         {
@@ -114,6 +124,8 @@ public partial class MainWindow : Window
     {
         CodexRootBox.Text = settings.CodexRoot;
         RepositoryPathText.Text = string.IsNullOrWhiteSpace(settings.BackupRepositoryPath) ? "尚未设置" : settings.BackupRepositoryPath;
+        if (DshRepositoryPathText is not null)
+            DshRepositoryPathText.Text = string.IsNullOrWhiteSpace(settings.BackupRepositoryPath) ? "尚未设置" : settings.BackupRepositoryPath;
         WorkspaceRootBox.Text = settings.WorkspaceRoots.FirstOrDefault() ?? string.Empty;
         IncludeSessionsCheck.IsChecked = settings.IncludeSessions;
         IncludeAttachmentsCheck.IsChecked = settings.IncludeAttachments;
@@ -121,6 +133,12 @@ public partial class MainWindow : Window
         SelectReasonixIntensity(settings.ReasonixExecutionIntensity);
         LoadParallelSettings(settings);
         SelectDeepSeekCacheRange(settings.DeepSeekCacheRange);
+        SelectComboTag(HarnessExecutionModeBox, HarnessExecutionOptions.NormalizeMode(settings.HarnessExecutionMode));
+        SelectComboTag(HarnessPermissionModeBox, HarnessExecutionOptions.NormalizePermission(settings.HarnessPermissionMode));
+        SelectComboTag(HarnessExecutionStrengthBox, HarnessExecutionOptions.NormalizeStrength(settings.HarnessExecutionStrength));
+        HarnessReuseSessionCheck.IsChecked = settings.HarnessReuseSession;
+        HarnessAutoStartHostCheck.IsChecked = settings.HarnessAutoStartHost;
+        HarnessReturnToGptCheck.IsChecked = settings.HarnessReturnToGptOnFailure;
         suppressCollaborationModeSelection = true;
         SelectCollaborationMode(settings.CollaborationMode);
         suppressCollaborationModeSelection = false;
@@ -137,8 +155,10 @@ public partial class MainWindow : Window
             {
                 InventoryGrid.ItemsSource = inventory;
                 ProjectsGrid.ItemsSource = projects;
+                UpdateProjectActionButtons();
                 RefreshConnections(loadCollaboration: true);
                 RefreshSnapshots();
+                RefreshDshSnapshots();
                 RefreshDashboard();
             });
         }, showProgress: false);
@@ -157,9 +177,25 @@ public partial class MainWindow : Window
         {
             ConnectionsGrid.ItemsSource = Array.Empty<ConnectionProfile>();
         }
+        UpdateConnectionActionButtons();
     }
 
-    private void ConnectionsGrid_SelectionChanged(object sender, SelectionChangedEventArgs e) => RefreshAccountHealthDetail();
+    private void ConnectionsGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        RefreshAccountHealthDetail();
+        UpdateConnectionActionButtons();
+    }
+
+    /// <summary>连接中心：依赖选择的按钮在无选择时禁用，选择后按档案类型启用（不靠点击后弹错代替禁用态）。</summary>
+    private void UpdateConnectionActionButtons()
+    {
+        var selected = ConnectionsGrid.SelectedItem as ConnectionProfile;
+        SwitchConnectionButton.IsEnabled = selected is not null;
+        VerifyAccountButton.IsEnabled = selected is { Kind: ConnectionKind.OfficialAccount };
+        TestApiButton.IsEnabled = selected is { Kind: ConnectionKind.CustomApi or ConnectionKind.Sub2Api or ConnectionKind.ResponsesSubagent };
+        RepairLegacyButton.IsEnabled = selected is { Kind: ConnectionKind.ResponsesSubagent };
+        DeleteConnectionButton.IsEnabled = ConnectionsGrid.SelectedItems.Count > 0;
+    }
 
     /// <summary>可等待的 Reasonix 环境刷新：单飞（进行中重复调用直接跳过，绝不并发探测）；
     /// 事件处理器是唯一 async void 边界；窗口关闭后不回写 UI，异常转换为可读状态。</summary>
@@ -350,6 +386,9 @@ public partial class MainWindow : Window
                 $"Harness：{(status.DshFound ? $"{status.DshVersion}（{status.DshSource} · {riskText}）" : "未找到")}",
                 $"状态：{statusKindText}",
                 $"Web Host：{(status.WebHostRunning ? $"运行中（{status.WebUrl}）" : "未运行")}",
+                $"合同 profile/patch：{(status.CapabilityContractProfile ? "可用" : "未确认")}——{status.ContractProfileMessage}",
+                $"权限环境：{(status.CapabilityPermissionEnv ? "可注入" : "未生效")}——{status.PermissionEnvMessage}",
+                $"模型思考强度：{HarnessExecutionOptions.ModelReasoningText}",
                 status.NodeMessage,
                 status.DshMessage,
                 status.RelayMessage
@@ -360,6 +399,8 @@ public partial class MainWindow : Window
             HarnessEnvironmentText.ToolTip = HarnessEnvironmentText.Text;
             OpenHarnessWebButton.IsEnabled = status.WebHostRunning || status.EnableAllowed;
             OpenHarnessWebButton.Content = status.WebHostRunning ? "打开 Harness Web" : "启动并打开 Harness Web";
+            harnessStartupService ??= new DeepSeekHarnessStartupService(appPaths);
+            HarnessStartupStatusText.Text = (await harnessStartupService.GetStatusAsync(status.NodePath, status.DshEntryPath, cancellationToken)).Message;
             UpdateCollaborationModeUi();
         }
         catch (OperationCanceledException)
@@ -452,6 +493,72 @@ public partial class MainWindow : Window
 
     private void OpenHarnessWebSettings_Click(object sender, RoutedEventArgs e) => OpenHarnessWeb_Click(sender, e);
 
+    private static string SelectedComboTag(ComboBox box, string fallback)
+        => (box.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? fallback;
+
+    private static void SelectComboTag(ComboBox box, string value)
+    {
+        foreach (var item in box.Items.OfType<ComboBoxItem>())
+            if (string.Equals(item.Tag?.ToString(), value, StringComparison.OrdinalIgnoreCase))
+            { box.SelectedItem = item; return; }
+        if (box.Items.Count > 0) box.SelectedIndex = 0;
+    }
+
+    private async void ApplyHarnessExecutionSettings_Click(object sender, RoutedEventArgs e)
+    {
+        var success = await RunOperationAsync("应用 Harness 合同设置", async cancellationToken =>
+        {
+            settings.HarnessExecutionMode = HarnessExecutionOptions.NormalizeMode(SelectedComboTag(HarnessExecutionModeBox, HarnessExecutionOptions.DefaultMode));
+            settings.HarnessPermissionMode = HarnessExecutionOptions.NormalizePermission(SelectedComboTag(HarnessPermissionModeBox, HarnessExecutionOptions.DefaultPermission));
+            settings.HarnessExecutionStrength = HarnessExecutionOptions.NormalizeStrength(SelectedComboTag(HarnessExecutionStrengthBox, HarnessExecutionOptions.DefaultStrength));
+            settings.HarnessReuseSession = HarnessReuseSessionCheck.IsChecked == true;
+            settings.HarnessAutoStartHost = HarnessAutoStartHostCheck.IsChecked == true;
+            settings.HarnessReturnToGptOnFailure = HarnessReturnToGptCheck.IsChecked == true;
+            settingsService.Save(settings);
+
+            harnessService ??= new DeepSeekHarnessService(appPaths);
+            var status = await harnessService.DiagnoseAsync(settings.HarnessNodePath, settings.HarnessDshEntryPath, cancellationToken, forceRefresh: true);
+            if (!status.EnableAllowed) throw new InvalidOperationException(FirstNonEmpty(status.NodeMessage, status.DshMessage, "Harness 环境未就绪。"));
+            settings.HarnessNodePath = status.NodePath;
+            settings.HarnessDshEntryPath = status.DshEntryPath;
+            var profileDegraded = false;
+            if (settings.HarnessExecutionMode == HarnessExecutionOptions.DefaultMode)
+            {
+                // 合同 profile 幂等生成；结构不兼容/无法定位时记录降级，UI 不虚报 codex-contract。
+                // Runner 启动时同样探测，安装失败会诚实使用 standard 预设并继续。
+                try
+                {
+                    await Task.Run(() => new HarnessContractProfileService().InstallOrRepair(status.DshEntryPath), cancellationToken);
+                }
+                catch
+                {
+                    profileDegraded = true;
+                }
+            }
+            settingsService.Save(settings);
+
+            // 权限是 Host 进程环境，应用后重启 Helper 管理的 Host 才能保证新会话真正使用新权限。
+            harnessService.StopWebHost();
+            if (settings.HarnessAutoStartHost)
+            {
+                var ready = await harnessService.EnsureWebHostReadyAsync(status.NodePath, status.DshEntryPath, cancellationToken, settings.HarnessPermissionMode);
+                if (!ready.Ready) throw new InvalidOperationException(ready.Message);
+            }
+            if (profileDegraded)
+                await Dispatcher.InvokeAsync(() => MessageBox.Show("codex-contract 预设无法生成（当前 Harness 结构不兼容），合同模式将降级为 standard；合同边界仍由短提示保证。", "已降级", MessageBoxButton.OK, MessageBoxImage.Warning));
+            await RefreshHarnessSettingsAsync(forceRefresh: true, cancellationToken);
+        }, showProgress: false);
+        if (success) MessageBox.Show("Harness 合同设置已应用。完全控制通过 Host 受控环境传递，不会写入命令行或日志。", "设置完成", MessageBoxButton.OK, MessageBoxImage.Information);
+    }
+
+    private void RestoreHarnessRecommendedSettings_Click(object sender, RoutedEventArgs e)
+    {
+        HarnessExecutionOptions.RestoreRecommended(settings);
+        settingsService.Save(settings);
+        ApplySettingsToUi();
+        MessageBox.Show("已恢复推荐设置：Codex 合同模式、完全控制、标准执行强度、会话复用和自动启动。请点“应用并测试”使 Host 权限生效。", "已恢复", MessageBoxButton.OK, MessageBoxImage.Information);
+    }
+
     /// <summary>
     /// Harness 主协作卡动作：开启时先验证 Node/dsh/Web Host/中继能力，Host 未运行自动启动，
     /// 全部就绪后才应用 Helper 管理的协作规则；任何一步失败都保持之前的安全状态并给出可读原因。
@@ -505,6 +612,42 @@ public partial class MainWindow : Window
         }
     }
 
+    private async void ConfigureHarnessStartup_Click(object sender, RoutedEventArgs e)
+    {
+        var success = await RunOperationAsync("一键配置 Codex + Harness", async cancellationToken =>
+        {
+            harnessService ??= new DeepSeekHarnessService(appPaths);
+            var status = await harnessService.DiagnoseAsync(settings.HarnessNodePath, settings.HarnessDshEntryPath, cancellationToken, forceRefresh: true);
+            if (!status.EnableAllowed) throw new InvalidOperationException(FirstNonEmpty(status.NodeMessage, status.DshMessage, "Node 或 Harness 未就绪。"));
+            settings.HarnessNodePath = status.NodePath;
+            settings.HarnessDshEntryPath = status.DshEntryPath;
+            settings.CollaborationMode = CollaborationMode.Harness.ToPersisted();
+            settingsService.Save(settings);
+            await Task.Run(() => new CollaborationService(settings.CodexRoot, appPaths).Synchronize(settings), cancellationToken);
+            harnessStartupService ??= new DeepSeekHarnessStartupService(appPaths);
+            await harnessStartupService.ConfigureAsync(status.NodePath, status.DshEntryPath, cancellationToken: cancellationToken);
+            var ready = await harnessService.EnsureWebHostReadyAsync(status.NodePath, status.DshEntryPath, cancellationToken);
+            if (!ready.Ready) throw new InvalidOperationException(ready.Message);
+            HarnessStartupStatusText.Text = (await harnessStartupService.GetStatusAsync(status.NodePath, status.DshEntryPath, cancellationToken)).Message;
+        }, showProgress: false);
+        if (success)
+        {
+            UpdateCollaborationModeUi();
+            MessageBox.Show("已配置 Codex 协作规则、Harness 登录自启动和当前 Host。Helper 无需常驻。", "配置完成", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+    }
+
+    private async void RemoveHarnessStartup_Click(object sender, RoutedEventArgs e)
+    {
+        var success = await RunOperationAsync("移除 Harness 登录自启动", async cancellationToken =>
+        {
+            harnessStartupService ??= new DeepSeekHarnessStartupService(appPaths);
+            await harnessStartupService.RemoveAsync(cancellationToken);
+            HarnessStartupStatusText.Text = "未配置登录自启动；当前已运行的 Host 不受影响。";
+        }, showProgress: false);
+        if (success) MessageBox.Show("已移除登录自启动。当前 Host 不会被强制停止。", "设置完成", MessageBoxButton.OK, MessageBoxImage.Information);
+    }
+
     /// <summary>Harness 任务中心刷新请求：单飞（进行中重复调用直接跳过，手动刷新排队绝不并发）；
     /// 自动刷新仅在协作开发页可见且 Harness 面板激活时发起；关闭 Helper 只停止刷新，不停止 Harness 任务。</summary>
     private void RequestHarnessTaskRefresh(bool manual)
@@ -520,17 +663,28 @@ public partial class MainWindow : Window
         _ = RunHarnessTaskReadAsync(manual);
     }
 
-    /// <summary>后台读取一次 Harness 任务快照（纯文件读取，无进程轮询）并回到 UI 线程渲染；窗口关闭后不回写 UI。</summary>
+    /// <summary>
+    /// 后台读取一次 Harness 任务快照并回到 UI 线程渲染；窗口关闭后不回写 UI。
+    /// 读取前先执行异步 recent-tasks 对账（一次 session.list 核对本地 running/starting 状态，
+    /// 真实会话已结束时自动写回终态，不再显示假运行中）；Host 不可达时对账静默跳过、
+    /// 列表仍按本地状态文件展示（离线兼容）。
+    /// </summary>
     private async Task RunHarnessTaskReadAsync(bool manual)
     {
         IReadOnlyList<HarnessTaskStatus>? tasks = null;
         Exception? failure = null;
         try
         {
-            tasks = await Task.Run(() => GetHarnessRunner().GetRecentTasks(50)
-                .OrderByDescending(task => task.IsRunning)
-                .ThenByDescending(task => task.UpdatedUtc)
-                .ToList());
+            tasks = await Task.Run(async () =>
+            {
+                var runner = GetHarnessRunner();
+                try { await runner.ReconcileRecentTasksAsync(); }
+                catch { /* 对账失败不阻断列表读取（Host 不可达/取消等） */ }
+                return runner.GetRecentTasks(50)
+                    .OrderByDescending(task => task.IsRunning)
+                    .ThenByDescending(task => task.UpdatedUtc)
+                    .ToList();
+            });
         }
         catch (Exception ex) { failure = ex; }
 
@@ -646,6 +800,7 @@ public partial class MainWindow : Window
     {
         "running" => "运行中",
         "starting" => "启动中",
+        "awaiting-gpt" => "等待 GPT 验收",
         "completed" => "已完成",
         "failed" => "失败",
         "cancelled" => "已停止",
@@ -655,7 +810,7 @@ public partial class MainWindow : Window
     private static string HarnessTaskColorKey(HarnessTaskStatus task) => task.State.ToLowerInvariant() switch
     {
         "running" or "starting" => "running",
-        "completed" => "completed",
+        "awaiting-gpt" or "completed" => "completed",
         "failed" => "failed",
         "cancelled" => "pending",
         _ => "pending"
@@ -690,7 +845,8 @@ public partial class MainWindow : Window
         UpdateHarnessTaskActionButtons();
     }
 
-    /// <summary>选中任务详情：状态、任务 ID、会话 ID、耗时、当前消息、Web URL、任务目录。</summary>
+    /// <summary>选中任务详情：状态、会话状态、任务 ID、会话 ID、执行模式/权限/强度、耗时、当前消息、Web URL、任务目录。
+    /// 不显示虚假预计时间：只显示已运行耗时与真实会话状态。</summary>
     private void UpdateHarnessTaskDetail()
     {
         var task = selectedHarnessTask;
@@ -699,22 +855,66 @@ public partial class MainWindow : Window
             HarnessTaskDetailText.Visibility = Visibility.Collapsed;
             return;
         }
+        var sessionState = string.IsNullOrWhiteSpace(task.SessionState) ? "unknown" : task.SessionState switch
+        {
+            "creating" => "创建中",
+            "resuming" => "接回中",
+            "degraded-standard" => "已降级 standard",
+            "running" => "运行中",
+            "completed" => "已完成",
+            "cancelled" => "已停止",
+            "failed" => "失败",
+            _ => task.SessionState
+        };
         var lines = new List<string>
         {
             $"执行器：{task.Executor}",
             $"状态：{HarnessTaskStatusText(task)}",
             $"任务 ID：{task.TaskId}",
             $"会话 ID：{(string.IsNullOrWhiteSpace(task.SessionId) ? "未记录" : task.SessionId)}",
+            $"会话状态：{sessionState}",
+            $"执行模式：{task.ExecutionMode}（agentPreset 由模式映射，预设未确认时降级 standard）",
+            $"权限：{task.PermissionMode}（经 Helper 托管 Host 受控环境传递，不进入命令行/日志）",
+            $"执行强度：{task.ExecutionStrength}（Helper 的检查预算与收敛策略，非模型思考强度）",
             $"耗时：{FormatHarnessDuration(HarnessElapsed(task))}（开始 {task.StartedUtc.ToLocalTime():yyyy-MM-dd HH:mm:ss}）",
             $"当前消息：{task.Message}",
             $"Web：{task.WebUrl}"
         };
-        lines.Add($"实际指标：{task.Steps} 步；未缓存输入 {task.UncachedInputTokens:N0}；缓存命中 {task.CacheReadTokens:N0}；输出 {task.OutputTokens:N0}");
-        lines.Add("模型：" + (string.IsNullOrWhiteSpace(task.Model) ? "Harness 当前协议未提供" : task.Model));
+        // awaiting-gpt 不是最终完成：给出 GPT 独立验收的下一步说明，避免误认为产品已交付。
+        if (string.Equals(task.State, "awaiting-gpt", StringComparison.OrdinalIgnoreCase))
+            lines.Add("下一步：等待 GPT 独立验收——检查实际 diff 并执行 ACCEPTANCE.md 聚焦验收；验收通过前不算产品交付完成。");
+        lines.Add($"实际指标：{task.Steps} 步；新增输入 {task.UncachedInputTokens:N0}；缓存输入 {task.CacheReadTokens:N0}；输出 {task.OutputTokens:N0}");
+        // 推理流摘要：reasoning 事件只作为诊断计数展示，绝不计入 steps，也不与缓存 token 混为进度。
+        lines.Add($"推理流摘要：阶段 {StageText(task.Stage)}；工具调用 {task.ToolCallCount:N0}；推理流事件 {task.ReasoningEventCount:N0}（不计为步骤）；无进展告警 {task.NoProgressWarnings}");
+        lines.Add("模型：" + (string.IsNullOrWhiteSpace(task.Model) ? HarnessExecutionOptions.ModelReasoningText : task.Model));
+        lines.Add($"合同：{task.ExecutionMode} · 权限：{task.PermissionMode} · 强度：{task.ExecutionStrength}");
+        lines.Add("会话状态：" + task.SessionState);
+        if (!string.IsNullOrWhiteSpace(task.RootCauseKey)) lines.Add($"合同组键（rootCauseKey）：{task.RootCauseKey}（同项目同组键的运行中任务会被接回，而非新建会话）");
         if (!string.IsNullOrWhiteSpace(task.TaskDirectory)) lines.Add($"任务目录：{task.TaskDirectory}");
+        lines.Add("状态来源：" + HarnessStateSourceText(task.StateSource));
         HarnessTaskDetailText.Text = string.Join(Environment.NewLine, lines);
         HarnessTaskDetailText.Visibility = Visibility.Visible;
     }
+
+    /// <summary>任务状态来源 → 中文展示：真实状态以任务目录真相源为准，旧注册表只作兼容读取并自动迁移。</summary>
+    private static string HarnessStateSourceText(string? source) => source switch
+    {
+        "task-directory" => "任务目录真相源（HARNESS_STATUS.json）",
+        "legacy-registry" => "旧注册表索引（兼容读取；新运行会自动迁移到任务目录），如曾降级会显示在消息中",
+        _ => "未知"
+    };
+
+    /// <summary>任务阶段 → 中文展示（用于推理流摘要；未知阶段显示"未知"）。</summary>
+    private static string StageText(string? stage) => stage?.ToLowerInvariant() switch
+    {
+        "start" => "阶段开始",
+        "plan" => "计划",
+        "read" => "读取",
+        "edit" => "编辑",
+        "check" => "检查",
+        "report" => "报告/结束",
+        _ => string.IsNullOrWhiteSpace(stage) ? "未知" : stage
+    };
 
     private void UpdateHarnessTaskActionButtons()
     {
@@ -1357,6 +1557,22 @@ public partial class MainWindow : Window
         DeepSeekReasoningEffortBox.SelectedIndex = 2;
     }
 
+    private void ProjectsGrid_SelectionChanged(object sender, SelectionChangedEventArgs e) => UpdateProjectActionButtons();
+
+    /// <summary>项目页：“加入备份/不再备份”依赖选择，无选择时禁用。</summary>
+    private void UpdateProjectActionButtons()
+    {
+        var hasSelection = ProjectsGrid.SelectedItems.Count > 0;
+        ProtectProjectsButton.IsEnabled = hasSelection;
+        UnprotectProjectsButton.IsEnabled = hasSelection;
+    }
+
+    private void SnapshotsGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        => RestoreSnapshotButton.IsEnabled = SnapshotsGrid.SelectedItem is SnapshotSummary;
+
+    private void DshSnapshotsGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        => RestoreDshSnapshotButton.IsEnabled = DshSnapshotsGrid.SelectedItem is SnapshotSummary;
+
     private void RefreshAccountHealthDetail()
     {
         if (AccountHealthDetailText is null) return;
@@ -1377,10 +1593,78 @@ public partial class MainWindow : Window
         if (string.IsNullOrWhiteSpace(settings.BackupRepositoryPath) || !File.Exists(Path.Combine(settings.BackupRepositoryPath, "repository.json")))
         {
             SnapshotsGrid.ItemsSource = Array.Empty<SnapshotSummary>();
+            RestoreSnapshotButton.IsEnabled = false;
             return;
         }
-        try { SnapshotsGrid.ItemsSource = new BackupRepository(settings.BackupRepositoryPath).ListSnapshots(); }
+        try
+        {
+            var repository = new BackupRepository(settings.BackupRepositoryPath);
+            SnapshotsGrid.ItemsSource = repository.ListSnapshots()
+                .Where(snapshot => !SnapshotContainsOnlyDshData(repository, snapshot.Id))
+                .ToList();
+        }
         catch { SnapshotsGrid.ItemsSource = Array.Empty<SnapshotSummary>(); }
+        RestoreSnapshotButton.IsEnabled = SnapshotsGrid.SelectedItem is SnapshotSummary;
+    }
+
+    /// <summary>
+    /// 刷新 Harness 页的 DSH 快照列表：只显示 manifest 中包含 dsh- 数据源的快照，
+    /// 不显示普通 Codex/项目快照；空仓库、无 DSH 快照或仓库不可读时给出友好提示。
+    /// </summary>
+    private void RefreshDshSnapshots()
+    {
+        if (DshSnapshotsGrid is null) return;
+        var repositoryPath = settings.BackupRepositoryPath;
+        if (string.IsNullOrWhiteSpace(repositoryPath) || !File.Exists(Path.Combine(repositoryPath, "repository.json")))
+        {
+            DshSnapshotsGrid.ItemsSource = Array.Empty<SnapshotSummary>();
+            DshSnapshotListHintText.Text = "尚未设置备份仓库。请选择备份位置后创建 DSH 快照。";
+            DshSnapshotListHintText.Visibility = Visibility.Visible;
+            RestoreDshSnapshotButton.IsEnabled = false;
+            return;
+        }
+        try
+        {
+            var repository = new BackupRepository(repositoryPath);
+            var dshSnapshots = repository.ListSnapshots()
+                .Where(snapshot => SnapshotContainsDshData(repository, snapshot.Id))
+                .ToList();
+            DshSnapshotsGrid.ItemsSource = dshSnapshots;
+            DshSnapshotListHintText.Visibility = dshSnapshots.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+            DshSnapshotListHintText.Text = dshSnapshots.Count == 0
+                ? "暂无 DSH 快照。点击“立即备份 DSH”创建包含 DSH Skills、Agent 预设、用户配置与插件的快照。"
+                : $"共 {dshSnapshots.Count} 个 DSH 快照，仅显示包含 DSH 数据的快照。";
+        }
+        catch
+        {
+            DshSnapshotsGrid.ItemsSource = Array.Empty<SnapshotSummary>();
+            DshSnapshotListHintText.Text = "无法读取备份仓库中的 DSH 快照列表。";
+            DshSnapshotListHintText.Visibility = Visibility.Visible;
+        }
+        RestoreDshSnapshotButton.IsEnabled = DshSnapshotsGrid.SelectedItem is SnapshotSummary;
+    }
+
+    /// <summary>快照 manifest 是否包含 dsh- 数据源；单个快照读取失败视为不含 DSH 数据。</summary>
+    private static bool SnapshotContainsDshData(BackupRepository repository, string snapshotId)
+    {
+        try
+        {
+            return repository.LoadManifest(snapshotId).Sources
+                .Any(source => source.Id.StartsWith(DshExtensionBackupService.SourceIdPrefix, StringComparison.Ordinal));
+        }
+        catch { return false; }
+    }
+
+    /// <summary>仅含 DSH 数据源的新式专属快照不混入通用列表；历史混合快照仍保留在通用列表。</summary>
+    private static bool SnapshotContainsOnlyDshData(BackupRepository repository, string snapshotId)
+    {
+        try
+        {
+            var sources = repository.LoadManifest(snapshotId).Sources;
+            return sources.Count > 0 && sources.All(source =>
+                source.Id.StartsWith(DshExtensionBackupService.SourceIdPrefix, StringComparison.Ordinal));
+        }
+        catch { return false; }
     }
 
     private void RefreshDashboard()
@@ -1461,6 +1745,7 @@ public partial class MainWindow : Window
             await Dispatcher.InvokeAsync(() =>
             {
                 RefreshSnapshots();
+                RefreshDshSnapshots();
                 RefreshDashboard();
                 MessageBox.Show($"快照完成：{result.Summary.FileCount} 个文件，结果 {result.Summary.Outcome}。\n新增存储：{FormatBytes(result.Summary.NewStoredBytes)}", "保护完成", MessageBoxButton.OK, result.Summary.Outcome == OperationOutcome.Success ? MessageBoxImage.Information : MessageBoxImage.Warning);
             });
@@ -1527,6 +1812,247 @@ public partial class MainWindow : Window
             var result = await repository.RestoreAsync(new RestoreRequest(snapshot.Id, dialog.FolderName), CreateProgress(), cancellationToken);
             await Dispatcher.InvokeAsync(() => MessageBox.Show($"已恢复 {result.RestoredFiles} 个文件到：\n{dialog.FolderName}\n结果：{result.Outcome}", "恢复完成", MessageBoxButton.OK, result.Outcome == OperationOutcome.Success ? MessageBoxImage.Information : MessageBoxImage.Warning));
         });
+    }
+
+    /// <summary>
+    /// Harness 页“立即备份 DSH”：只备份 DshExtensionBackupService.DiscoverSources() 返回的
+    /// DSH Skills、Agent 预设、用户配置与用户插件；未安装 DSH 或无数据时给出清晰中文提示，
+    /// 不加入任何 Codex/项目数据源。创建后刷新通用与 DSH 两套快照列表。
+    /// </summary>
+    private async void BackupDshNow_Click(object sender, RoutedEventArgs e)
+    {
+        if (string.IsNullOrWhiteSpace(settings.BackupRepositoryPath))
+        {
+            MessageBox.Show("请先选择备份仓库位置。", "尚未设置备份仓库", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        IReadOnlyList<BackupSource> dshSources;
+        try { dshSources = new DshExtensionBackupService().DiscoverSources(); }
+        catch (Exception ex) { ShowError(ex); return; }
+        if (dshSources.Count == 0)
+        {
+            MessageBox.Show("未检测到 DeepSeek Harness 数据。请确认已安装 DeepSeek Harness（DSH Home 存在），且 skills、.agent-presets、profiles 或用户插件目录中有可备份内容。", "没有 DSH 数据", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        await RunOperationAsync("备份 DSH 数据", async cancellationToken =>
+        {
+            var repository = new BackupRepository(settings.BackupRepositoryPath);
+            var result = await repository.CreateSnapshotAsync("DSH 数据保护", dshSources, CreateProgress(), cancellationToken);
+            await Dispatcher.InvokeAsync(() =>
+            {
+                RefreshSnapshots();
+                RefreshDshSnapshots();
+                RefreshDashboard();
+                MessageBox.Show($"DSH 快照完成：{result.Summary.FileCount} 个文件，结果 {result.Summary.Outcome}。\n新增存储：{FormatBytes(result.Summary.NewStoredBytes)}", "DSH 备份完成", MessageBoxButton.OK, result.Summary.Outcome == OperationOutcome.Success ? MessageBoxImage.Information : MessageBoxImage.Warning);
+            });
+        });
+    }
+
+    /// <summary>
+    /// 把所选 DSH 快照中的 DSH（DeepSeek Harness）Skills、Agent 预设、用户配置与插件安全恢复到
+    /// 当前设备的 DSH Home：先显示数据种类与目标并确认，恢复时先解密到临时文件并验证哈希，
+    /// 再按数据源映射落位（绝不用快照中的旧用户名绝对路径）；默认不覆盖已有文件，
+    /// 越界、符号链接/重解析点与非法插件名由 Core 服务拒绝。恢复后刷新两套快照列表。
+    /// </summary>
+    private async void RestoreDshSnapshot_Click(object sender, RoutedEventArgs e)
+    {
+        if (DshSnapshotsGrid.SelectedItem is not SnapshotSummary snapshot)
+        {
+            MessageBox.Show("请先在 DSH 快照列表中选择一个要恢复的快照。", "未选择 DSH 快照", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        var dsh = new DshExtensionBackupService();
+        SnapshotManifest manifest;
+        try { manifest = new BackupRepository(settings.BackupRepositoryPath).LoadManifest(snapshot.Id); }
+        catch (Exception ex) { ShowError(ex); return; }
+        DshExtensionBackupService.DshRestorePlan plan;
+        try { plan = dsh.BuildRestorePlan(manifest); }
+        catch (InvalidOperationException ex) { MessageBox.Show(ex.Message, "没有 DSH 数据", MessageBoxButton.OK, MessageBoxImage.Information); return; }
+        catch (Exception ex) { ShowError(ex); return; }
+        try { DshExtensionBackupService.EnsureTargetOutsideRepository(settings.BackupRepositoryPath, plan.TargetHome); }
+        catch (Exception ex) { ShowError(ex); return; }
+        var kinds = string.Join("\n", plan.Kinds.Select(kind => "· " + kind));
+        if (MessageBox.Show($"将恢复到当前设备的 DSH Home：\n{plan.TargetHome}\n\n包含：\n{kinds}\n\n不含账号密钥、会话和附件；已存在的文件不会被覆盖。\n继续吗？", "恢复所选 DSH 快照", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
+        await RunOperationAsync("恢复 DSH 数据", async cancellationToken =>
+        {
+            var repository = new BackupRepository(settings.BackupRepositoryPath);
+            var result = await repository.RestoreAsync(new RestoreRequest(snapshot.Id, plan.TargetHome, plan.SourceIds, SourceTargetMap: plan.SourceTargetMap), CreateProgress(), cancellationToken);
+            await Dispatcher.InvokeAsync(() =>
+            {
+                RefreshSnapshots();
+                RefreshDshSnapshots();
+                MessageBox.Show($"已恢复 {result.RestoredFiles} 个文件到：\n{plan.TargetHome}\n结果：{result.Outcome}\n\n请重启 DSH / Harness Host 使设置生效。", "DSH 恢复完成", MessageBoxButton.OK, result.Outcome == OperationOutcome.Success ? MessageBoxImage.Information : MessageBoxImage.Warning);
+            });
+        });
+    }
+
+    /// <summary>
+    /// Harness 页“组件迁移与配置”：启动一轮 DSH 组件扫描。单一真正异步流程：扫描 I/O 在后台
+    /// 执行，UI 线程只更新状态；手动触发时取消进行中的旧扫描并启动新扫描（推荐取消后重启），
+    /// 旧轮不再更新 UI。扫描期间禁用“重新扫描”并显示“正在扫描（已用时 N 秒）”，
+    /// 完成显示组件数与实际耗时，取消/失败恢复按钮并给出清楚状态；关闭窗口时取消扫描。
+    /// </summary>
+    private void RefreshDshComponents()
+    {
+        if (taskRefreshCoordinator.Closed) return;
+        dshScanCts?.Cancel();
+        dshScanCts?.Dispose();
+        dshScanCts = new CancellationTokenSource();
+        var token = dshScanCts.Token;
+        _ = RunDshComponentScanAsync(token);
+    }
+
+    private async Task RunDshComponentScanAsync(CancellationToken token)
+    {
+        DshRescanButton.IsEnabled = false;
+        DshComponentsHintText.Text = "正在扫描 DSH 组件…";
+        var stopwatch = Stopwatch.StartNew();
+        var timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+        timer.Tick += (_, _) =>
+        {
+            if (taskRefreshCoordinator.Closed || token.IsCancellationRequested) return;
+            DshComponentsHintText.Text = $"正在扫描 DSH 组件（已用时 {Math.Max(0, (int)stopwatch.Elapsed.TotalSeconds)} 秒）…";
+        };
+        timer.Start();
+
+        IReadOnlyList<DshComponentInfo>? scanned = null;
+        string? failureMessage = null;
+        var cancelled = false;
+        try
+        {
+            scanned = await Task.Run(() => new DshComponentScanner().Scan(token), token);
+        }
+        catch (OperationCanceledException) { cancelled = true; }
+        catch (Exception ex) { failureMessage = ex.Message; }
+        finally
+        {
+            timer.Stop();
+            stopwatch.Stop();
+        }
+
+        // 关闭窗口后不得继续写入已关闭窗口；只允许最新一轮更新 UI（旧轮被新扫描替换时直接退出）。
+        if (taskRefreshCoordinator.Closed || !IsLoaded) return;
+        if (dshScanCts is null || dshScanCts.Token != token) return;
+        DshRescanButton.IsEnabled = true;
+        if (cancelled || token.IsCancellationRequested)
+        {
+            DshComponentsHintText.Text = "扫描已取消。";
+            return;
+        }
+        if (failureMessage is not null)
+        {
+            DshComponentsHintText.Text = "组件扫描失败：" + failureMessage;
+            return;
+        }
+        dshComponents = scanned!;
+        DshComponentsList.ItemsSource = dshComponents;
+        DshComponentsHintText.Text = dshComponents.Count == 0
+            ? "未检测到 DSH 组件（DSH Home 不存在或目录为空）。"
+            : $"扫描完成：共 {dshComponents.Count} 个组件，用时 {stopwatch.Elapsed.TotalSeconds:0.#} 秒：{dshComponents.Count(component => component.Status == DshComponentStatus.SetupNone)} 个无需配置，{dshComponents.Count(component => component.Status == DshComponentStatus.Ready)} 个已就绪，{dshComponents.Count(component => component.Status == DshComponentStatus.RequiredMissing)} 个待配置，{dshComponents.Count(component => component.Status == DshComponentStatus.OptionalConfig)} 个可选配置，{dshComponents.Count(component => component.Status is DshComponentStatus.ManualReview or DshComponentStatus.InvalidDeclaration)} 个待人工确认/声明无效。";
+        DshComponentDetailText.Visibility = Visibility.Collapsed;
+    }
+
+    private void RefreshDshComponents_Click(object sender, RoutedEventArgs e) => RefreshDshComponents();
+
+    /// <summary>
+    /// 导出 DSH 迁移包：先扫描组件，保存对话框默认文件名带当前 Helper 版本；
+    /// 导出前展示类型与内容预览（组件、文件数、大小），导出过程异步进行。
+    /// </summary>
+    private async void ExportDshTransfer_Click(object sender, RoutedEventArgs e)
+    {
+        if (dshComponents.Count == 0)
+        {
+            DshComponentsHintText.Text = "尚未扫描到 DSH 组件，请先“重新扫描”。";
+            return;
+        }
+        var version = Assembly.GetEntryAssembly()?.GetName().Version?.ToString(3) ?? "4.1.0";
+        var dialog = new SaveFileDialog
+        {
+            Title = "导出 DSH 迁移包（不含账号密钥、会话、附件与依赖树）",
+            Filter = "ZIP 压缩包 (*.zip)|*.zip",
+            FileName = DshTransferService.BuildFileName(version),
+            AddExtension = true
+        };
+        if (dialog.ShowDialog(this) != true) return;
+        var preview = dshComponents
+            .Where(component => Directory.Exists(component.RootPath))
+            .Select(component =>
+            {
+                var files = Directory.Exists(component.RootPath)
+                    ? Directory.EnumerateFiles(component.RootPath, "*", SearchOption.AllDirectories).Count()
+                    : 0;
+                return (component, files);
+            })
+            .ToList();
+        var kinds = string.Join("\n", preview.GroupBy(item => item.component.Kind).Select(group => $"· {group.Key switch { DshComponentType.Skill => "Skills", DshComponentType.Plugin => "用户插件", DshComponentType.Preset => "Agent 预设", _ => group.Key.ToString() }}：{group.Count()} 个"));
+        if (MessageBox.Show($"将导出 {preview.Count} 个 DSH 组件到：\n{dialog.FileName}\n\n{kinds}\n\n迁移包含配置声明副本；排除账号密钥、会话、附件、缓存、日志、临时文件与插件依赖树。\n继续吗？", "导出 DSH 迁移包", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
+        await RunOperationAsync("导出 DSH 迁移包", async cancellationToken =>
+        {
+            var service = new DshTransferService(appPaths);
+            var manifest = await service.ExportAsync(
+                new DshTransferExportRequest(dialog.FileName, dshComponents.Where(component => Directory.Exists(component.RootPath)).ToList()),
+                CreateProgress(), cancellationToken);
+            await Dispatcher.InvokeAsync(() => MessageBox.Show($"DSH 迁移包已导出：\n{dialog.FileName}\n\n组件 {manifest.Components.Count} 个，文件 {manifest.Files.Count} 个。", "导出完成", MessageBoxButton.OK, MessageBoxImage.Information));
+        });
+    }
+
+    /// <summary>
+    /// 导入 DSH 迁移包：先预览（校验结构、manifest 与哈希），展示组件清单与内容摘要，
+    /// 确认后暂存到 Helper 临时目录并受控复制到当前设备 DSH Home；默认不覆盖已有文件，
+    /// 失败回滚不留下半导入状态。
+    /// </summary>
+    private async void ImportDshTransfer_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = new OpenFileDialog
+        {
+            Title = "选择 DSH 迁移包（codex-helper-dsh-transfer-v*.zip）",
+            Filter = "ZIP 压缩包 (*.zip)|*.zip",
+            CheckFileExists = true
+        };
+        if (dialog.ShowDialog(this) != true) return;
+        DshTransferPreview preview;
+        try { preview = await new DshTransferService(appPaths).PreviewAsync(dialog.FileName); }
+        catch (Exception ex) { MessageBox.Show("迁移包校验失败：" + ex.Message, "无法预览", MessageBoxButton.OK, MessageBoxImage.Error); return; }
+        var kinds = string.Join("\n", preview.Manifest.Components.GroupBy(component => component.Kind).Select(group => $"· {group.Key}：{group.Count()} 个"));
+        var targetHome = new DshComponentScanner().DshHome;
+        if (MessageBox.Show($"迁移包内容预览：\n{dialog.FileName}\n\n{kinds}\n文件 {preview.Manifest.Files.Count} 个，大小 {FormatBytes(preview.Manifest.Files.Sum(file => file.Length))}\n\n将导入到当前设备 DSH Home：\n{targetHome}\n\n已存在的文件不会被覆盖（保留本机）。\n继续吗？", "导入 DSH 迁移包", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
+        await RunOperationAsync("导入 DSH 迁移包", async cancellationToken =>
+        {
+            var service = new DshTransferService(appPaths);
+            var result = await service.ImportAsync(
+                new DshTransferImportRequest(dialog.FileName, targetHome, OnlyNewFiles: true),
+                CreateProgress(), cancellationToken);
+            await Dispatcher.InvokeAsync(() =>
+            {
+                RefreshDshComponents();
+                RefreshDshSnapshots();
+                MessageBox.Show($"导入完成：已导入 {result.ImportedFiles} 个文件，跳过冲突 {result.SkippedConflicts} 个。\n结果：{result.Outcome}\n\n请重启 DSH / Harness Host 使设置生效。", "DSH 迁移导入完成", MessageBoxButton.OK, result.Outcome == OperationOutcome.Success ? MessageBoxImage.Information : MessageBoxImage.Warning);
+            });
+        });
+    }
+
+    /// <summary>选中组件后展开配置步骤、缺失字段（只含 id）与判定依据；不显示任何密钥值。</summary>
+    private void DshComponentsList_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (DshComponentDetailText is null) return;
+        if (DshComponentsList.SelectedItem is not DshComponentInfo component)
+        {
+            DshComponentDetailText.Visibility = Visibility.Collapsed;
+            return;
+        }
+        var parts = new List<string>
+        {
+            $"名称：{component.Name}（{component.KindDisplay}）",
+            $"状态：{component.StatusDisplay}（{component.DeclarationSourceDisplay}）"
+        };
+        if (!string.IsNullOrWhiteSpace(component.Version)) parts.Add("版本：" + component.Version);
+        if (component.MissingFieldIds.Count > 0)
+            parts.Add("缺失配置字段：" + string.Join("、", component.MissingFieldIds));
+        if (!string.IsNullOrWhiteSpace(component.ReviewReason)) parts.Add("原因：" + component.ReviewReason);
+        if (component.Evidence.Count > 0) parts.Add("判定依据：" + string.Join("；", component.Evidence.Take(4)));
+        if (!string.IsNullOrWhiteSpace(component.SetupSteps)) parts.Add("配置步骤：\n" + component.SetupSteps);
+        DshComponentDetailText.Text = string.Join("\n", parts);
+        DshComponentDetailText.Visibility = Visibility.Visible;
     }
 
     private async void SaveOfficial_Click(object sender, RoutedEventArgs e)
@@ -1875,6 +2401,7 @@ public partial class MainWindow : Window
         settingsService.Save(settings);
         projects = await projectDiscovery.DiscoverAsync(settings.WorkspaceRoots, settings.ProtectedProjectPaths);
         ProjectsGrid.ItemsSource = projects;
+        UpdateProjectActionButtons();
         RefreshDashboard();
     }
 
@@ -1884,7 +2411,7 @@ public partial class MainWindow : Window
             if (!settings.ProtectedProjectPaths.Contains(project.Path, StringComparer.OrdinalIgnoreCase)) settings.ProtectedProjectPaths.Add(project.Path);
         settingsService.Save(settings);
         projects = await projectDiscovery.DiscoverAsync(settings.WorkspaceRoots, settings.ProtectedProjectPaths);
-        ProjectsGrid.ItemsSource = projects; RefreshDashboard();
+        ProjectsGrid.ItemsSource = projects; UpdateProjectActionButtons(); RefreshDashboard();
     }
 
     private async void UnprotectProjects_Click(object sender, RoutedEventArgs e)
@@ -1893,7 +2420,7 @@ public partial class MainWindow : Window
         settings.ProtectedProjectPaths.RemoveAll(selected.Contains);
         settingsService.Save(settings);
         projects = await projectDiscovery.DiscoverAsync(settings.WorkspaceRoots, settings.ProtectedProjectPaths);
-        ProjectsGrid.ItemsSource = projects; RefreshDashboard();
+        ProjectsGrid.ItemsSource = projects; UpdateProjectActionButtons(); RefreshDashboard();
     }
 
     private void ChooseRepository_Click(object sender, RoutedEventArgs e)
@@ -1902,12 +2429,15 @@ public partial class MainWindow : Window
         if (dialog.ShowDialog(this) != true) return;
         try
         {
-            PathSafety.EnsureRepositoryOutsideSources(dialog.FolderName, BuildBackupSources().Select(item => item.Path));
+            var protectedSources = BuildBackupSources();
+            protectedSources.AddRange(new DshExtensionBackupService().DiscoverSources());
+            PathSafety.EnsureRepositoryOutsideSources(dialog.FolderName, protectedSources.Select(item => item.Path));
             settings.BackupRepositoryPath = dialog.FolderName;
             settingsService.Save(settings);
             new BackupRepository(dialog.FolderName).Initialize();
             RepositoryPathText.Text = dialog.FolderName;
-            RefreshSnapshots(); RefreshDashboard();
+            DshRepositoryPathText.Text = dialog.FolderName;
+            RefreshSnapshots(); RefreshDshSnapshots(); RefreshDashboard();
         }
         catch (Exception ex) { ShowError(ex); }
     }
@@ -1985,6 +2515,20 @@ public partial class MainWindow : Window
         }
         if (ExportProjectsCheck.IsChecked == true)
             foreach (var project in settings.ProtectedProjectPaths.Where(Directory.Exists)) result.Add(new BundleExportItem("project-" + ShortHash(project), "project", Path.GetFileName(project), project));
+        if (ExportDshCheck.IsChecked == true)
+        {
+            // DSH Skills、Agent 预设、用户配置与插件：与一键备份使用相同发现规则；
+            // 未安装 DSH 时自动不添加任何项。
+            try
+            {
+                foreach (var dshSource in new DshExtensionBackupService().DiscoverSources())
+                    result.Add(new BundleExportItem(dshSource.Id, "dsh", dshSource.DisplayName, dshSource.Path));
+            }
+            catch
+            {
+                // DSH 发现失败不影响其余导出项。
+            }
+        }
         return result;
     }
 

@@ -145,6 +145,8 @@ internal static class Program
         ,("Harness DSH 语义标题报告门禁（实际修改/验证结果/未完成项含 TaskId+指纹+exit 0 通过；缺成功证据/exit 1/错ID错指纹/陈旧失败）", TestHarnessSemanticTitleReportGateAsync)
         ,("Harness CLI 终态语义（running/busy/starting 绝不映射成功，仅真实完成退出 0）", TestHarnessCliTerminalSemanticsAsync)
         ,("Harness 组键续接诊断（无组键默认/不同组键隔离/报告未过门禁/续接成功原因可读）", TestHarnessContinuityDiagnosticAsync)
+        ,("Harness max-tokens 自动恢复（length/max-tokens 识别/同一会话短恢复一次/上限 1/再次截断真实失败/不建第二会话）", TestHarnessMaxTokenRecoveryAsync)
+        ,("Harness max-tokens 恢复门禁与失败诊断（恢复后无报告 failed/提交失败/Host 不可核验/HTTP 轮询恢复）", TestHarnessMaxTokenRecoveryGateAndFallbacksAsync)
     ];
 
     private static async Task<int> Main()
@@ -1173,7 +1175,7 @@ internal static class Program
         // 版本源必须与当前发布版本一致。
         var props = await File.ReadAllTextAsync(Path.Combine(root, "Directory.Build.props"));
         var match = System.Text.RegularExpressions.Regex.Match(props, @"<Version>([^<]+)</Version>");
-        Assert(match.Success && match.Groups[1].Value == "4.3.4", "版本源必须为 4.3.4，实际：" + (match.Success ? match.Groups[1].Value : "未找到"));
+        Assert(match.Success && match.Groups[1].Value == "4.4.0", "版本源必须为 4.4.0，实际：" + (match.Success ? match.Groups[1].Value : "未找到"));
 
         // 安装器：含微软官方链接、无 full/portable 旧引导、运行库检测不依赖单一目录。
         var iss = await File.ReadAllTextAsync(Path.Combine(root, "installer", "CodexHelperRuntimeRequired.iss"));
@@ -1190,8 +1192,8 @@ internal static class Program
 
         // README：开发版本与当前正式 Release 保持一致，首页只提供版本化精简安装包。
         var readme = await File.ReadAllTextAsync(Path.Combine(root, "README.md"));
-        Assert(readme.Contains("当前开发版本：`4.3.4`", StringComparison.Ordinal), "README 当前开发版本应为 4.3.4。");
-        Assert(readme.Contains("releases/download/v4.3.4/codex-helper-v4.3.4-setup.exe", StringComparison.Ordinal) && readme.Contains("releases/tag/v4.3.4", StringComparison.Ordinal), "README 首页应指向 v4.3.4 正式 Release 与版本化安装包。");
+        Assert(readme.Contains("当前开发版本：`4.4.0`", StringComparison.Ordinal), "README 当前开发版本应为 4.4.0。");
+        Assert(readme.Contains("releases/download/v4.4.0/codex-helper-v4.4.0-setup.exe", StringComparison.Ordinal) && readme.Contains("releases/tag/v4.4.0", StringComparison.Ordinal), "README 首页应指向 v4.4.0 正式 Release 与版本化安装包。");
         Assert(readme.Contains("https://dotnet.microsoft.com/zh-cn/download/dotnet/8.0", StringComparison.Ordinal), "README 下载区应提供微软官方 .NET 8 下载页。");
         Assert(!readme.Contains("setup-full", StringComparison.OrdinalIgnoreCase) && !readme.Contains("portable.zip", StringComparison.OrdinalIgnoreCase), "README 不得再推荐 full/portable 下载。");
     }
@@ -7357,6 +7359,55 @@ remotePort = 58831
                 Assert(!host.Calls.Any(call => call.Method == "session.prompt"), "组键接回不得重复提交提示");
             }
 
+            // 场景 A2（澄清边界）：同组键接回（GroupRunning）仅是观察他人运行会话。若该会话以
+            // 单回合 max-tokens（length）截断结束，本合同不得向他人会话提交恢复提示、不得干预，
+            // 只能如实返回失败——跨合同自动恢复仅限"已完成并通过报告门禁的正常连续会话"续接回合。
+            var ownerDir = Path.Combine(project, ".codex-helper", "runs", "run-rck-g-owner");
+            var taskG = Path.Combine(project, ".codex-helper", "runs", "run-rck-g");
+            Directory.CreateDirectory(ownerDir);
+            Directory.CreateDirectory(taskG);
+            await File.WriteAllTextAsync(Path.Combine(ownerDir, "SPEC.md"), "同组键 owner（他人合同）");
+            await File.WriteAllTextAsync(Path.Combine(ownerDir, "manifest.json"), """{"rootCauseKey":"group-g"}""", new System.Text.UTF8Encoding(false));
+            await File.WriteAllTextAsync(Path.Combine(taskG, "SPEC.md"), "合同 G（同组键观察截断）");
+            await File.WriteAllTextAsync(Path.Combine(taskG, "manifest.json"), """{"rootCauseKey":"group-g"}""", new System.Text.UTF8Encoding(false));
+            var taskIdG = Path.GetFileName(taskG);
+            await using (var hostG = new FakeHarnessHost
+            {
+                Respond = (method, _) => method switch
+                {
+                    "session.list" => new JsonObject { ["items"] = new JsonArray(new JsonObject { ["sessionId"] = "sess-rck-g", ["running"] = true }) },
+                    _ => new JsonObject()
+                },
+                WsScripts =
+                [
+                    new Queue<string>([
+                        WsFrame("session/subscribed", "sess-rck-g"),
+                        WsFrame("session/event", "sess-rck-g", "turn/start", seq: 1),
+                        WsFrame("session/event", "sess-rck-g", "turn/end", "length", seq: 2)
+                    ])
+                ]
+            })
+            {
+                await hostG.StartAsync();
+                var runnerG = new DeepSeekHarnessRunner(new AppPaths(Path.Combine(root, "app-rck-g")))
+                {
+                    WebUrl = hostG.BaseUrl,
+                    RelayProbe = new ConfirmedHarnessRelay(),
+                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。"))
+                };
+                var runningG = new HarnessTaskStatus("run-rck-g-owner", project, ownerDir, "running", "同组键任务运行中。",
+                    DateTime.UtcNow.AddMinutes(-10), DateTime.UtcNow.AddMinutes(-9), 0, hostG.BaseUrl, "sess-rck-g",
+                    RootCauseKey: "group-g", ContractFingerprint: TestFingerprint(ownerDir));
+                File.WriteAllText(runnerG.TaskDirectoryFor("run-rck-g-owner"),
+                    JsonSerializer.Serialize(runningG, new JsonSerializerOptions { WriteIndented = true, Converters = { new HarnessUtcConverter() } }));
+
+                var g = await runnerG.StartAsync(project, taskG);
+                Assert(g.State == "failed" && g.Message.Contains("仅观察", StringComparison.Ordinal),
+                    "同组键观察期间对方会话截断，本合同应如实失败且不干预他人会话：" + g.State + " / " + g.Message);
+                Assert(!hostG.Calls.Any(call => call.Method == "session.create"), "观察截断不得创建新会话");
+                Assert(!hostG.Calls.Any(call => call.Method == "session.prompt"), "观察截断不得向他人会话提交恢复/初始提示");
+            }
+
             // 场景 B：同项目但不同显式组键，且无任何运行任务 → 保守隔离，创建新会话（绝不合并）。
             var taskC = Path.Combine(project, ".codex-helper", "runs", "run-rck-c");
             Directory.CreateDirectory(taskC);
@@ -8013,6 +8064,14 @@ remotePort = 58831
             File.SetLastWriteTimeUtc(reportPath, DateTime.UtcNow);
             var ok = HarnessExecutionReportValidator.Validate(task, taskId, fingerprint, started);
             Assert(ok.Valid, "DSH 标题报告含 exit 0 应通过：" + ok.Reason);
+
+            // DSH workerCheck 的常见行内格式 `exit=0` 也必须是明确成功证据，不能因
+            // `## 修改文件/workerChecks/风险` 三标题被当成缺退出码而误拦截。
+            var dshEqualsOk = $"# EXECUTION_REPORT\n\n任务标识：{taskId}\n合同指纹：{fingerprint}\n\n## 修改文件\n- 无\n\n## workerChecks\n- focused test：PASS，exit=0\n\n## 风险与未完成项\n- 无\n";
+            File.WriteAllText(reportPath, dshEqualsOk, Encoding.UTF8);
+            File.SetLastWriteTimeUtc(reportPath, DateTime.UtcNow);
+            var equalsOk = HarnessExecutionReportValidator.Validate(task, taskId, fingerprint, started);
+            Assert(equalsOk.Valid, "DSH 标题报告含 exit=0 应通过：" + equalsOk.Reason);
 
             // 标题齐备但完全无成功证据 → 失败。
             var noSuccess = $"# EXECUTION_REPORT\n\n任务标识：{taskId}\n合同指纹：{fingerprint}\n\n## 实际修改\n- src/a.cs\n\n## 验证结果\n- 见上文\n\n## 未完成项与说明\n- 无\n";
@@ -10041,6 +10100,304 @@ remotePort = 58831
                 var statusA = await startA;
                 Assert(statusA.State == "cancelled", "停止后终态应为 cancelled：" + statusA.State);
                 await WaitUntilAsync(() => HarnessTaskStateStore.TryReadActiveRecord(project) is null, message: "终态后 active 记录应清除");
+            }
+        }
+        finally { TryDeleteDirectory(root); }
+    }
+
+    /// <summary>
+    /// max-tokens（stopReason=length）自动恢复：同一合同会话以此原因结束时，向同一 Session 提交
+    /// 一次短恢复提示并继续监听（不建第二个会话）；恢复回合再次截断（上限 1）或 Host 无法核验时
+    /// 写真实失败终态，绝不无限重试、绝不伪装完成。
+    /// </summary>
+    private static async Task TestHarnessMaxTokenRecoveryAsync()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "codex-helper-harness-mt-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            // ---- 1) WS：length 截断 → 自动恢复一次（同一会话、第二次短提示）→ 恢复回合 completed 通过门禁 → awaiting-gpt。 ----
+            var project = Path.Combine(root, "project-mt-1");
+            var task = Path.Combine(project, ".codex-helper", "runs", "run-mt-a");
+            Directory.CreateDirectory(task);
+            await File.WriteAllTextAsync(Path.Combine(task, "SPEC.md"), "test");
+            var taskId = Path.GetFileName(task);
+            WriteValidReport(task, taskId, TestFingerprint(task));
+            await using (var host = new FakeHarnessHost
+            {
+                Respond = (method, _) => method switch
+                {
+                    "session.create" => new JsonObject { ["sessionId"] = "sess-mt-a" },
+                    "session.prompt" => new JsonObject { ["accepted"] = true },
+                    "session.list" => new JsonObject { ["items"] = new JsonArray(new JsonObject { ["sessionId"] = "sess-mt-a", ["running"] = true }) },
+                    _ => new JsonObject()
+                },
+                WsScripts =
+                [
+                    new Queue<string>([
+                        WsFrame("session/subscribed", "sess-mt-a"),
+                        WsFrame("session/event", "sess-mt-a", "turn/start", seq: 1),
+                        WsFrame("session/event", "sess-mt-a", "turn/end", "length", seq: 2),
+                        WsFrame("session/event", "sess-mt-a", "turn/start", seq: 3),
+                        WsFrame("session/event", "sess-mt-a", "turn/end", "completed", seq: 4)
+                    ])
+                ]
+            })
+            {
+                await host.StartAsync();
+                var runner = new DeepSeekHarnessRunner(new AppPaths(Path.Combine(root, "app-mt-1")))
+                {
+                    WebUrl = host.BaseUrl,
+                    RelayProbe = new ConfirmedHarnessRelay(),
+                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。"))
+                };
+                var status = await runner.StartAsync(project, task);
+                Assert(status.State == "awaiting-gpt" && status.SessionId == "sess-mt-a",
+                    "恢复回合完成后应通过门禁进入 awaiting-gpt：" + status.State + " / " + status.Message);
+                Assert(status.MaxTokenRecoveryAttempts == 1 && status.MaxTokenRecoveryAtUtc is not null,
+                    "应持久化一次 max-tokens 自动恢复记录：" + status.MaxTokenRecoveryAttempts);
+                Assert(host.Calls.Count(call => call.Method == "session.create") == 1, "自动恢复不得创建第二个会话");
+                var prompts = host.Calls.Where(call => call.Method == "session.prompt").Select(call => call.Payload["content"]?[0]?["text"]?.GetValue<string>() ?? "").ToList();
+                Assert(prompts.Count == 2, "应提交一次初始合同提示与一次恢复提示：" + prompts.Count);
+                Assert(prompts[1].Contains("max-tokens", StringComparison.Ordinal) && prompts[1].Contains("从最后检查点继续", StringComparison.Ordinal)
+                    && prompts[1].Contains("禁止重新递归扫描", StringComparison.Ordinal) && !prompts[1].Contains("方案已冻结：请阅读任务目录", StringComparison.Ordinal),
+                    "恢复提示应只要求从检查点继续，不得重复初始合同提示：" + prompts[1]);
+                var persisted = runner.TryRead(taskId);
+                Assert(persisted is not null && persisted.HasAttemptedMaxTokenRecovery, "恢复标记应持久化，重启后不得重复恢复");
+            }
+
+            // ---- 2) 恢复回合再次 length 截断 → 自动恢复上限 1 → 真实失败终态（绝不无限重试）。 ----
+            var project2 = Path.Combine(root, "project-mt-2");
+            var task2 = Path.Combine(project2, ".codex-helper", "runs", "run-mt-b");
+            Directory.CreateDirectory(task2);
+            await File.WriteAllTextAsync(Path.Combine(task2, "SPEC.md"), "test");
+            var taskId2 = Path.GetFileName(task2);
+            await using (var host2 = new FakeHarnessHost
+            {
+                Respond = (method, _) => method switch
+                {
+                    "session.create" => new JsonObject { ["sessionId"] = "sess-mt-b" },
+                    "session.prompt" => new JsonObject { ["accepted"] = true },
+                    "session.list" => new JsonObject { ["items"] = new JsonArray(new JsonObject { ["sessionId"] = "sess-mt-b", ["running"] = true }) },
+                    _ => new JsonObject()
+                },
+                WsScripts =
+                [
+                    new Queue<string>([
+                        WsFrame("session/subscribed", "sess-mt-b"),
+                        WsFrame("session/event", "sess-mt-b", "turn/start", seq: 1),
+                        WsFrame("session/event", "sess-mt-b", "turn/end", "length", seq: 2),
+                        WsFrame("session/event", "sess-mt-b", "turn/start", seq: 3),
+                        WsFrame("session/event", "sess-mt-b", "turn/end", "length", seq: 4)
+                    ])
+                ]
+            })
+            {
+                await host2.StartAsync();
+                var runner2 = new DeepSeekHarnessRunner(new AppPaths(Path.Combine(root, "app-mt-2")))
+                {
+                    WebUrl = host2.BaseUrl,
+                    RelayProbe = new ConfirmedHarnessRelay(),
+                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。"))
+                };
+                var status2 = await runner2.StartAsync(project2, task2);
+                Assert(status2.State == "failed" && status2.Message.Contains("已执行过自动恢复", StringComparison.Ordinal),
+                    "恢复回合再次截断应因上限 1 写真实失败：" + status2.State + " / " + status2.Message);
+                Assert(host2.Calls.Count(call => call.Method == "session.prompt") == 2, "自动恢复上限 1，不得提交第三次提示");
+                Assert(host2.Calls.Count(call => call.Method == "session.create") == 1, "不得因再次截断创建第二个会话");
+            }
+
+            // ---- 3) Host 无法核验会话 → 未自动恢复，写真实失败并说明原因（绝不假装恢复）。 ----
+            var project3 = Path.Combine(root, "project-mt-3");
+            var task3 = Path.Combine(project3, ".codex-helper", "runs", "run-mt-c");
+            Directory.CreateDirectory(task3);
+            await File.WriteAllTextAsync(Path.Combine(task3, "SPEC.md"), "test");
+            await using (var host3 = new FakeHarnessHost
+            {
+                Respond = (method, _) => method switch
+                {
+                    "session.create" => new JsonObject { ["sessionId"] = "sess-mt-c" },
+                    "session.prompt" => new JsonObject { ["accepted"] = true },
+                    "session.list" => throw new FakeHostError("internal", "session.list 服务不可用"),
+                    _ => new JsonObject()
+                },
+                WsScripts =
+                [
+                    new Queue<string>([
+                        WsFrame("session/subscribed", "sess-mt-c"),
+                        WsFrame("session/event", "sess-mt-c", "turn/start", seq: 1),
+                        WsFrame("session/event", "sess-mt-c", "turn/end", "length", seq: 2)
+                    ])
+                ]
+            })
+            {
+                await host3.StartAsync();
+                var runner3 = new DeepSeekHarnessRunner(new AppPaths(Path.Combine(root, "app-mt-3")))
+                {
+                    WebUrl = host3.BaseUrl,
+                    RelayProbe = new ConfirmedHarnessRelay(),
+                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。"))
+                };
+                var status3 = await runner3.StartAsync(project3, task3);
+                Assert(status3.State == "failed" && status3.Message.Contains("未自动恢复", StringComparison.Ordinal)
+                    && status3.Message.Contains("无法核验", StringComparison.Ordinal),
+                    "Host 无法核验时应诚实失败并写明原因：" + status3.State + " / " + status3.Message);
+                Assert(host3.Calls.Count(call => call.Method == "session.prompt") == 1, "Host 无法核验时不得提交恢复提示");
+                Assert(host3.Calls.Any(call => call.Method == "session.list"), "自动恢复前应先调用 session.list 核验会话");
+                var persisted3 = runner3.TryRead(Path.GetFileName(task3));
+                Assert(persisted3 is not null && persisted3.MaxTokenRecoveryMessage is not null && persisted3.MaxTokenRecoveryMessage.Contains("未恢复", StringComparison.Ordinal),
+                    "未恢复原因应持久化供 UI 展示：" + (persisted3 is null ? "<状态缺失>" : (persisted3.MaxTokenRecoveryMessage ?? "<空>")));
+            }
+        }
+        finally { TryDeleteDirectory(root); }
+    }
+
+    /// <summary>
+    /// max-tokens 恢复门禁与回退：恢复回合完成后报告缺失 → 门禁失败（真实失败，绝不伪装完成）；
+    /// 恢复提示提交失败 → 失败诊断；HTTP 轮询路径同样支持一次性恢复并到达可信终态。
+    /// </summary>
+    private static async Task TestHarnessMaxTokenRecoveryGateAndFallbacksAsync()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "codex-helper-harness-mtgate-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            // ---- 1) 恢复回合 completed 但报告缺失 → 完成门禁失败（自动恢复不豁免报告）。 ----
+            var project = Path.Combine(root, "project-g1");
+            var task = Path.Combine(project, ".codex-helper", "runs", "run-mt-gate");
+            Directory.CreateDirectory(task);
+            await File.WriteAllTextAsync(Path.Combine(task, "SPEC.md"), "test");
+            var taskId = Path.GetFileName(task);
+            await using (var host = new FakeHarnessHost
+            {
+                Respond = (method, _) => method switch
+                {
+                    "session.create" => new JsonObject { ["sessionId"] = "sess-mt-gate" },
+                    "session.prompt" => new JsonObject { ["accepted"] = true },
+                    "session.list" => new JsonObject { ["items"] = new JsonArray(new JsonObject { ["sessionId"] = "sess-mt-gate", ["running"] = true }) },
+                    _ => new JsonObject()
+                },
+                WsScripts =
+                [
+                    new Queue<string>([
+                        WsFrame("session/subscribed", "sess-mt-gate"),
+                        WsFrame("session/event", "sess-mt-gate", "turn/start", seq: 1),
+                        WsFrame("session/event", "sess-mt-gate", "turn/end", "length", seq: 2),
+                        WsFrame("session/event", "sess-mt-gate", "turn/start", seq: 3),
+                        WsFrame("session/event", "sess-mt-gate", "turn/end", "completed", seq: 4)
+                    ])
+                ]
+            })
+            {
+                await host.StartAsync();
+                var runner = new DeepSeekHarnessRunner(new AppPaths(Path.Combine(root, "app-g1")))
+                {
+                    WebUrl = host.BaseUrl,
+                    RelayProbe = new ConfirmedHarnessRelay(),
+                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。"))
+                };
+                var status = await runner.StartAsync(project, task);
+                Assert(status.State == "failed" && status.Message.Contains("未通过完成门禁", StringComparison.Ordinal),
+                    "恢复后无报告不得伪装完成，应门禁失败：" + status.State + " / " + status.Message);
+                Assert(status.MaxTokenRecoveryAttempts == 1, "自动恢复只执行一次，门禁失败不重复恢复");
+            }
+
+            // ---- 2) 恢复提示提交失败 → 真实失败 + 失败诊断（绝不无限重试）。 ----
+            var project2 = Path.Combine(root, "project-g2");
+            var task2 = Path.Combine(project2, ".codex-helper", "runs", "run-mt-promptfail");
+            Directory.CreateDirectory(task2);
+            await File.WriteAllTextAsync(Path.Combine(task2, "SPEC.md"), "test");
+            var promptCalls = 0;
+            await using (var host2 = new FakeHarnessHost
+            {
+                Respond = (method, _) => method switch
+                {
+                    "session.create" => new JsonObject { ["sessionId"] = "sess-mt-pf" },
+                    // 第一次（初始合同）成功；恢复提示（第二次）失败 → Runner 必须诚实失败。
+                    "session.prompt" => Interlocked.Increment(ref promptCalls) == 1
+                        ? new JsonObject { ["accepted"] = true }
+                        : throw new FakeHostError("agent-busy", "agent busy"),
+                    "session.list" => new JsonObject { ["items"] = new JsonArray(new JsonObject { ["sessionId"] = "sess-mt-pf", ["running"] = true }) },
+                    _ => new JsonObject()
+                },
+                WsScripts =
+                [
+                    new Queue<string>([
+                        WsFrame("session/subscribed", "sess-mt-pf"),
+                        WsFrame("session/event", "sess-mt-pf", "turn/start", seq: 1),
+                        WsFrame("session/event", "sess-mt-pf", "turn/end", "length", seq: 2)
+                    ])
+                ]
+            })
+            {
+                await host2.StartAsync();
+                var runner2 = new DeepSeekHarnessRunner(new AppPaths(Path.Combine(root, "app-g2")))
+                {
+                    WebUrl = host2.BaseUrl,
+                    RelayProbe = new ConfirmedHarnessRelay(),
+                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。"))
+                };
+                var status2 = await runner2.StartAsync(project2, task2);
+                Assert(status2.State == "failed" && status2.Message.Contains("提交失败", StringComparison.Ordinal),
+                    "恢复提示提交失败应写真实失败：" + status2.State + " / " + status2.Message);
+                var persisted2 = runner2.TryRead(Path.GetFileName(task2));
+                Assert(persisted2 is not null && !string.IsNullOrWhiteSpace(persisted2.MaxTokenRecoveryFailure)
+                    && persisted2.MaxTokenRecoveryFailure.Contains("提交失败", StringComparison.Ordinal),
+                    "恢复失败诊断应持久化供 UI 展示：" + persisted2?.MaxTokenRecoveryFailure);
+            }
+
+            // ---- 3) HTTP 增量轮询路径：history 出现 length 终态 → 一次性恢复 → 读到 completed → awaiting-gpt。 ----
+            var project3 = Path.Combine(root, "project-g3");
+            var task3 = Path.Combine(project3, ".codex-helper", "runs", "run-mt-http");
+            Directory.CreateDirectory(task3);
+            await File.WriteAllTextAsync(Path.Combine(task3, "SPEC.md"), "test");
+            var taskId3 = Path.GetFileName(task3);
+            WriteValidReport(task3, taskId3, TestFingerprint(task3));
+            var historyCalls = 0;
+            await using (var host3 = new FakeHarnessHost
+            {
+                Respond = (method, _) => method switch
+                {
+                    "session.create" => new JsonObject { ["sessionId"] = "sess-mt-http" },
+                    "session.prompt" => new JsonObject { ["accepted"] = true },
+                    "session.list" => new JsonObject { ["items"] = new JsonArray(new JsonObject { ["sessionId"] = "sess-mt-http", ["running"] = true }) },
+                    // 第一页：截断；第二页起：完成回合（HTTP 增量去重由 lastSeq 保证）。
+                    "session.history" => Interlocked.Increment(ref historyCalls) == 1
+                        ? new JsonObject { ["events"] = new JsonArray(
+                            new JsonObject { ["event"] = new JsonObject { ["type"] = "turn/start", ["seq"] = 1L, ["data"] = new JsonObject() } },
+                            new JsonObject { ["event"] = new JsonObject { ["type"] = "turn/end", ["seq"] = 2L, ["data"] = new JsonObject { ["reason"] = new JsonObject { ["kind"] = "length" } } } }) }
+                        : new JsonObject { ["events"] = new JsonArray(
+                            new JsonObject { ["event"] = new JsonObject { ["type"] = "turn/start", ["seq"] = 3L, ["data"] = new JsonObject() } },
+                            new JsonObject { ["event"] = new JsonObject { ["type"] = "turn/end", ["seq"] = 4L, ["data"] = new JsonObject { ["reason"] = new JsonObject { ["kind"] = "completed" } } } }) },
+                    _ => new JsonObject()
+                },
+                WsScripts =
+                [
+                    // 真实时序：初始合同提示先提交，随后 WS 断开 → HTTP 增量轮询读到 length → 自动恢复。
+                    new Queue<string>(["@wait:session.prompt", "@close"]),
+                    new Queue<string>(["@close"])
+                ]
+            })
+            {
+                await host3.StartAsync();
+                var runner3 = new DeepSeekHarnessRunner(new AppPaths(Path.Combine(root, "app-g3")))
+                {
+                    WebUrl = host3.BaseUrl,
+                    RelayProbe = new ConfirmedHarnessRelay(),
+                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。")),
+                    MaxEventReconnects = 1,
+                    EventReconnectDelay = TimeSpan.FromMilliseconds(10),
+                    HttpPollInterval = TimeSpan.FromMilliseconds(20)
+                };
+                var status3 = await runner3.StartAsync(project3, task3);
+                var persisted3 = runner3.TryRead(taskId3);
+                var prompts3Count = host3.Calls.Count(call => call.Method == "session.prompt");
+                Assert(status3.State == "awaiting-gpt" && status3.SessionId == "sess-mt-http"
+                    && status3.MaxTokenRecoveryAttempts == 1,
+                    "HTTP 轮询路径也应一次性恢复并到达可信终态：" + status3.State + " / " + status3.SessionId
+                    + " / attempts=" + status3.MaxTokenRecoveryAttempts + " / " + status3.Message);
+                Assert(persisted3 is not null && persisted3.MaxTokenRecoveryAttempts == 1, "HTTP 恢复标记应持久化");
+                Assert(host3.Calls.Count(call => call.Method == "session.create") == 1, "HTTP 恢复不得创建第二个会话");
+                Assert(prompts3Count == 2, "HTTP 路径应恰好一次初始提示 + 一次恢复提示：" + prompts3Count);
+                Assert(host3.Calls.Count(call => call.Method == "session.create") == 1, "HTTP 恢复不得创建第二个会话");
             }
         }
         finally { TryDeleteDirectory(root); }

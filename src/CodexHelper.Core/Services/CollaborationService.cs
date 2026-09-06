@@ -122,6 +122,12 @@ public sealed class CollaborationService
         var block = $$"""
 {{HarnessGuidanceStart}}
 For implementation tasks that change project files, GPT is the planner and judge. This device uses the DeepSeek Harness (developer preview) as the implementation executor. GPT keeps the same planning/acceptance boundary as Reasonix: GPT plans, Harness implements, GPT independently re-runs focused acceptance. Only medium-to-large implementation tasks must be routed to the Harness: small low-risk changes (at most 2 files / about 80 lines, no public API, data format, install, release or security-boundary changes, no cross-module design) are implemented and accepted directly by GPT, unless the user explicitly requests the Harness. Route tasks through the managed `harness-executor` skill runner with only the absolute project root and the unique task directory; the task body is read only from files (SPEC.md/HANDOFF.md/manifest.json), never passed on the command line. Do not automate task submission by clicking the Harness Web UI. If runtime capability probing cannot confirm task submission, event stream and cancellation, honestly report "Web available but automatic relay unavailable" instead of claiming real-time collaboration or falling back to invisible headless. Only listen on 127.0.0.1; closing the browser does not stop the task. Credentials, API keys and task bodies must never appear on the command line; pass credentials only via controlled environment variables / existing secure storage; redact logs. GPT owns visual acceptance and gptChecks/releaseChecks; the Harness runner performs implementation and workerChecks only. A finished Harness session is awaiting-gpt, not product completion: GPT must independently inspect the diff and run focused acceptance before the delivery is considered complete. Harness version 0.1.0-rc.5 is only the known compatibility baseline: newer valid semantic versions may be used when runtime capability probing passes; never silently use the literal `latest`. Node requirement is >=22.19.0 (LTS) or >=24.0.0.
+
+### 连续执行与合同目录（强制）
+- 每个 Harness 任务目录必须唯一创建于 `<project>/.codex-helper/runs/run-<timestamp>-<guid>/`，内含 SPEC.md、ACCEPTANCE.md、HANDOFF.md 与 manifest.json；不要为同一工作流生成旧式 `.codex-helper/tasks/*` 合同，也不要复用既有任务的目录。
+- 同一产品工作流的后续合同（新阶段/增量回合/截断恢复）必须写入 manifest.json 的显式 `rootCauseKey`（稳定、可审计的非空字符串），不同工作流使用不同组键，绝不把不同根因合并到同一组键；无组键的旧记录继续被保守隔离读取，不再作为续接依据。
+- 大型工作必须按可验证阶段拆分合同（先完成最小可验证阶段、运行 workerChecks、再进入下一阶段），避免在单个回合内做完整个大工作；Helper 会自动向同一会话续接同组键合同，并在单回合 `max-tokens` 截断时（stopReason=length）自动恢复一次，但自动恢复有上限且绝不伪装完成。
+- 旧 `.codex-helper/tasks/*` 状态仍可被读取兼容，但不会获得组键续接；迁移方式：打开旧任务目录确认其内容与报告，把要延续的工作流按上文重建为一个带 `rootCauseKey` 的新 `runs/run-*` 合同，旧目录保留只读备份即可。
 {{HarnessVisualBoundaryRule}}
 {{HarnessGuidanceEnd}}
 """;
@@ -248,6 +254,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File invoke-harness.ps1 -Proj
 - 不提交、不推送、不重置、不清理、不安装依赖、不打包发布，除非合同明确授权。
 - 凭据、API Key 与任务正文绝不进入命令行；日志脱敏。
 - Harness 版本 0.1.0-rc.5 仅为已知兼容基线：通过运行时能力探测的新语义版本可用，绝不静默使用 latest。
+- 每个 Harness 任务目录必须唯一创建于 `<project>/.codex-helper/runs/run-<timestamp>-<guid>/`；同一工作流的后续合同在 manifest.json 写入显式 `rootCauseKey`（稳定非空，不同工作流用不同键），禁止生成无组键的旧式 `.codex-helper/tasks/*` 合同（旧 tasks 记录只读兼容，不参与续接）。
+- 大型工作按可验证阶段拆分合同，每阶段先完成最小可验证部分并运行 workerChecks；Helper 会向同一会话续接同组键合同，并在单回合 `max-tokens` 截断（stopReason=length）时自动恢复一次（上限 1，绝不伪装完成）。
 {{HarnessVisualBoundaryRule}}
 """;
 }

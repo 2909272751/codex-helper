@@ -890,6 +890,16 @@ public partial class MainWindow : Window
         lines.Add($"合同：{task.ExecutionMode} · 权限：{task.PermissionMode} · 强度：{task.ExecutionStrength}");
         lines.Add("会话状态：" + task.SessionState);
         if (!string.IsNullOrWhiteSpace(task.RootCauseKey)) lines.Add($"合同组键（rootCauseKey）：{task.RootCauseKey}（同项目同组键的运行中任务会被接回，而非新建会话）");
+        // 连续回合信息：是否连续、来源任务、回合数，以及“未续接”的精确原因。绝不显示合同正文/凭据。
+        if (!string.IsNullOrWhiteSpace(task.ContinuitySourceTaskId) || task.ContinuityRound > 1)
+            lines.Add($"连续执行：是（连续回合 {Math.Max(1, task.ContinuityRound)}；来源任务 {(string.IsNullOrWhiteSpace(task.ContinuitySourceTaskId) ? "—" : task.ContinuitySourceTaskId)}）");
+        if (task.MaxTokenRecoveryAttempts > 0)
+            lines.Add($"max-tokens 自动恢复：已恢复 {task.MaxTokenRecoveryAttempts} 次（上限 1，{task.MaxTokenRecoveryAtUtc?.ToLocalTime():yyyy-MM-dd HH:mm:ss}）"
+                + (string.IsNullOrWhiteSpace(task.MaxTokenRecoveryMessage) ? "" : "；" + task.MaxTokenRecoveryMessage));
+        if (!string.IsNullOrWhiteSpace(task.ContinuityDiagnostic))
+            lines.Add("连续诊断：" + task.ContinuityDiagnostic);
+        if (!string.IsNullOrWhiteSpace(task.MaxTokenRecoveryFailure))
+            lines.Add("max-tokens 恢复失败：" + task.MaxTokenRecoveryFailure);
         if (!string.IsNullOrWhiteSpace(task.TaskDirectory)) lines.Add($"任务目录：{task.TaskDirectory}");
         lines.Add("状态来源：" + HarnessStateSourceText(task.StateSource));
         HarnessTaskDetailText.Text = string.Join(Environment.NewLine, lines);

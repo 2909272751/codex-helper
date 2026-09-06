@@ -43,10 +43,17 @@ public sealed record HarnessTaskStatus(
     string? EventTransportError = null,
     string? ContinuitySourceTaskId = null,
     int ContinuityRound = 1,
-    string? ContinuityDiagnostic = null)
+    string? ContinuityDiagnostic = null,
+    int MaxTokenRecoveryAttempts = 0,
+    DateTime? MaxTokenRecoveryAtUtc = null,
+    string? MaxTokenRecoveryMessage = null,
+    string? MaxTokenRecoveryFailure = null)
 {
     public bool IsRunning => string.Equals(State, "running", StringComparison.OrdinalIgnoreCase)
         || string.Equals(State, "starting", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>是否已对本合同会话执行过单次 max-tokens 自动恢复（上限 1，持久化避免重复恢复）。</summary>
+    public bool HasAttemptedMaxTokenRecovery => MaxTokenRecoveryAttempts > 0;
 }
 
 /// <summary>ISO 8601 UTC 序列化器（标准 JSON）。</summary>
@@ -422,8 +429,9 @@ public sealed class DeepSeekHarnessRunner
                 }
                 else
                 {
-                    // 未声明显式组键：不基于项目名或自然语言猜测合并，新建会话并写明原因。
-                    status = status with { ContinuityDiagnostic = "manifest 未声明 rootCauseKey，保持保守隔离，未尝试续接已完成会话。" };
+                    // 未声明显式组键：不基于项目名或自然语言猜测合并，新建会话并写明原因；
+                    // 顺带说明旧式 tasks 记录的迁移方式（Helper 仍兼容读取旧状态，但不参与组键续接）。
+                    status = status with { ContinuityDiagnostic = "manifest 未声明 rootCauseKey，保持保守隔离，未尝试续接已完成会话。若要延续旧工作流，请把它重建为带稳定 rootCauseKey 的 .codex-helper/runs/run-* 合同（旧 .codex-helper/tasks/* 记录仅保留只读兼容，不参与续接）。" };
                 }
             }
             if (continuityDiagnostic is not null && status.ContinuityDiagnostic is null)
@@ -533,10 +541,15 @@ public sealed class DeepSeekHarnessRunner
             // 提交，也绝不创建第二个会话。listener 全程只属于这一个 session。
             Task<TerminalState>? listener = null;
             var eventPreconnected = false;
+            // max-token 自动恢复授权：仅当本任务在本合同会话上拥有自己的回合（新建会话、同 taskId
+            // 同指纹接回、同组键已完成并通过门禁的增量续接）时才允许向该会话提交恢复提示。
+            // GroupRunning（观察他人同组键运行会话）未提交本合同任何提示，绝不向他人会话自动恢复，
+            // 也绝不因他人会话截断而干预；跨合同唯一允许的自动续接是 EndedContinuity 的正常连续回合。
+            var maxTokenRecoveryAuthorized = resumeKind != ResumeKind.GroupRunning;
             if (resumeSessionId is null || resumeKind == ResumeKind.EndedContinuity)
             {
                 var streamReady = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-                listener = Task.Run(() => ListenForTerminalAsync(rpc, sessionId, status, stop.Token, streamReady, continuityBaseline), CancellationToken.None);
+                listener = Task.Run(() => ListenForTerminalAsync(rpc, sessionId, status, stop.Token, streamReady, continuityBaseline, maxTokenRecoveryAuthorized), CancellationToken.None);
                 var preconnect = await Task.WhenAny(streamReady.Task, Task.Delay(TimeSpan.FromSeconds(1), cancellationToken));
                 if (ReferenceEquals(preconnect, streamReady.Task) && streamReady.Task.IsCompletedSuccessfully)
                 {
@@ -592,7 +605,8 @@ public sealed class DeepSeekHarnessRunner
 
             // 新会话的 listener 已在 prompt 前预连接，避免错过首批会话事件；接回会话则在
             // “已接回”状态写入后开始监听，避免后续状态覆盖实时事件。
-            listener ??= Task.Run(() => ListenForTerminalAsync(rpc, sessionId, status, stop.Token, initialLastSequence: continuityBaseline), CancellationToken.None);
+            listener ??= Task.Run(() => ListenForTerminalAsync(rpc, sessionId, status, stop.Token,
+                initialLastSequence: continuityBaseline, allowMaxTokenRecovery: maxTokenRecoveryAuthorized), CancellationToken.None);
 
             TerminalState terminal;
             try
@@ -612,17 +626,23 @@ public sealed class DeepSeekHarnessRunner
 
             // 监听器在独立任务中持续写入真实事件传输信息。收尾时不能用提交阶段的
             // `status` 覆盖它，否则任务已走 Node Relay，最终状态却显示为空，任务中心
-            // 无法区分实时通道和 HTTP 回退。
-            var observed = TryRead(taskId);
-            status = status with
+            // 无法区分实时通道和 HTTP 回退。以监听期间持久化的最新状态为基座合并终态，
+            // 这样 max-token 自动恢复的持久化字段（MaxTokenRecoveryAttempts/Message/Failure）
+            // 与连续会话来源字段不会被旧快照覆盖丢失。
+            var observed = TryRead(taskId) ?? status;
+            status = observed with
             {
                 State = terminal.State,
-                Message = terminal.Message,
+                // HTTP 回退可能在一次很短的 history 轮询内直接读到终态。若直接用终态
+                // 文案覆盖观察到的回退事实，任务详情会看起来像从未降级过，且调用方无法
+                // 区分正常事件流完成与 HTTP 回退完成。终态语义仍以 terminal 为准，只
+                // 保留已写入的传输事实作为附注。
+                Message = PreserveTransportDiagnostic(terminal.Message, observed.Message),
                 UpdatedUtc = DateTime.UtcNow,
                 SessionState = terminal.State,
-                StateSource = observed?.StateSource ?? status.StateSource,
-                EventTransport = observed?.EventTransport ?? status.EventTransport,
-                EventTransportError = observed?.EventTransportError ?? status.EventTransportError
+                StateSource = observed.StateSource,
+                EventTransport = observed.EventTransport,
+                EventTransportError = observed.EventTransportError
             };
             status = await EnrichFromSessionAsync(rpc, status, cancellationToken);
             if (terminal.Summary is { } summary)
@@ -983,7 +1003,8 @@ public sealed class DeepSeekHarnessRunner
     /// 只记录状态与类型，绝不记录事件正文/密钥等敏感内容。
     /// </summary>
     private async Task<TerminalState> ListenForTerminalAsync(HarnessRpcClient rpc, string sessionId, HarnessTaskStatus initial,
-        CancellationToken cancellationToken, TaskCompletionSource<bool>? streamReady = null, long initialLastSequence = -1)
+        CancellationToken cancellationToken, TaskCompletionSource<bool>? streamReady = null, long initialLastSequence = -1,
+        bool allowMaxTokenRecovery = true)
     {
         var current = initial;
         var attempts = 0;
@@ -1136,6 +1157,28 @@ public sealed class DeepSeekHarnessRunner
                                 Write(current);
                                 return WithSummary(GateReport(new TerminalState("failed", message), current), detector);
                             }
+                            // 单回合输出达到 max-tokens 上限（stopReason=length）：当且仅当同一合同会话
+                            // 以此原因结束、会话仍可由 Host 核验、且本合同尚未恢复过时，向同一 Session
+                            // 提交一次短恢复提示并继续监听（绝不创建第二个 Session、绝不重贴初始合同提示、
+                            // 绝不无限重试——自动恢复上限固定为 1）。
+                            // 授权边界：仅本 taskId+本合同指纹拥有的回合（新建/接回/增量续接）可自动恢复；
+                            // GroupRunning（观察同组键他人运行会话）未提交本合同提示，无权向他人会话提交
+                            // 恢复提示或干预——按观察语义返回真实失败终态，绝不伪装完成。
+                            if (HarnessTurnEnd.IsMaxTokenKind(frame.TurnEndKind))
+                            {
+                                if (!allowMaxTokenRecovery)
+                                {
+                                    var message = "同组键运行中会话以单回合 max-tokens 截断结束；本合同仅观察该会话（未提交本合同回合），不干预他人会话、不自动恢复，任务未完成，等待 GPT 接管。";
+                                    current = WithSummary(current with { State = "failed", Message = message, UpdatedUtc = DateTime.UtcNow }, detector);
+                                    Write(current);
+                                    return WithSummary(GateReport(new TerminalState("failed", message), current), detector);
+                                }
+                                var outcome = await RecoverMaxTokenAsync(rpc, sessionId, current, ct: cancellationToken);
+                                if (!outcome.ShouldContinue)
+                                    return WithSummary(outcome.Terminal!, detector);
+                                current = outcome.UpdatedStatus!;
+                                continue;
+                            }
                             // completed 只进入 awaiting-gpt 候选：必须通过 EXECUTION_REPORT.md 完成门禁。
                             return WithSummary(GateReport(MapTurnEnd(frame.TurnEndKind), current), detector);
                         }
@@ -1169,7 +1212,7 @@ public sealed class DeepSeekHarnessRunner
                     // 事件流被服务端关闭，或本连接在无帧窗口内卡死：有限重连，绝不提前标 completed。
                     // 耗尽后转 HTTP 增量轮询（沿用同一退化检测器与 seq）。
                     if (++attempts > MaxEventReconnects)
-                        return await PollSessionTerminalAsync(rpc, sessionId, current, detector, lastSeq, cancellationToken);
+                        return await PollSessionTerminalAsync(rpc, sessionId, current, detector, lastSeq, cancellationToken, allowMaxTokenRecovery);
                     var reconnectReason = stalled ? "事件流长时间无新帧" : "事件流已断开";
                     current = WithSummary(current with
                     {
@@ -1207,7 +1250,7 @@ public sealed class DeepSeekHarnessRunner
                     UpdatedUtc = DateTime.UtcNow
                 }, detector);
                 Write(current);
-                return await PollSessionTerminalAsync(rpc, sessionId, current, detector, lastSeq, cancellationToken);
+                return await PollSessionTerminalAsync(rpc, sessionId, current, detector, lastSeq, cancellationToken, allowMaxTokenRecovery);
             }
             catch (Exception ex)
             {
@@ -1236,7 +1279,7 @@ public sealed class DeepSeekHarnessRunner
                     UpdatedUtc = DateTime.UtcNow
                 }, detector);
                 Write(current);
-                return await PollSessionTerminalAsync(rpc, sessionId, current, detector, lastSeq, cancellationToken);
+                return await PollSessionTerminalAsync(rpc, sessionId, current, detector, lastSeq, cancellationToken, allowMaxTokenRecovery);
             }
         }
     }
@@ -1279,16 +1322,39 @@ public sealed class DeepSeekHarnessRunner
         catch { return string.Empty; }
     }
 
-    private static TerminalState MapTurnEnd(string? kind) => kind switch
+    private static string PreserveTransportDiagnostic(string terminalMessage, string? observedMessage)
     {
-        // 成功结束统一为 awaiting-gpt 候选：Harness 会话已完成，但必须通过 EXECUTION_REPORT.md
-        // 完成门禁校验（GateReport）后才等待 GPT 独立验收，绝不直接显示为可验收完成。
-        "completed" => new TerminalState("awaiting-gpt", "任务已在 Harness 会话中完成，等待 GPT 独立验收。"),
-        "aborted" => new TerminalState("cancelled", "会话已取消。"),
-        _ => new TerminalState("failed", kind is null
-            ? "会话结束但缺少结束原因，视为失败。"
-            : $"会话以非成功原因结束（{kind}），视为失败。")
-    };
+        if (string.IsNullOrWhiteSpace(observedMessage)
+            || (!observedMessage.Contains("HTTP", StringComparison.Ordinal)
+                && !observedMessage.Contains("事件流", StringComparison.Ordinal)))
+            return terminalMessage;
+
+        return terminalMessage.Contains("HTTP", StringComparison.Ordinal)
+            || terminalMessage.Contains("事件流", StringComparison.Ordinal)
+            ? terminalMessage
+            : terminalMessage + "（传输状态：" + observedMessage + "）";
+    }
+
+    private static TerminalState MapTurnEnd(string? kind)
+    {
+        // 单回合输出达到 max-tokens 上限截断（stopReason=length）。实时监听路径会先尝试
+        // 一次性自动恢复（同一 Session 提交短恢复提示）；只有已恢复过、Host 无法核验会话仍可
+        // 继续、或本路径来自已结束会话的终态读取（接回/对账，无法再提交提示）时才落到这里，
+        // 一律写真实失败终态并给出可读原因，绝不伪装完成、绝不无限重试。
+        if (HarnessTurnEnd.IsMaxTokenKind(kind))
+            return new TerminalState("failed",
+                "会话以单回合输出达到 max-tokens 上限（stopReason=length）结束且未成功恢复（已恢复过、Host 无法核验或会话已停止），任务未完成，等待 GPT 接管。");
+        return kind switch
+        {
+            // 成功结束统一为 awaiting-gpt 候选：Harness 会话已完成，但必须通过 EXECUTION_REPORT.md
+            // 完成门禁校验（GateReport）后才等待 GPT 独立验收，绝不直接显示为可验收完成。
+            "completed" => new TerminalState("awaiting-gpt", "任务已在 Harness 会话中完成，等待 GPT 独立验收。"),
+            "aborted" => new TerminalState("cancelled", "会话已取消。"),
+            _ => new TerminalState("failed", kind is null
+                ? "会话结束但缺少结束原因，视为失败。"
+                : $"会话以非成功原因结束（{kind}），视为失败。")
+        };
+    }
 
     /// <summary>
     /// 完成门禁：turn/end completed 只能进入 awaiting-gpt 候选；必须校验当前任务的
@@ -1304,6 +1370,107 @@ public sealed class DeepSeekHarnessRunner
             ? terminal
             : new TerminalState("failed",
                 "任务已在 Harness 会话中完成，但 EXECUTION_REPORT.md 未通过完成门禁（" + validation.Reason + "），等待 GPT 接管。");
+    }
+
+    /// <summary>
+    /// 单回合 max-tokens 截断的一次性自动恢复（自动恢复上限固定为 1）：
+    /// 当且仅当同一合同会话以此原因结束、会话仍可由 Host 核验（session.list running=true）、
+    /// 且本合同尚未恢复过时，向同一 Session 提交一次短恢复提示（不创建第二个会话、
+    /// 不重复初始合同提示）。提交失败、Host 不支持/无法核验、或本合同已恢复过 → 写真实失败终态
+    /// 与可读诊断，绝不无限重试、绝不把失败伪装为完成。
+    /// </summary>
+    private async Task<MaxTokenRecoveryOutcome> RecoverMaxTokenAsync(HarnessRpcClient rpc, string sessionId,
+        HarnessTaskStatus current, CancellationToken ct)
+    {
+        // 从真相源重读本任务，"已恢复"标记的持久化必须是原子的（进程崩溃/并发对账后不得重复恢复）。
+        var snapshot = TryRead(current.TaskId) ?? current;
+        if (snapshot.HasAttemptedMaxTokenRecovery)
+        {
+            var failed = new TerminalState("failed",
+                "会话以单回合输出达到 max-tokens 上限（stopReason=length）结束；本合同已执行过自动恢复（上限 1），恢复回合未成功完成，任务未完成，等待 GPT 接管。");
+            Write(snapshot with { State = failed.State, Message = failed.Message, UpdatedUtc = DateTime.UtcNow, SessionState = "failed" });
+            return MaxTokenRecoveryOutcome.Stop(failed);
+        }
+
+        // 必须由 Host 核验会话仍可继续：running=true 才允许提交恢复提示；已结束/不存在/Host 不可
+        // 核验 → 诚实失败（绝不假装恢复成功，也绝不新开会话重试）。
+        HarnessRpcResult list;
+        try { list = await rpc.ListSessionsAsync(ct); }
+        catch (OperationCanceledException) { throw; }
+        catch { list = HarnessRpcResult.Fail("session.list 调用异常"); }
+        if (!list.Success)
+        {
+            var failed = new TerminalState("failed",
+                "会话以单回合输出达到 max-tokens 上限（stopReason=length）结束；Host 无法核验会话状态（" + HarnessJson.Truncate(list.ErrorMessage, 120) + "），未自动恢复，任务未完成，等待 GPT 接管。");
+            Write(snapshot with { State = failed.State, Message = failed.Message, UpdatedUtc = DateTime.UtcNow, SessionState = "failed", MaxTokenRecoveryMessage = "未恢复：Host 无法核验会话状态。" });
+            return MaxTokenRecoveryOutcome.Stop(failed);
+        }
+        var item = list.Value?["items"]?.AsArray()
+            .FirstOrDefault(node => string.Equals(HarnessJson.Text(node?["sessionId"]), sessionId, StringComparison.Ordinal));
+        var running = item is not null
+            && item["running"] is System.Text.Json.Nodes.JsonValue runningValue
+            && runningValue.TryGetValue<bool>(out var isRunning) && isRunning;
+        if (!running)
+        {
+            var failed = new TerminalState("failed",
+                "会话以单回合输出达到 max-tokens 上限（stopReason=length）结束且已不在可恢复状态（Host 核验会话已停止或不存在），未自动恢复，任务未完成，等待 GPT 接管。");
+            Write(snapshot with { State = failed.State, Message = failed.Message, UpdatedUtc = DateTime.UtcNow, SessionState = "failed", MaxTokenRecoveryMessage = "未恢复：会话已停止或不存在，Host 无法核验为运行中。" });
+            return MaxTokenRecoveryOutcome.Stop(failed);
+        }
+
+        // 先持久化恢复事实再提交：即使提交后进程崩溃，也不会再次自动恢复（上限 1 恒成立）。
+        var recovering = snapshot with
+        {
+            State = "running",
+            Message = "检测到单回合输出达到 max-tokens 上限，正在向同一会话提交一次恢复提示（自动恢复上限 1）。",
+            UpdatedUtc = DateTime.UtcNow,
+            SessionState = "running",
+            MaxTokenRecoveryAttempts = 1,
+            MaxTokenRecoveryAtUtc = DateTime.UtcNow,
+            MaxTokenRecoveryMessage = null,
+            MaxTokenRecoveryFailure = null
+        };
+        Write(recovering);
+
+        // 提交短恢复提示：只定位任务目录与检查点约束，绝不重复初始合同提示或复制合同正文。
+        HarnessRpcResult prompt;
+        try
+        {
+            prompt = await rpc.PromptAsync(sessionId, BuildRecoveryPrompt(current.TaskDirectory, current.TaskId, current.ContractFingerprint),
+                "Asia/Shanghai", ct);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            prompt = HarnessRpcResult.Fail("RPC 异常：" + HarnessJson.Truncate(ex.Message, 200));
+        }
+        if (!prompt.Success)
+        {
+            var failed = new TerminalState("failed",
+                "单回合 max-tokens 自动恢复提交失败（" + HarnessJson.Truncate(prompt.ErrorMessage, 160) + "）；任务未完成，等待 GPT 接管。");
+            Write(recovering with { State = failed.State, Message = failed.Message, UpdatedUtc = DateTime.UtcNow, SessionState = "failed", MaxTokenRecoveryFailure = "恢复提示提交失败：" + HarnessJson.Truncate(prompt.ErrorMessage, 200) });
+            return MaxTokenRecoveryOutcome.Stop(failed);
+        }
+
+        var updated = recovering with
+        {
+            Message = "已向同一会话提交单回合 max-tokens 自动恢复提示（自动恢复上限 1），继续监听恢复回合。",
+            UpdatedUtc = DateTime.UtcNow,
+            SessionState = "running",
+            MaxTokenRecoveryMessage = "已提交恢复提示（上限 1）。"
+        };
+        Write(updated);
+        return MaxTokenRecoveryOutcome.Continue(updated);
+    }
+
+    /// <summary>max-token 自动恢复结果：Continue 表示恢复提示已入队、调用方继续监听同一会话；Stop 携带真实失败终态。</summary>
+    private sealed record MaxTokenRecoveryOutcome(bool ShouldContinue, HarnessTaskStatus? UpdatedStatus, TerminalState? Terminal)
+    {
+        public static MaxTokenRecoveryOutcome Continue(HarnessTaskStatus updated) => new(true, updated, null);
+        public static MaxTokenRecoveryOutcome Stop(TerminalState terminal) => new(false, null, terminal);
     }
 
     /// <summary>
@@ -1420,6 +1587,14 @@ public sealed class DeepSeekHarnessRunner
             ? $"这是同一工作的增量合同。方案已冻结：先阅读任务目录 {taskDirectory} 中当前的 SPEC.md、HANDOFF.md 和 manifest.json；如存在，再阅读 DELTA.md 与 CONTINUITY_CONTEXT.md。只按当前 HANDOFF.md 的直接依赖范围工作，不得为理解旧合同扩展读取范围。只读取派生的 WORKER_ACCEPTANCE.md，绝不读取 ACCEPTANCE.md；按 PROGRESS.json 协议更新进度。完成后在任务目录写 EXECUTION_REPORT.md，必须列出任务 ID、合同指纹、退出码、修改文件、workerChecks：与风险/未完成项。任务标识：{taskId}，合同指纹：{contractFingerprint}。"
             : $"方案已冻结：请阅读任务目录 {taskDirectory} 中的 SPEC.md、HANDOFF.md 和 manifest.json，在项目 {projectRoot} 内完成该任务。严格遵守 HANDOFF.md 的读写范围；只读取派生的 WORKER_ACCEPTANCE.md，绝不读取 ACCEPTANCE.md；按 PROGRESS.json 协议更新进度。完成后在任务目录写 EXECUTION_REPORT.md，必须列出任务 ID、合同指纹、退出码、修改文件、workerChecks：与风险/未完成项。任务标识：{taskId}，合同指纹：{contractFingerprint}。";
 
+    /// <summary>
+    /// 单回合 max-tokens 截断的恢复提示：只要求执行器读取当前任务目录与已改动的直接文件、
+    /// 从最后检查点继续，先完成最小可验证阶段、运行 workerChecks、再写报告；禁止重新递归扫描
+    /// 整个项目。绝不重复初始合同提示、绝不复制合同正文/凭据。
+    /// </summary>
+    private static string BuildRecoveryPrompt(string taskDirectory, string taskId, string? contractFingerprint)
+        => $"上一回合因单回合输出达到 max-tokens 上限而截断，本合同尚未完成。方案继续冻结：请先只阅读当前任务目录 {taskDirectory} 中的 SPEC.md、HANDOFF.md、manifest.json、WORKER_ACCEPTANCE.md、PROGRESS.json 与 HARNESS_STATUS.json（绝不读取 ACCEPTANCE.md），并只读取你上一回合实际改动过的直接文件以确认最后检查点。从最后检查点继续完成本合同，禁止重新设计、禁止重新递归扫描整个项目；先完成一个最小可验证阶段，运行 workerChecks（每项最多一次），再在任务目录写 EXECUTION_REPORT.md，必须列出任务 ID、合同指纹、退出码、修改文件、workerChecks 与风险/未完成项。任务标识：{taskId}，合同指纹：{contractFingerprint}。";
+
     private static string ComputeContractFingerprint(string taskDirectory)
     {
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
@@ -1443,7 +1618,7 @@ public sealed class DeepSeekHarnessRunner
     /// 会话已停止但 history 长时间没有可信 turn/end 时诚实失败，绝不伪造成功。
     /// </summary>
     private async Task<TerminalState> PollSessionTerminalAsync(HarnessRpcClient rpc, string sessionId, HarnessTaskStatus current,
-        HarnessDegenerationDetector detector, long lastSeq, CancellationToken cancellationToken)
+        HarnessDegenerationDetector detector, long lastSeq, CancellationToken cancellationToken, bool allowMaxTokenRecovery = true)
     {
         var noTerminalRounds = 0;
         var noStartEvidenceRounds = 0;
@@ -1501,7 +1676,27 @@ public sealed class DeepSeekHarnessRunner
                             var message = $"检测到重复生成/重复工具调用，已停止以防继续覆盖，等待 GPT 接管（{detector.Reason}）。";
                             return WithSummary(new TerminalState("failed", message), detector);
                         }
-                        terminal = WithSummary(GateReport(MapTurnEnd(HarnessJson.Text(eventNode?["data"]?["reason"]?["kind"])), current), detector);
+                        var eventData = eventNode?["data"] as System.Text.Json.Nodes.JsonObject;
+                        var endKind = HarnessTurnEnd.Coerce(eventData, HarnessJson.Text(eventNode?["data"]?["reason"]?["kind"]));
+                        // HTTP 轮询同样支持单回合 max-tokens 截断的一次性自动恢复：会话仍在 Host 中，
+                        // 向同一 Session 提交恢复提示后继续轮询（绝不创建第二个会话、绝不无限重试）。
+                        // 授权边界与 WebSocket 一致：仅本 taskId+本合同指纹拥有的回合可自动恢复；
+                        // 同组键观察（GroupRunning）他人会话截断时按观察语义返回真实失败，绝不干预他人会话。
+                        if (HarnessTurnEnd.IsMaxTokenKind(endKind))
+                        {
+                            if (!allowMaxTokenRecovery)
+                            {
+                                var message = "同组键运行中会话以单回合 max-tokens 截断结束；本合同仅观察该会话（未提交本合同回合），不干预他人会话、不自动恢复，任务未完成，等待 GPT 接管。";
+                                return WithSummary(new TerminalState("failed", message), detector);
+                            }
+                            var outcome = await RecoverMaxTokenAsync(rpc, sessionId, current, ct: cancellationToken);
+                            if (!outcome.ShouldContinue)
+                                return WithSummary(outcome.Terminal!, detector);
+                            current = outcome.UpdatedStatus!;
+                            // 恢复提示已入队：结束本轮事件扫描，回循环继续（同一会话等待新回合事件）。
+                            break;
+                        }
+                        terminal = WithSummary(GateReport(MapTurnEnd(endKind), current), detector);
                         break;
                     }
                     if (string.Equals(type, "turn/start", StringComparison.Ordinal))
@@ -1858,9 +2053,11 @@ public sealed class DeepSeekHarnessRunner
     /// </summary>
     public async Task<HarnessReconcileResult> ReconcileRecentTasksAsync(CancellationToken cancellationToken = default)
     {
-        // 带会话 ID 的运行中/启动中任务：与 Host 会话对账。
+        // 带会话 ID 的运行中/启动中任务：与 Host 会话对账。也重验因报告格式门禁
+        // 而失败的记录：升级 Helper 后，新的兼容解析可能使同一份已完成报告变为有效；
+        // 仅重新读取 Host 已结束会话的可信 turn/end，绝不重提合同或伪造完成。
         var active = GetRecentTasks(100)
-            .Where(task => task.IsRunning && !string.IsNullOrWhiteSpace(task.SessionId))
+            .Where(task => (task.IsRunning || IsReportGateFailure(task)) && !string.IsNullOrWhiteSpace(task.SessionId))
             .ToList();
         // 无会话 ID 但仍标记 starting 的任务：若本地租约已释放即为“孤儿占位”（Runner 意外终止遗留），
         // 必须诚实清扫为 failed，绝不因它而永久 busy 或重复创建。
@@ -1972,6 +2169,10 @@ public sealed class DeepSeekHarnessRunner
         return new HarnessReconcileResult(written + orphanWritten,
             $"已对账 {checkedCount} 个活动任务，改写 {written + orphanWritten} 个状态文件{orphanSuffix}。");
     }
+
+    private static bool IsReportGateFailure(HarnessTaskStatus task)
+        => string.Equals(task.State, "failed", StringComparison.OrdinalIgnoreCase)
+           && task.Message.Contains("EXECUTION_REPORT.md 未通过完成门禁", StringComparison.Ordinal);
 
     /// <summary>
     /// 读取已结束会话的终态：session.history 中最后一个 turn/end 的 reason.kind → MapTurnEnd。

@@ -29,6 +29,42 @@ internal static class HarnessJson
 }
 
 /// <summary>
+/// DSH 终态 reason 的统一识别：区分"正常完成"、"用户中止"与"单回合输出达到 max-tokens 上限截断"。
+/// 上游用 stopReason="length" 表示输出因长度上限结束；Host 侧的 turn/end reason.kind 兼容多种拼写
+/// （length / max-tokens / max_tokens / token-limit 等）。只有同一合同会话以此原因结束时，Runner 才
+/// 向同一 Session 提交一次短恢复提示（绝不新建 Session、绝不无限重试）。
+/// </summary>
+internal static class HarnessTurnEnd
+{
+    /// <summary>判定 reason.kind 是否属于 max-tokens 截断终态（大小写/连字符/下划线宽容）。</summary>
+    public static bool IsMaxTokenKind(string? kind)
+    {
+        if (string.IsNullOrWhiteSpace(kind)) return false;
+        var normalized = kind.Trim().ToLowerInvariant().Replace('-', '_');
+        return normalized is "length" or "max_tokens" or "max_token" or "token_limit" or "max_output_tokens" or "completion_tokens";
+    }
+
+    /// <summary>判定 stopReason 文本是否为长度截断（"length" 及常见同义值）。</summary>
+    public static bool IsLengthStopReason(string? stopReason)
+        => stopReason is not null && IsMaxTokenKind(stopReason);
+
+    /// <summary>
+    /// 归一化 turn/end 的结束原因：reason.kind 优先；kind 未覆盖 max-token 时再检查
+    /// reason.stopReason / data.stopReason 是否为 "length"，命中则归一为 "length"。
+    /// 返回值直接交给 <see cref="MapTurnEnd"/> 语义映射。
+    /// </summary>
+    public static string? Coerce(JsonObject? eventData, string? kind)
+    {
+        if (IsMaxTokenKind(kind)) return kind;
+        var reason = eventData?["reason"] as JsonObject;
+        if (reason is not null && IsLengthStopReason(HarnessJson.Text(reason["stopReason"]))) return "length";
+        if (IsLengthStopReason(HarnessJson.Text(eventData?["stopReason"]))) return "length";
+        if (eventData is not null && IsLengthStopReason(HarnessJson.Text(eventData["stop_reason"]))) return "length";
+        return kind;
+    }
+}
+
+/// <summary>
 /// Harness Web Host 一元 RPC 客户端（rc.6 原生协议）：POST /api/{method}，
 /// 请求信封 { type:"client-request", rpcId, method, payload }；
 /// 响应 { type:"server-response", rpcId（必须回显请求 rpcId）, result:{ ok:true, value } | { ok:false, error:{ code, message, details } } }。
@@ -246,7 +282,7 @@ public sealed record HarnessMuxFrame(
             eventType = HarnessJson.Text(eventNode["type"]);
             var eventData = eventNode["data"] as JsonObject;
             var reason = eventData?["reason"] as JsonObject;
-            turnEndKind = HarnessJson.Text(reason?["kind"]);
+            turnEndKind = HarnessTurnEnd.Coerce(eventData, HarnessJson.Text(reason?["kind"]));
             if (eventNode["seq"] is JsonValue seqValue && seqValue.TryGetValue<long>(out var seqNumber))
                 seq = seqNumber;
             // 非终态/启动事件：尽力提取 assistant 增量字段（多种协议形状兼容），全部截断保留。

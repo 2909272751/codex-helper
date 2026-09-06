@@ -2,17 +2,17 @@
 
 Codex Helper 是面向 Windows 10/11 的 Codex 专属工作台，统一管理官方账号、第三方 Responses API、重要项目、个人 Skills、Codex 配置、加密增量备份与批量迁移。
 
-当前开发版本：`4.3.4`
+当前开发版本：`4.4.1`
 
 ![Codex Helper Logo](assets/CodexHelper-256.png)
 
 ## 下载安装
 
-**Codex Helper v4.3.4** 精简一键安装包（GitHub Release，当前稳定版）：
+**Codex Helper v4.4.1** 精简一键安装包（GitHub Release，当前稳定版）：
 
-- 精简安装包：`codex-helper-v4.3.4-setup.exe`（依赖 Windows x64 的 **.NET 8 Desktop Runtime**，安装 .NET 8 SDK 也可满足）
-- [打开 v4.3.4 Release 页面](https://github.com/2909272751/codex-helper/releases/tag/v4.3.4)
-- [直接下载精简安装包](https://github.com/2909272751/codex-helper/releases/download/v4.3.4/codex-helper-v4.3.4-setup.exe)
+- 精简安装包：`codex-helper-v4.4.1-setup.exe`（依赖 Windows x64 的 **.NET 8 Desktop Runtime**，安装 .NET 8 SDK 也可满足）
+- [打开 v4.4.1 Release 页面](https://github.com/2909272751/codex-helper/releases/tag/v4.4.1)
+- [直接下载精简安装包](https://github.com/2909272751/codex-helper/releases/download/v4.4.1/codex-helper-v4.4.1-setup.exe)
 - [微软官方 .NET 8 下载页](https://dotnet.microsoft.com/zh-cn/download/dotnet/8.0)
 
 > 若安装器提示缺少运行库，请先安装 **.NET 8 Desktop Runtime（Windows x64）**，再重新打开并运行本安装包。自 `v3.3.3` 起项目只发布精简安装包与对应的 SHA-256 校验文件，不再提供完整离线安装包或便携 ZIP。
@@ -34,6 +34,10 @@ Codex Helper 是面向 Windows 10/11 的 Codex 专属工作台，统一管理官
 Harness 卡片提供“一键配置 Codex + Harness”：保存已探测的绝对 Node/CLI 路径、启用 Harness 协作规则、立即启动并健康检查本机 Host，同时为当前 Windows 用户创建低权限计划任务。计划任务执行已安装的 `CodexHelper.exe` 隐藏宿主模式（`--harness-host --node <绝对路径> --dsh <绝对路径>`），隐藏宿主先探测 `127.0.0.1:3080`：Host 已健康则安静退出，否则无窗口（`CreateNoWindow`、不经过 Shell）启动绝对 `node.exe + dsh web --host 127.0.0.1` 并等待子进程——不再每分钟直接启动控制台版 `node.exe`，避免 Node.js 窗口闪现；不依赖 Reasonix、终端、PATH 或 Helper 常驻。登录时启动，并每分钟做一次无重入补位（`IgnoreNew`），Host 意外退出后可自动恢复。任务无运行时长上限、允许电池供电、失败最多按一分钟间隔重启三次。旧版直接启动 `node.exe` 的计划任务会被识别为 stale，重新配置即替换。“移除登录自启动”只删除后续自启动，不终止当前任务或 Host；公司策略禁止计划任务时会明确报错，不静默退化到启动文件夹。
 
 Harness 任务中心刷新时会把本地 `running/starting` 状态与 Host 的真实 `session.list`/`session.history` 对账：一次列表核对所有活动记录，真实会话已结束时自动写回 completed/cancelled/failed（按 history 最后一个 `turn/end` 的 reason.kind 映射），会话在 Host 中不存在时诚实标记失败、绝不伪造完成；Host 不可达或响应不可信时不改写任何状态，列表仍按本地状态文件展示（离线兼容）。
+
+`4.4.1` 修复 DSH 报告门禁的真实兼容路径：接受 workerCheck 标准写法 `exit=0`，但仍拒绝非零退出；刷新对账会重新核验仅因旧报告格式门禁而失败、且 Host 可验证已结束的同一会话，不重提合同、不新建会话，报告有效时恢复为等待 GPT 验收。
+
+`4.4.0` 收敛 Harness 连续执行与单回合截断恢复：① **统一合同目录**——Helper 生成/托管的所有后续合同统一放 `<project>/.codex-helper/runs/run-*`，并在 manifest.json 显式声明稳定 `rootCauseKey`；同一工作流的后续合同沿用同一组键续接同一 DSH 会话，不同工作流绝不合并，旧 `.codex-helper/tasks/*` 记录仅保留只读兼容读取并保守隔离（诊断中说明迁移方式：把要延续的工作流重建为带组键的新 run 合同）。② **max-tokens 自动恢复**——DSH 终态精确识别 `stopReason=length`/`reason.kind=max-tokens`（不把 contextWindow 当单响应输出上限）：当且仅当同一合同会话以此原因结束、会话仍由 Host 核验为运行中、且本合同尚未恢复过时，向同一 Session 提交一次短恢复提示继续原合同（不创建第二个 Session、不重复初始合同提示）；恢复提示只要求读当前任务目录与已改动直接文件、从最后检查点继续、禁止递归重扫项目。③ **诚实失败**——恢复提交失败、Host 无法核验、恢复回合再次截断或最终报告门禁未通过时写出真实失败终态与可读诊断，自动恢复上限固定为 1，绝不无限重试、绝不伪装完成。④ **状态/UI 可见性**——详情显示是否连续回合、来源任务、恢复次数/原因及“未续接/未恢复”的精确原因，不泄漏合同正文/凭据；托管给 GPT 的合同指导要求大型工作按可验证阶段拆分并使用稳定 `rootCauseKey`，禁止为同一工作流生成无组键的旧式 tasks 合同。
 
 `3.3.1` 修复 Reasonix 1.19.x 在“完全权限”下因旧权限参数而于首轮模型调用前立即退出的问题；完全权限现在使用经实际写文件验证的兼容模式。
 

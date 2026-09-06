@@ -102,7 +102,9 @@ public static class HarnessExecutionReportValidator
     private static bool HasExplicitSuccess(string text)
     {
         var normalized = text.Replace("：", ":").Replace("。", " ").Replace("，", " ");
-        if (Regex.IsMatch(normalized, @"(?i)exit\s+code\s*[:=]\s*0(?![0-9])") || Regex.IsMatch(normalized, @"(?i)exit\s+0\b"))
+        // DSH reports commonly use `exit=0` beside a workerCheck. Treat that as the
+        // same explicit evidence as `exit 0`, but still require a literal zero.
+        if (Regex.IsMatch(normalized, @"(?i)exit\s*(?:code\s*)?[:=]\s*0(?![0-9])") || Regex.IsMatch(normalized, @"(?i)exit\s+0\b"))
             return true;
         if (Regex.IsMatch(normalized, @"退出码\s*[:=为]?\s*0(?![0-9])"))
             return true;
@@ -115,7 +117,7 @@ public static class HarnessExecutionReportValidator
     private static string? FindNonZeroExit(string text)
     {
         var normalized = text.Replace("：", ":").Replace("。", " ").Replace("，", " ");
-        var match = Regex.Match(normalized, @"(?i)(?:exit\s+(?:code\s*[:=]\s*)?|退出码\s*[:=为]?\s*)(\d+)");
+        var match = Regex.Match(normalized, @"(?i)(?:exit\s*(?:code\s*)?[:=]\s*|exit\s+|退出码\s*[:=为]?\s*)(\d+)");
         if (!match.Success) return null;
         var code = match.Groups[1].Value;
         return int.TryParse(code, out var value) && value != 0 ? code : null;

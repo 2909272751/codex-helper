@@ -46,13 +46,18 @@ public static class HarnessExecutionReportValidator
         if (string.IsNullOrWhiteSpace(text))
             return ValidationResult.Fail("EXECUTION_REPORT.md 为空");
 
-        var reportedTaskId = FindValue(text, TaskIdKey);
-        if (!string.Equals(reportedTaskId, taskId, StringComparison.Ordinal))
-            return ValidationResult.Fail(reportedTaskId is null ? "报告缺少任务 ID" : "报告任务 ID 与当前任务不一致");
+        // Web-composer turns naturally produce headed Markdown ("任务标识：…",
+        // "## 修改文件") rather than the legacy runner's dash-prefixed fixed keys.
+        // Identity remains strict: both opaque values must occur in this fresh report.
+        if (!text.Contains(taskId, StringComparison.Ordinal))
+            return ValidationResult.Fail("报告缺少任务 ID 或任务标识");
+        if (!text.Contains(contractFingerprint, StringComparison.Ordinal))
+            return ValidationResult.Fail("报告缺少或不匹配合同指纹");
 
-        var reportedFingerprint = FindValue(text, FingerprintKey);
-        if (!string.Equals(reportedFingerprint, contractFingerprint, StringComparison.Ordinal))
-            return ValidationResult.Fail(reportedFingerprint is null ? "报告缺少合同指纹" : "报告合同指纹与当前合同不一致");
+        var headedReport = text.Contains("## 修改文件", StringComparison.Ordinal)
+            && text.Contains("## 验证结果", StringComparison.Ordinal)
+            && (text.Contains("## 未完成项", StringComparison.Ordinal) || text.Contains("## 风险", StringComparison.Ordinal));
+        if (headedReport) return ValidationResult.Ok();
 
         var exitCodeText = FindValue(text, ExitCodeKey);
         if (!int.TryParse(exitCodeText, out var exitCode))

@@ -127,6 +127,7 @@ internal static class Program
         ,("Harness runner 零证据（会话已建/无事件/无步骤/无 token 最终 failed，不长期运行中）", TestHarnessRunnerZeroEvidenceFailsAsync)
         ,("Harness runner 断流后 HTTP 有进度（不误判失败/保持 running/增量回退到终态）", TestHarnessRunnerHttpProgressAfterDisconnectAsync)
         ,("Harness rootCauseKey 组键接回（同组键接回/不同组键新建）", TestHarnessRootCauseKeyResumeAsync)
+        ,("Harness 已完成连续会话（显式组键复用/事件基线/上下文脱敏/负面隔离）", TestHarnessEndedContinuityAsync)
         ,("Harness 阶段进展防护（不同目标读取不停止/写入检查报告进展清重复/同阶段无进展循环停止/大量推理不改步骤/摘要分离）", TestHarnessProgressAwareGuardAsync)
         ,("Harness 跨任务目录单飞占位（无会话 starting 持租约即占位，第二合同 busy 含旧任务 ID；孤儿 starting 不阻塞）", TestHarnessCrossDirectorySingleflightOccupancyAsync)
         ,("Harness 会话创建前停止持久化取消意图（停止后 StartAsync 兑现取消，不建会话不提交）", TestHarnessPersistedCancelIntentStartAsync)
@@ -1169,7 +1170,7 @@ internal static class Program
         // 版本源必须与当前发布版本一致。
         var props = await File.ReadAllTextAsync(Path.Combine(root, "Directory.Build.props"));
         var match = System.Text.RegularExpressions.Regex.Match(props, @"<Version>([^<]+)</Version>");
-        Assert(match.Success && match.Groups[1].Value == "4.3.0", "版本源必须为 4.3.0，实际：" + (match.Success ? match.Groups[1].Value : "未找到"));
+        Assert(match.Success && match.Groups[1].Value == "4.3.2", "版本源必须为 4.3.2，实际：" + (match.Success ? match.Groups[1].Value : "未找到"));
 
         // 安装器：含微软官方链接、无 full/portable 旧引导、运行库检测不依赖单一目录。
         var iss = await File.ReadAllTextAsync(Path.Combine(root, "installer", "CodexHelperRuntimeRequired.iss"));
@@ -1186,7 +1187,7 @@ internal static class Program
 
         // README：开发版本与当前正式 Release 保持一致，首页只提供版本化精简安装包。
         var readme = await File.ReadAllTextAsync(Path.Combine(root, "README.md"));
-        Assert(readme.Contains("当前开发版本：`4.3.0`", StringComparison.Ordinal), "README 当前开发版本应为 4.3.0。");
+        Assert(readme.Contains("当前开发版本：`4.3.2`", StringComparison.Ordinal), "README 当前开发版本应为 4.3.2。");
         Assert(readme.Contains("releases/download/v4.3.0/codex-helper-v4.3.0-setup.exe", StringComparison.Ordinal) && readme.Contains("releases/tag/v4.3.0", StringComparison.Ordinal), "README 首页应指向 v4.3.0 正式 Release 与版本化安装包。");
         Assert(readme.Contains("https://dotnet.microsoft.com/zh-cn/download/dotnet/8.0", StringComparison.Ordinal), "README 下载区应提供微软官方 .NET 8 下载页。");
         Assert(!readme.Contains("setup-full", StringComparison.OrdinalIgnoreCase) && !readme.Contains("portable.zip", StringComparison.OrdinalIgnoreCase), "README 不得再推荐 full/portable 下载。");
@@ -1696,8 +1697,8 @@ internal static class Program
             Assert(jobHost.Contains("'--permission-mode','auto'") && !jobHost.Contains("bypassPermissions"), "Full permission mode must use the Reasonix 1.19 compatible auto mode.");
             Assert(jobHost.IndexOf("$runArgs += $permissionArgs", StringComparison.Ordinal) < jobHost.IndexOf("$runArgs+=@('--events-jsonl','--metrics',$metrics,$prompt)", StringComparison.Ordinal), "Reasonix options must be appended before the final task prompt.");
             Assert(!runner.Contains(" --model ", StringComparison.Ordinal), "Runner must dynamically use the current Reasonix default model.");
-            Assert(jobHost.Contains("'--profile',$script:planProfile") && jobHost.Contains("$cliEffort=if($script:planEffort -eq 'medium'){'high'}else{$script:planEffort}") && jobHost.Contains("'--effort',$cliEffort"), "Task host must map unsupported medium effort to high before invoking Reasonix 1.19.x.");
-            Assert(!jobHost.Contains("--profile delivery", StringComparison.Ordinal), "Task host must not hard-code the delivery profile.");
+            Assert(!jobHost.Contains("'--profile',$script:planProfile", StringComparison.Ordinal) && jobHost.Contains("$cliEffort=if($script:planEffort -eq 'medium'){'high'}else{$script:planEffort}") && jobHost.Contains("'--effort',$cliEffort"), "Task host must omit the removed --profile option and map unsupported medium effort to high.");
+            Assert(runner.Contains("Reasonix task ended without completion", StringComparison.Ordinal) && runner.Contains("Reasonix task host did not complete", StringComparison.Ordinal) && runner.Contains("retrying once automatically", StringComparison.Ordinal), "Runner must report failed status, retry one safe pre-run host fault, and propagate persistent executor host errors instead of reporting false completion.");
             Assert(jobHost.Contains("Do not auto-start review, security-review, or explore subagents"), "Fast/Standard must forbid automatic review subagents in the managed prompt.");
             Assert(jobHost.Contains("workerChecks") && jobHost.Contains("gptChecks") && jobHost.Contains("releaseChecks"), "Acceptance split (worker/gpt/release checks) must be described in the managed prompt.");
             Assert(jobHost.Contains("WORKER_ACCEPTANCE.md") && jobHost.Contains("do not read ACCEPTANCE.md"), "Managed prompt must derive from WORKER_ACCEPTANCE.md and not read ACCEPTANCE.md.");
@@ -2989,7 +2990,7 @@ internal static class Program
             await File.WriteAllTextAsync(Path.Combine(codexRoot, "AGENTS.md"), "keep\n");
             var app = new AppPaths(Path.Combine(root, "app"));
             var executable = Path.Combine(root, "reasonix-cli.ps1");
-            await File.WriteAllTextAsync(executable, "[IO.File]::WriteAllText((Join-Path $env:CODEX_HELPER_TEST_TASK 'argv.txt'), ($args -join [Environment]::NewLine), [Text.UTF8Encoding]::new($false))");
+            await File.WriteAllTextAsync(executable, "[IO.File]::WriteAllText((Join-Path $env:CODEX_HELPER_TEST_TASK 'argv.txt'), ($args -join [Environment]::NewLine), [Text.UTF8Encoding]::new($false)); [IO.File]::WriteAllText((Join-Path $env:CODEX_HELPER_TEST_TASK 'EXECUTION_REPORT.md'),'done',[Text.UTF8Encoding]::new($false))");
             var service = new ReasonixIntegrationService(codexRoot, app);
             service.Enable(executable, "opencode/deepseek-v4-flash", ReasonixPermissionMode.Full);
 
@@ -3012,7 +3013,7 @@ internal static class Program
             var runResult = await RunPowerShellAsync(Path.Combine(codexRoot, "skills", "reasonix-executor", "invoke-reasonix.ps1"), project, task, Path.Combine(root, "rh"), "", "thread-utf8", taskDir: task);
             Assert(runResult.ExitCode == 0, "中文 manifest runner 应正常结束：" + runResult.Output);
             var argv = await File.ReadAllTextAsync(Path.Combine(task, "argv.txt"));
-            Assert(argv.Contains("--profile" + Environment.NewLine + "balanced", StringComparison.Ordinal) && argv.Contains("--effort" + Environment.NewLine + "low", StringComparison.Ordinal), "manifest Fast 声明必须真实进入生成命令：" + argv);
+            Assert(!argv.Contains("--profile", StringComparison.Ordinal) && argv.Contains("--effort" + Environment.NewLine + "low", StringComparison.Ordinal), "新版 Reasonix 不得接收已删除的 --profile 参数：" + argv);
             // workerChecks 现在写入派生 WORKER_ACCEPTANCE.md（UTF-8 原子写），而非直接嵌入命令行提示。
             var workerAccept = await File.ReadAllTextAsync(Path.Combine(task, "WORKER_ACCEPTANCE.md"));
             Assert(workerAccept.Contains("build") && workerAccept.Contains("test 中文", StringComparison.Ordinal), "manifest workerChecks 应进入派生 WORKER_ACCEPTANCE.md：" + workerAccept);
@@ -4599,6 +4600,15 @@ internal static class Program
             Assert(string.Equals(status.DshEntryPath, dshEntry, StringComparison.OrdinalIgnoreCase), "诊断应返回绝对 dsh 入口");
             Assert(string.Equals(status.NodePath, nodePath, StringComparison.OrdinalIgnoreCase), "诊断应返回绝对 node");
             Assert(status.EnableAllowed, "Node 与 dsh 均就绪时应允许开启");
+
+            // 已保存的旧路径只作为回退候选；自动启动必须选择新安装的更高有效版本。
+            var oldPkg = Path.Combine(root, "old-dsh");
+            var oldEntry = Path.Combine(oldPkg, "lib", "bin.js");
+            Directory.CreateDirectory(Path.GetDirectoryName(oldEntry)!);
+            await File.WriteAllTextAsync(oldEntry, "fake old bin.js");
+            await File.WriteAllTextAsync(Path.Combine(oldPkg, "package.json"), "{\"name\":\"@deepseek-ai/dsh\",\"version\":\"0.1.0-rc.5\"}");
+            var latest = service.FindLatestDsh(oldEntry);
+            Assert(latest is not null && latest.EntryPath == dshEntry && latest.Version == "0.1.0-rc.6", "更高的已安装有效 DSH 应覆盖保存的旧入口。");
         }
         finally { if (Directory.Exists(root)) Directory.Delete(root, recursive: true); }
     }
@@ -5139,6 +5149,11 @@ internal static class Program
 
         /// <summary>RPC 响应生成器：(method, payload) → value；抛出 FakeHostError 表示业务错误。</summary>
         public Func<string, JsonNode, JsonNode?> Respond { get; init; } = (_, _) => new JsonObject();
+        /// <summary>未专门模拟时，假 Host 为新会话提供一个可路由默认模型；设为 null 可测试模型缺失分支。</summary>
+        public JsonNode? DefaultSessionModel { get; init; } = new JsonObject
+        {
+            ["current"] = new JsonObject { ["provider"] = "test", ["model"] = "test-model" }
+        };
         /// <summary>故意回显错误的 rpcId，用于校验响应回显。</summary>
         public bool EchoWrongRpcId { get; init; }
         /// <summary>每个 WS 连接的帧脚本；"@close" 关闭连接，"@delay:N" 等待 N 毫秒，"@wait:method" 等待某 RPC 到达。</summary>
@@ -5235,7 +5250,12 @@ internal static class Program
             JsonNode? value;
             string? errorCode = null;
             string? errorMessage = null;
-            try { value = Respond(method, payload ?? new JsonObject()); }
+            try
+            {
+                value = Respond(method, payload ?? new JsonObject());
+                if (method == "session.models" && value?["current"] is null && DefaultSessionModel is not null)
+                    value = DefaultSessionModel.DeepClone();
+            }
             catch (FakeHostError e) { value = null; errorCode = e.Code; errorMessage = e.Message; }
 
             var response = new JsonObject
@@ -6750,7 +6770,8 @@ internal static class Program
         var parsed = HarnessHiddenHostCli.TryParse(["--harness-host", "--node", @"C:\Program Files\nodejs\node.exe", "--dsh", @"C:\Users\a\AppData\Roaming\npm\node_modules\@deepseek-ai\dsh\lib\bin.js"], out var error);
         Assert(parsed is not null && error is null, "合法参数应解析成功：" + error);
         Assert(parsed!.NodePath == @"C:\Program Files\nodejs\node.exe" && parsed.DshEntryPath == @"C:\Users\a\AppData\Roaming\npm\node_modules\@deepseek-ai\dsh\lib\bin.js", "解析路径应一致");
-        Assert(HarnessHiddenHostCli.TryParse(["--harness-host", "--node", @"C:\node.exe"], out var missing) is null && missing!.Contains("--dsh", StringComparison.Ordinal), "缺少 --dsh 应报错：" + missing);
+        var automatic = HarnessHiddenHostCli.TryParse(["--harness-host", "--node", @"C:\node.exe"], out var automaticError);
+        Assert(automatic is not null && automaticError is null && automatic.DshEntryPath is null, "不带 --dsh 时应进入自动发现模式：" + automaticError);
         Assert(HarnessHiddenHostCli.TryParse(["--node", @"C:\node.exe", "--dsh", @"C:\dsh\bin.js"], out _) is null, "没有 --harness-host 应返回 null（普通 UI 模式）");
         Assert(HarnessHiddenHostCli.TryParse(["--harness-host", "--node", @"relative\node.exe", "--dsh", @"C:\dsh\bin.js"], out var relative) is null && relative!.Contains("绝对路径", StringComparison.Ordinal), "相对路径应报错：" + relative);
         // 路径存在性不在解析阶段校验（状态查询需在文件缺失时仍能识别配置形状）；解析只要求绝对路径形状。
@@ -6763,6 +6784,18 @@ internal static class Program
         Assert(info.RedirectStandardOutput && info.RedirectStandardError, "隐藏宿主必须排空 stdout/stderr");
         var args = info.ArgumentList.ToList();
         Assert(args.SequenceEqual([@"C:\dsh\lib\bin.js", "web", "--host", "127.0.0.1"]), "启动参数应为绝对 dsh + web --host 127.0.0.1：" + string.Join(" ", args));
+        var trustedInfo = DeepSeekHarnessProcess.BuildWebHostStartInfo(@"C:\node.exe", @"C:\dsh\lib\bin.js", trustedHosts: ["frp.example.test:58831"]);
+        Assert(trustedInfo.ArgumentList.Contains("--trusted-host") && trustedInfo.ArgumentList.Contains("frp.example.test:58831"), "有效 88frp authority 应以 ArgumentList 传入 trusted-host。");
+        var frpToml = """
+serverAddr = "frp.example.test"
+[[proxies]]
+type = "tcp"
+localIP = "127.0.0.1"
+localPort = 3080
+remotePort = 58831
+""";
+        Assert(FrpRuntimeAuthorityResolver.TryParseRuntimeToml(frpToml) == "frp.example.test:58831", "应只解析 DSH 回环隧道 authority。");
+        Assert(FrpRuntimeAuthorityResolver.TryParseRuntimeToml(frpToml.Replace("localIP = \"127.0.0.1\"", "localIP = \"0.0.0.0\"", StringComparison.Ordinal)) is null, "非回环隧道不得进入 trusted-host。");
 
         // ---- 3) Host 已健康：安静退出 0，不启动任何进程。 ----
         var launched = false;
@@ -6810,11 +6843,11 @@ internal static class Program
         Assert(action!.Value.Command == helperExe, "Action Command 应为 CodexHelper.exe：" + action.Value.Command);
         Assert(!DeepSeekHarnessStartupService.IsStaleNodeAction(action.Value.Command, action.Value.Arguments), "隐藏宿主不应被识别为 stale node action");
 
-        // 2) 参数含绝对路径且 XML 转义正确。
+        // 2) 参数仅固定 Node，DSH 在每次登录启动时自动发现最新有效版本。
         var tokens = DeepSeekHarnessStartupService.SplitArguments(action.Value.Arguments);
-        Assert(tokens.SequenceEqual(["--harness-host", "--node", node, "--dsh", dsh]), "Arguments 应含隐藏宿主参数与绝对路径：" + string.Join(" ", tokens));
-        // XML 文本中的中文路径与空格应原样保留（UTF-16 声明由文件编码承担，文本本身不转义中文）。
-        Assert(xml.Contains(@"Program Files\nodejs\node.exe", StringComparison.Ordinal) && xml.Contains("张三", StringComparison.Ordinal), "XML 应包含绝对路径与中文路径");
+        Assert(tokens.SequenceEqual(["--harness-host", "--node", node]), "Arguments 只应含隐藏宿主与 Node 参数：" + string.Join(" ", tokens));
+        Assert(!tokens.Contains("--dsh", StringComparer.OrdinalIgnoreCase), "新任务不能固化 DSH 入口。");
+        Assert(xml.Contains(@"Program Files\nodejs\node.exe", StringComparison.Ordinal) && !xml.Contains("张三", StringComparison.Ordinal), "XML 应包含 Node 绝对路径且不保存 DSH 路径");
 
         // 3) XML 转义：路径含 & < > 时生成合法 XML 且往返一致。
         var weirdXml = DeepSeekHarnessStartupService.BuildTaskXml(helperExe, @"C:\a&b<c>d\node.exe", @"C:\dsh\bin.js");
@@ -6841,6 +6874,14 @@ internal static class Program
         Assert(changed.Exists && !changed.MatchesCurrentPaths && changed.Message.Contains("变化", StringComparison.Ordinal), "路径变化应判定不匹配：" + changed.Message);
         var broken = DeepSeekHarnessStartupService.EvaluateTaskDefinition("not xml at all", node, dsh);
         Assert(broken.Exists && !broken.MatchesCurrentPaths && broken.Message.Contains("解析", StringComparison.Ordinal), "不可解析 XML 应判定需重新配置：" + broken.Message);
+        var legacyHiddenXml = $"""
+<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+<Actions Context="Author"><Exec><Command>{helperExe}</Command><Arguments>"--harness-host" "--node" "{node}" "--dsh" "{dsh}"</Arguments></Exec></Actions>
+</Task>
+""";
+        var legacyHidden = DeepSeekHarnessStartupService.EvaluateTaskDefinition(legacyHiddenXml, node, dsh);
+        Assert(legacyHidden.Exists && !legacyHidden.MatchesCurrentPaths && legacyHidden.Message.Contains("固定 DSH", StringComparison.Ordinal), "旧版固定 DSH 的隐藏宿主任务应要求重新配置。");
         return Task.CompletedTask;
     }
 
@@ -7350,6 +7391,81 @@ internal static class Program
                 Assert(c.State == "awaiting-gpt" && c.SessionId == "sess-rck-c", "不同组键且无运行任务应创建新会话：" + c.State + " / " + c.SessionId);
                 Assert(host.Calls.Count(call => call.Method == "session.create") == 1, "不同组键应恰好创建一次新会话");
             }
+        }
+        finally { TryDeleteDirectory(root); }
+    }
+
+    private static async Task TestHarnessEndedContinuityAsync()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "codex-helper-harness-continuity-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var project = Path.Combine(root, "project");
+            var first = Path.Combine(project, ".codex-helper", "runs", "run-continuity-a");
+            var second = Path.Combine(project, ".codex-helper", "runs", "run-continuity-b");
+            Directory.CreateDirectory(first);
+            Directory.CreateDirectory(second);
+            await File.WriteAllTextAsync(Path.Combine(first, "SPEC.md"), "旧合同正文不得进入连续上下文");
+            await File.WriteAllTextAsync(Path.Combine(first, "manifest.json"), "{\"rootCauseKey\":\"continuity-x\"}");
+            await File.WriteAllTextAsync(Path.Combine(second, "SPEC.md"), "新合同");
+            await File.WriteAllTextAsync(Path.Combine(second, "HANDOFF.md"), "仅允许直接依赖");
+            await File.WriteAllTextAsync(Path.Combine(second, "DELTA.md"), "仅修改这一处");
+            await File.WriteAllTextAsync(Path.Combine(second, "manifest.json"), "{\"rootCauseKey\":\"continuity-x\"}");
+            var firstId = Path.GetFileName(first);
+            var secondId = Path.GetFileName(second);
+            var firstFingerprint = TestFingerprint(first);
+            var secondFingerprint = TestFingerprint(second);
+            WriteValidReport(first, firstId, firstFingerprint);
+            WriteValidReport(second, secondId, secondFingerprint);
+
+            await using var host = new FakeHarnessHost
+            {
+                Respond = (method, _) => method switch
+                {
+                    "session.list" => new JsonObject { ["items"] = new JsonArray(new JsonObject { ["sessionId"] = "sess-continuity", ["running"] = false }) },
+                    "session.history" => new JsonObject { ["events"] = new JsonArray(
+                        new JsonObject { ["event"] = new JsonObject { ["seq"] = 1L } }, new JsonObject { ["event"] = new JsonObject { ["seq"] = 2L } }) },
+                    "session.prompt" => new JsonObject { ["accepted"] = true },
+                    _ => new JsonObject()
+                },
+                WsScripts =
+                [
+                    new Queue<string>([
+                        WsFrame("session/subscribed", "sess-continuity"),
+                        // 旧会话的终态在基线之前，不能使新合同提前结束。
+                        WsFrame("session/event", "sess-continuity", "turn/end", "completed", seq: 2),
+                        WsFrame("session/event", "sess-continuity", "turn/start", seq: 3),
+                        WsFrame("session/event", "sess-continuity", "turn/end", "completed", seq: 4)
+                    ])
+                ]
+            };
+            await host.StartAsync();
+            var runner = new DeepSeekHarnessRunner(new AppPaths(Path.Combine(root, "app")))
+            {
+                WebUrl = host.BaseUrl,
+                RelayProbe = new ConfirmedHarnessRelay(),
+                HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。"))
+            };
+            var prior = new HarnessTaskStatus(firstId, project, first, "awaiting-gpt", "已完成。",
+                DateTime.UtcNow.AddMinutes(-5), DateTime.UtcNow.AddMinutes(-1), 0, host.BaseUrl, "sess-continuity",
+                RootCauseKey: "continuity-x", ContractFingerprint: firstFingerprint);
+            File.WriteAllText(runner.TaskDirectoryFor(firstId), JsonSerializer.Serialize(prior,
+                new JsonSerializerOptions { WriteIndented = true, Converters = { new HarnessUtcConverter() } }));
+
+            var result = await runner.StartAsync(project, second);
+            Assert(result.State == "awaiting-gpt" && result.SessionId == "sess-continuity" && result.ContinuitySourceTaskId == firstId && result.ContinuityRound == 2,
+                "可信已完成合同应复用原会话并进入第二回合：" + result.State + " / " + result.SessionId);
+            Assert(!host.Calls.Any(call => call.Method == "session.create") && host.Calls.Count(call => call.Method == "session.prompt") == 1,
+                "连续复用不得创建新会话，且只提交一次新回合提示。");
+            var context = await File.ReadAllTextAsync(Path.Combine(second, "CONTINUITY_CONTEXT.md"));
+            Assert(context.Contains(firstId, StringComparison.Ordinal) && !context.Contains("旧合同正文", StringComparison.Ordinal),
+                "连续上下文只能含来源元数据，不能复制合同正文。");
+
+            var isolated = Path.Combine(project, ".codex-helper", "runs", "run-continuity-isolated");
+            Directory.CreateDirectory(isolated);
+            await File.WriteAllTextAsync(Path.Combine(isolated, "SPEC.md"), "不同键");
+            await File.WriteAllTextAsync(Path.Combine(isolated, "manifest.json"), "{\"rootCauseKey\":\"continuity-y\"}");
+            Assert(!File.Exists(Path.Combine(isolated, "CONTINUITY_CONTEXT.md")), "不同显式组键不应获得连续上下文。");
         }
         finally { TryDeleteDirectory(root); }
     }

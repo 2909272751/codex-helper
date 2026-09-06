@@ -40,7 +40,9 @@ public sealed record HarnessTaskStatus(
     int NoProgressWarnings = 0,
     string? StateSource = null,
     string? EventTransport = null,
-    string? EventTransportError = null)
+    string? EventTransportError = null,
+    string? ContinuitySourceTaskId = null,
+    int ContinuityRound = 1)
 {
     public bool IsRunning => string.Equals(State, "running", StringComparison.OrdinalIgnoreCase)
         || string.Equals(State, "starting", StringComparison.OrdinalIgnoreCase);
@@ -231,6 +233,10 @@ public sealed class DeepSeekHarnessRunner
         }
         HarnessContractHealth.WriteWorkerAcceptance(taskDirectory, contractHealth);
         string? resumeSessionId = null;
+        var resumeKind = ResumeKind.None;
+        string? continuitySourceTaskId = null;
+        var continuityRound = 1;
+        long continuityBaseline = -1;
         var resumeSameTask = false;
         if (settings.HarnessReuseSession && sameContract
             && string.Equals(previous!.State, "running", StringComparison.OrdinalIgnoreCase)
@@ -238,6 +244,7 @@ public sealed class DeepSeekHarnessRunner
         {
             resumeSessionId = previous.SessionId;
             resumeSameTask = true;
+            resumeKind = ResumeKind.SameContractRunning;
         }
         var now = DateTime.UtcNow;
         // ProjectSessionId（项目会话亲和）已废弃：历史值仅兼容读取，绝不作为新会话选择依据。
@@ -249,7 +256,8 @@ public sealed class DeepSeekHarnessRunner
             RootCauseKey: rootCauseKey,
             ContractFingerprint: contractFingerprint,
             ExecutionMode: executionMode, PermissionMode: permissionMode, ExecutionStrength: executionStrength,
-            SessionState: presetDegraded ? "degraded-standard" : resumeSessionId is not null ? "resuming" : "creating");
+            SessionState: presetDegraded ? "degraded-standard" : resumeSessionId is not null ? "resuming" : "creating",
+            ContinuityRound: continuityRound);
         // 初始化 PROGRESS.json：写入归一化后的 workerCheck 清单与总额（worker 已写进度时保留，绝不覆盖）。
         HarnessTaskStateStore.EnsureProgress(taskDirectory, taskId, contractHealth.WorkerChecks);
         Write(status);
@@ -361,6 +369,8 @@ public sealed class DeepSeekHarnessRunner
             // 组键接回优先于"同项目其他运行合同 busy"：同组键意味着同一根因的碎片化任务应合并执行。
             if (!string.IsNullOrWhiteSpace(rootCauseKey))
                 resumeSessionId = await FindGroupResumeSessionIdAsync(rpc, projectRoot, rootCauseKey, taskId, cancellationToken);
+            if (resumeSessionId is not null)
+                resumeKind = ResumeKind.GroupRunning;
             if (resumeSessionId is null)
             {
                 var busyMessage = await FindConcurrentProjectBusyAsync(rpc, projectRoot, taskId, contractFingerprint, cancellationToken);
@@ -376,10 +386,32 @@ public sealed class DeepSeekHarnessRunner
                     Write(status);
                     return status;
                 }
+                // 已完成并通过报告门禁的同根因合同可以继续同一个 DSH 会话。这里刻意不
+                // 根据项目名或自然语言猜测：没有显式 rootCauseKey、报告或 Host 核验即退回新会话。
+                if (!string.IsNullOrWhiteSpace(rootCauseKey))
+                {
+                    var continuity = await FindEndedContinuityAsync(rpc, projectRoot, rootCauseKey, taskId, cancellationToken);
+                    if (continuity is not null)
+                    {
+                        resumeSessionId = continuity.SessionId;
+                        resumeKind = ResumeKind.EndedContinuity;
+                        continuitySourceTaskId = continuity.SourceTaskId;
+                        continuityRound = continuity.Round;
+                        continuityBaseline = continuity.LastSequence;
+                        status = status with
+                        {
+                            SessionId = resumeSessionId,
+                            ContinuitySourceTaskId = continuitySourceTaskId,
+                            ContinuityRound = continuityRound,
+                            SessionState = "continuing"
+                        };
+                        WriteContinuityContext(taskDirectory, continuity);
+                    }
+                }
             }
         }
         // 统一接回核验：resumeSessionId 非空表示接回运行中会话（同 taskId+同合同指纹，或同项目+同显式组键）。
-        if (resumeSessionId is not null)
+        if (resumeSessionId is not null && resumeKind != ResumeKind.EndedContinuity)
         {
             var resumeTarget = resumeSessionId;
             // 接回前必须 session.list 核验会话状态：running → 续接监听；已结束 → 读取可信终态
@@ -421,7 +453,9 @@ public sealed class DeepSeekHarnessRunner
         }
         else
         {
-            created = await CreateSessionGuardedAsync(rpc, projectRoot, agentPreset, cancellationToken);
+            created = resumeKind == ResumeKind.EndedContinuity
+                ? HarnessRpcResult.Ok(new System.Text.Json.Nodes.JsonObject { ["sessionId"] = resumeSessionId })
+                : await CreateSessionGuardedAsync(rpc, projectRoot, agentPreset, cancellationToken);
         }
         if (!created.Success)
         {
@@ -445,6 +479,31 @@ public sealed class DeepSeekHarnessRunner
         status = status with { State = "starting", Message = "会话已创建，正在提交合同提示。", SessionId = sessionId, UpdatedUtc = DateTime.UtcNow, SessionState = "starting" };
         Write(status);
 
+        // session.list 的 projections 并不承诺包含 model，旧实现因此把所有新会话写成
+        // Model=null，并可能把未初始化会话送进 prompt/read 循环。必须从 session.models
+        // 读取当前选择；短暂的 Host 初始化竞争只允许再探测一次，不重复创建或提交会话。
+        var selectedModel = await ConfirmSessionModelAsync(rpc, sessionId, cancellationToken);
+        if (selectedModel is null)
+        {
+            await TryCancelSessionAsync(rpc, sessionId);
+            status = status with
+            {
+                State = "failed",
+                Message = "Harness 会话未能确认可路由模型，已停止且未提交合同（仅探测两次）。",
+                UpdatedUtc = DateTime.UtcNow,
+                SessionState = "model-unavailable"
+            };
+            Write(status);
+            return status;
+        }
+        status = status with
+        {
+            Model = selectedModel,
+            Message = "已确认 Harness 会话模型，正在提交合同提示。",
+            UpdatedUtc = DateTime.UtcNow
+        };
+        Write(status);
+
         using var stop = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         lock (sync) live[taskId] = new ActiveHarnessTask(stop, sessionId);
         try
@@ -455,10 +514,10 @@ public sealed class DeepSeekHarnessRunner
             // 提交，也绝不创建第二个会话。listener 全程只属于这一个 session。
             Task<TerminalState>? listener = null;
             var eventPreconnected = false;
-            if (resumeSessionId is null)
+            if (resumeSessionId is null || resumeKind == ResumeKind.EndedContinuity)
             {
                 var streamReady = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-                listener = Task.Run(() => ListenForTerminalAsync(rpc, sessionId, status, stop.Token, streamReady), CancellationToken.None);
+                listener = Task.Run(() => ListenForTerminalAsync(rpc, sessionId, status, stop.Token, streamReady, continuityBaseline), CancellationToken.None);
                 var preconnect = await Task.WhenAny(streamReady.Task, Task.Delay(TimeSpan.FromSeconds(1), cancellationToken));
                 if (ReferenceEquals(preconnect, streamReady.Task) && streamReady.Task.IsCompletedSuccessfully)
                 {
@@ -475,11 +534,12 @@ public sealed class DeepSeekHarnessRunner
             }
 
             HarnessRpcResult prompt = HarnessRpcResult.Ok(null);
-            if (resumeSessionId is null)
+            if (resumeSessionId is null || resumeKind == ResumeKind.EndedContinuity)
             {
                 try
                 {
-                    prompt = await rpc.PromptAsync(sessionId, BuildPrompt(projectRoot, taskDirectory, taskId, contractFingerprint), "Asia/Shanghai", cancellationToken);
+                    prompt = await rpc.PromptAsync(sessionId, BuildPrompt(projectRoot, taskDirectory, taskId, contractFingerprint,
+                        resumeKind == ResumeKind.EndedContinuity), "Asia/Shanghai", cancellationToken);
                 }
                 catch (OperationCanceledException)
                 {
@@ -501,7 +561,9 @@ public sealed class DeepSeekHarnessRunner
             status = status with
             {
                 State = resumeSessionId is not null || eventPreconnected ? "running" : "starting",
-                Message = resumeSessionId is not null
+                Message = resumeKind == ResumeKind.EndedContinuity
+                    ? $"已复用连续会话（来源任务 {continuitySourceTaskId}），已提交增量合同新回合。"
+                    : resumeSessionId is not null
                     ? (resumeSameTask ? "已接回同一合同的运行中会话，未重复提交。" : "已接回同组键（rootCauseKey）的运行中会话，未重复提交。")
                     : eventPreconnected ? "任务提示已提交，实时事件通道正在跟踪该会话。" : "任务提示已提交，等待会话启动证据。",
                 SessionState = resumeSessionId is not null || eventPreconnected ? "running" : "starting",
@@ -511,7 +573,7 @@ public sealed class DeepSeekHarnessRunner
 
             // 新会话的 listener 已在 prompt 前预连接，避免错过首批会话事件；接回会话则在
             // “已接回”状态写入后开始监听，避免后续状态覆盖实时事件。
-            listener ??= Task.Run(() => ListenForTerminalAsync(rpc, sessionId, status, stop.Token), CancellationToken.None);
+            listener ??= Task.Run(() => ListenForTerminalAsync(rpc, sessionId, status, stop.Token, initialLastSequence: continuityBaseline), CancellationToken.None);
 
             TerminalState terminal;
             try
@@ -568,6 +630,27 @@ public sealed class DeepSeekHarnessRunner
             catch (OperationCanceledException) { throw; }
             catch (Exception ex) { return HarnessRpcResult.Fail("RPC 异常：" + HarnessJson.Truncate(ex.Message, 200)); }
         }
+    }
+
+    /// <summary>
+    /// 读取新会话的当前模型。DSH 在 session.create 后可能需要极短时间完成默认模型解析，
+    /// 因此只重试一次同一只读 RPC；不会创建第二个 session，也不会提交第二次合同。
+    /// </summary>
+    private static async Task<string?> ConfirmSessionModelAsync(HarnessRpcClient rpc, string sessionId, CancellationToken cancellationToken)
+    {
+        for (var attempt = 0; attempt < 2; attempt++)
+        {
+            var models = await rpc.GetSessionModelsAsync(sessionId, cancellationToken);
+            var current = models.Success ? models.Value?["current"] : null;
+            var model = HarnessJson.Text(current?["model"]);
+            if (!string.IsNullOrWhiteSpace(model))
+                // DSH returns the provider-qualified model id already.  Preserve it so
+                // task status matches the model picker rather than showing a duplicate
+                // provider prefix.
+                return model;
+            if (attempt == 0) await Task.Delay(TimeSpan.FromMilliseconds(300), cancellationToken);
+        }
+        return null;
     }
 
     private static async Task<FileStream> AcquireTaskLeaseAsync(string taskDirectory, CancellationToken cancellationToken)
@@ -729,6 +812,12 @@ public sealed class DeepSeekHarnessRunner
 
     private sealed record TerminalState(string State, string Message, HarnessProgressSummary? Summary = null);
 
+    private enum ResumeKind { None, SameContractRunning, GroupRunning, EndedContinuity }
+
+    /// <summary>一个已由 GPT 门禁认可、可作为下一份增量合同来源的已结束会话。</summary>
+    private sealed record ContinuityCandidate(string SourceTaskId, string SessionId, string ContractFingerprint,
+        int Round, long LastSequence);
+
     /// <summary>接回前核验结果：会话运行中 / 已结束 / 不存在 / Host 无法核验。</summary>
     private enum ResumeVerifyResult { Running, Ended, NotFound, Unverifiable }
 
@@ -763,6 +852,75 @@ public sealed class DeepSeekHarnessRunner
     }
 
     /// <summary>
+    /// 找到同项目、同显式 rootCauseKey 的最近可信完成回合。候选必须是 awaiting-gpt，
+    /// 且其原始报告再次通过门禁；Host 必须确认该会话仍存在且已结束，并能读取 history
+    /// 得到新回合开始前的事件基线。任何一项不满足均保守返回 null。
+    /// </summary>
+    private async Task<ContinuityCandidate?> FindEndedContinuityAsync(HarnessRpcClient rpc, string projectRoot,
+        string rootCauseKey, string taskId, CancellationToken cancellationToken)
+    {
+        var normalized = NormalizeRoot(projectRoot);
+        var candidates = GetRecentTasks(200)
+            .Where(task => string.Equals(task.State, "awaiting-gpt", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(task.TaskId, taskId, StringComparison.OrdinalIgnoreCase)
+                && !string.IsNullOrWhiteSpace(task.SessionId)
+                && !string.IsNullOrWhiteSpace(task.ContractFingerprint)
+                && string.Equals(NormalizeRoot(task.ProjectRoot), normalized, StringComparison.Ordinal)
+                && string.Equals(task.RootCauseKey, rootCauseKey, StringComparison.Ordinal)
+                && HarnessExecutionReportValidator.Validate(task.TaskDirectory, task.TaskId, task.ContractFingerprint, task.StartedUtc).Valid)
+            .OrderByDescending(task => task.UpdatedUtc)
+            .ToList();
+        if (candidates.Count == 0) return null;
+
+        var list = await rpc.ListSessionsAsync(cancellationToken);
+        if (!list.Success) return null;
+        foreach (var task in candidates)
+        {
+            var item = list.Value?["items"]?.AsArray()
+                .FirstOrDefault(node => string.Equals(HarnessJson.Text(node?["sessionId"]), task.SessionId, StringComparison.Ordinal));
+            var running = item?["running"] is System.Text.Json.Nodes.JsonValue runningValue
+                && runningValue.TryGetValue<bool>(out var isRunning) && isRunning;
+            if (item is null || running) continue;
+
+            var history = await rpc.GetSessionHistoryAsync(task.SessionId!, cancellationToken);
+            var events = history.Success ? history.Value?["events"]?.AsArray() : null;
+            if (events is null) continue;
+            var sequence = events.Select(node => ReadEventSequence(node)).Where(seq => seq.HasValue).Select(seq => seq!.Value).DefaultIfEmpty(-1).Max();
+            // A nonempty history without explicit sequence cannot safely filter its previous turn/end.
+            if (sequence < 0) continue;
+            return new ContinuityCandidate(task.TaskId, task.SessionId!, task.ContractFingerprint!,
+                Math.Max(1, task.ContinuityRound) + 1, sequence);
+        }
+        return null;
+    }
+
+    private static long? ReadEventSequence(System.Text.Json.Nodes.JsonNode? node)
+    {
+        if (node?["seq"] is System.Text.Json.Nodes.JsonValue value && value.TryGetValue<long>(out var sequence)) return sequence;
+        if (node?["sequence"] is System.Text.Json.Nodes.JsonValue alternate && alternate.TryGetValue<long>(out sequence)) return sequence;
+        if (node?["event"]?["seq"] is System.Text.Json.Nodes.JsonValue eventValue && eventValue.TryGetValue<long>(out sequence)) return sequence;
+        return null;
+    }
+
+    /// <summary>写入无合同正文的连续上下文。它仅标明来源和门禁事实，避免把旧提示/报告泄漏到新合同。</summary>
+    private static void WriteContinuityContext(string taskDirectory, ContinuityCandidate candidate)
+    {
+        var path = Path.Combine(taskDirectory, "CONTINUITY_CONTEXT.md");
+        var lines = new[]
+        {
+            "# 连续执行上下文（Helper 生成）",
+            "",
+            $"- 来源任务：{candidate.SourceTaskId}",
+            $"- 来源会话：{candidate.SessionId}",
+            $"- 来源合同指纹：{candidate.ContractFingerprint}",
+            $"- 连续回合：{candidate.Round}",
+            "- 来源任务已通过执行报告完成门禁；本轮以当前合同为准。",
+            "- 请优先查看当前目录的 DELTA.md（如存在），并仅按当前 HANDOFF.md 的直接依赖范围工作。"
+        };
+        AtomicFile.WriteAllText(path, string.Join(Environment.NewLine, lines) + Environment.NewLine);
+    }
+
+    /// <summary>
     /// 监听事件流直到会话终态（turn/end）。运行中事件（turn/start）实时写状态；
     /// 事件流断开时有限重连（不提前标 completed）；重连耗尽后诚实失败。
     /// 事件按 seq 去重：同一连接内的重复帧与重连后的重放帧（旧序号）都不再推进状态或重复计数。
@@ -773,11 +931,11 @@ public sealed class DeepSeekHarnessRunner
     /// 只记录状态与类型，绝不记录事件正文/密钥等敏感内容。
     /// </summary>
     private async Task<TerminalState> ListenForTerminalAsync(HarnessRpcClient rpc, string sessionId, HarnessTaskStatus initial,
-        CancellationToken cancellationToken, TaskCompletionSource<bool>? streamReady = null)
+        CancellationToken cancellationToken, TaskCompletionSource<bool>? streamReady = null, long initialLastSequence = -1)
     {
         var current = initial;
         var attempts = 0;
-        var lastSeq = -1L;
+        var lastSeq = initialLastSequence;
         var detector = new HarnessDegenerationDetector();
         while (true)
         {
@@ -936,7 +1094,7 @@ public sealed class DeepSeekHarnessRunner
                             var stageChanged = stage is not null && detector.EnterStage(stage);
                             if (frame.TextDelta is not null) detector.ObserveText(frame.TextDelta);
                             // 带 toolName 开始新调用并提交上一次；纯参数增量只追加不单独计次（分片不误计数）。
-                            detector.ObserveToolCall(frame.ToolName, frame.ToolArgsDelta);
+                            detector.ObserveToolCall(frame.ToolName, frame.ToolArgsDelta, frame.ToolCallId);
                             if (detector.IsDegenerate)
                             {
                                 // 达到退化阈值：立即取消会话并写 failed；绝不自动重提合同或创建新会话。
@@ -1201,8 +1359,14 @@ public sealed class DeepSeekHarnessRunner
     /// 长期行为规则（冻结决策、集中读取与批量编辑、强度检查预算、无显式 workerChecks 的默认 Release build 规则等）
     /// 保留在 codex-contract preset persona 与派生的 WORKER_ACCEPTANCE.md 中，运行时 prompt 不复制整段 persona/测试政策。
     /// </summary>
-    private static string BuildPrompt(string projectRoot, string taskDirectory, string taskId, string contractFingerprint)
-        => $"请执行任务目录中的合同任务。项目根目录：{projectRoot}。任务目录：{taskDirectory}。只读取任务目录内的 SPEC.md、HANDOFF.md、manifest.json 与 WORKER_ACCEPTANCE.md（绝不读取 ACCEPTANCE.md）；方案已冻结，直接实施，不要重新规划，不要修改项目根目录之外的文件，禁止截图、查看图片、做视觉结论或发布结论。完成后只运行 WORKER_ACCEPTANCE.md 中的 workerChecks，每项最多一次，严禁追加任何未列出的构建、测试、检查或自查；每个 workerCheck 前后以 UTF-8 无 BOM 原子更新任务目录内 PROGRESS.json；完成即报告：在任务目录写入 EXECUTION_REPORT.md，采用固定键 Markdown 格式（- 任务 ID：{taskId}、- 合同指纹：{contractFingerprint}、- 退出码：、- 修改文件：、- workerChecks：、- 风险/未完成项：），报告写入时间不得早于任务开始时间；写入 EXECUTION_REPORT.md 后停止，等待 GPT 验收。合同标识：{taskId}（指纹 {contractFingerprint}）。";
+    private static string BuildPrompt(string projectRoot, string taskDirectory, string taskId, string contractFingerprint,
+        bool incremental = false)
+        // Keep this a normal user request, matching a Web-composer turn.  The former
+        // machine-style instruction wall made CommandGoat emit incomplete tool deltas.
+        // Detailed boundaries remain in the project-local contract files.
+        => incremental
+            ? $"这是同一工作的增量合同。先阅读任务目录 {taskDirectory} 中当前的 SPEC.md、HANDOFF.md 和 manifest.json；如存在，再阅读 DELTA.md 与 CONTINUITY_CONTEXT.md。只按当前 HANDOFF.md 的直接依赖范围工作，不要为理解旧合同递归扫描项目。完成后在任务目录写 EXECUTION_REPORT.md，列出修改文件、验证结果和未完成项。任务标识：{taskId}，合同指纹：{contractFingerprint}。"
+            : $"请阅读任务目录 {taskDirectory} 中的 SPEC.md、HANDOFF.md 和 manifest.json，在项目 {projectRoot} 内完成该任务。严格遵守 HANDOFF.md 的读写范围；完成后在任务目录写 EXECUTION_REPORT.md，简要列出修改文件、验证结果和未完成项。任务标识：{taskId}，合同指纹：{contractFingerprint}。";
 
     private static string ComputeContractFingerprint(string taskDirectory)
     {
@@ -1400,7 +1564,9 @@ public sealed class DeepSeekHarnessRunner
         var values = item?["projections"]?["values"];
         return status with
         {
-            Model = HarnessJson.Text(values?["model"]?["modelId"]) ?? HarnessJson.Text(values?["model"]?["id"]),
+            // Recent DSH session.list projections omit model.  Do not erase the value
+            // confirmed through session.models at session startup in that case.
+            Model = HarnessJson.Text(values?["model"]?["modelId"]) ?? HarnessJson.Text(values?["model"]?["id"]) ?? status.Model,
             Steps = ReadInt(values?["sessionStats"]?["steps"]),
             UncachedInputTokens = ReadLong(values?["tokenUsage"]?["uncachedInputTokens"]),
             CacheReadTokens = ReadLong(values?["tokenUsage"]?["cacheReadTokens"]),

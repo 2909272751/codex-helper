@@ -3,7 +3,7 @@ using System.Diagnostics;
 namespace CodexHelper.Core.Services;
 
 /// <summary>
-/// CodexHelper WinExe 隐藏宿主模式参数解析（--harness-host --node &lt;绝对路径&gt; --dsh &lt;绝对路径&gt;）。
+/// CodexHelper WinExe 隐藏宿主模式参数解析（--harness-host --node &lt;绝对路径&gt; [--dsh &lt;旧入口回退&gt;]）。
 /// 纯函数可独立测试；任务正文/凭据绝不进入命令行。
 /// </summary>
 public static class HarnessHiddenHostCli
@@ -16,11 +16,11 @@ public static class HarnessHiddenHostCli
     public const int ExitUsageError = 3;
 
     public const string UsageText =
-        "用法：CodexHelper.exe --harness-host --node <绝对 node.exe 路径> --dsh <绝对 dsh 入口路径>\n" +
-        "行为：先探测 127.0.0.1:3080，已健康则安静退出 0；否则无窗口启动绝对 node + dsh web --host 127.0.0.1 并等待。\n" +
+        "用法：CodexHelper.exe --harness-host --node <绝对 node.exe 路径> [--dsh <旧入口回退>]\n" +
+        "行为：自动发现本机最高有效 DSH 版本；已健康则安静退出 0，否则无窗口启动 node + dsh web --host 127.0.0.1 并等待。\n" +
         "退出码：0=健康或宿主已退出，1=启动/等待失败，3=参数错误。";
 
-    public sealed record HiddenHostOptions(string NodePath, string DshEntryPath);
+    public sealed record HiddenHostOptions(string NodePath, string? DshEntryPath);
 
     /// <summary>解析参数；返回 null 表示不是隐藏宿主模式（由普通 UI 继续处理）。</summary>
     public static HiddenHostOptions? TryParse(IReadOnlyList<string> args, out string? error)
@@ -48,14 +48,14 @@ public static class HarnessHiddenHostCli
             }
         }
         if (!host) return null;
-        if (string.IsNullOrWhiteSpace(node) || string.IsNullOrWhiteSpace(dsh))
+        if (string.IsNullOrWhiteSpace(node))
         {
-            error = "隐藏宿主模式必须提供绝对路径 --node 与 --dsh。";
+            error = "隐藏宿主模式必须提供绝对路径 --node。";
             return null;
         }
         node = node.Trim();
-        dsh = dsh.Trim();
-        if (!Path.IsPathRooted(node) || !Path.IsPathRooted(dsh))
+        dsh = dsh?.Trim();
+        if (!Path.IsPathRooted(node) || (!string.IsNullOrWhiteSpace(dsh) && !Path.IsPathRooted(dsh)))
         {
             error = "隐藏宿主模式的 --node 与 --dsh 都必须是绝对路径。";
             return null;
@@ -63,7 +63,7 @@ public static class HarnessHiddenHostCli
         try
         {
             node = Path.GetFullPath(node);
-            dsh = Path.GetFullPath(dsh);
+            if (!string.IsNullOrWhiteSpace(dsh)) dsh = Path.GetFullPath(dsh);
         }
         catch (Exception ex)
         {
@@ -88,6 +88,8 @@ public static class DeepSeekHarnessHiddenHost
     public static Func<string, int, CancellationToken, Task<bool>>? PortProbe { get; set; }
     /// <summary>Web Host 启动器（默认 DeepSeekHarnessProcess.LaunchWebHost；测试可注入）。</summary>
     public static Func<string, string, Process?>? Launcher { get; set; }
+    /// <summary>88frp 运行时配置的轻量检测周期；仅监控本 Hidden Host 启动的子进程。</summary>
+    public static TimeSpan FrpMonitorInterval { get; set; } = TimeSpan.FromSeconds(15);
 
     public static async Task<int> RunAsync(string nodePath, string dshEntryPath, CancellationToken cancellationToken = default)
     {
@@ -119,16 +121,33 @@ public static class DeepSeekHarnessHiddenHost
         }
         catch { /* 设置不可读时保持默认权限 */ }
 
-        var process = Launcher?.Invoke(nodePath, dshEntryPath) ?? DeepSeekHarnessProcess.LaunchWebHost(nodePath, dshEntryPath, permissionMode);
-        if (process is null) return HarnessHiddenHostCli.ExitFailed;
+        var authority = FrpRuntimeAuthorityResolver.TryResolveDshWebAuthority();
+        var launched = Launch(nodePath, dshEntryPath, permissionMode, authority);
+        if (launched is null) return HarnessHiddenHostCli.ExitFailed;
+        Process process = launched;
         try
         {
-            await process.WaitForExitAsync(cancellationToken);
-            var exitCode = 0;
-            try { exitCode = process.ExitCode; }
-            catch { return HarnessHiddenHostCli.ExitFailed; }
-            LogEarlyExitIfNeeded(process, exitCode);
-            return exitCode;
+            while (true)
+            {
+                var exited = process.WaitForExitAsync(cancellationToken);
+                var tick = Task.Delay(FrpMonitorInterval, cancellationToken);
+                if (await Task.WhenAny(exited, tick) == exited)
+                {
+                    var exitCode = 0;
+                    try { exitCode = process.ExitCode; }
+                    catch { return HarnessHiddenHostCli.ExitFailed; }
+                    LogEarlyExitIfNeeded(process, exitCode);
+                    return exitCode;
+                }
+                var updatedAuthority = FrpRuntimeAuthorityResolver.TryResolveDshWebAuthority();
+                if (string.IsNullOrWhiteSpace(updatedAuthority) || string.Equals(updatedAuthority, authority, StringComparison.OrdinalIgnoreCase)) continue;
+                try { process.Kill(entireProcessTree: true); } catch { continue; }
+                try { await process.WaitForExitAsync(cancellationToken); } catch { return HarnessHiddenHostCli.ExitFailed; }
+                authority = updatedAuthority;
+                var restarted = Launch(nodePath, dshEntryPath, permissionMode, authority);
+                if (restarted is null) return HarnessHiddenHostCli.ExitFailed;
+                process = restarted;
+            }
         }
         catch (OperationCanceledException)
         {
@@ -141,6 +160,11 @@ public static class DeepSeekHarnessHiddenHost
             return HarnessHiddenHostCli.ExitFailed;
         }
     }
+
+    private static Process? Launch(string nodePath, string dshEntryPath, string permissionMode, string? authority)
+        => Launcher?.Invoke(nodePath, dshEntryPath)
+            ?? DeepSeekHarnessProcess.LaunchWebHost(nodePath, dshEntryPath, permissionMode,
+                string.IsNullOrWhiteSpace(authority) ? null : [authority]);
 
     /// <summary>
     /// 隐藏宿主不弹窗；子进程非 0 退出时仅把脱敏摘要写入 Helper 本地日志，绝不写原始完整 stderr。

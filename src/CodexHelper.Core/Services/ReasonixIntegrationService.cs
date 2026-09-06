@@ -1030,11 +1030,37 @@ if([string]::IsNullOrWhiteSpace($CodexThreadId)){
 }
 function Quote-Arg([string]$value) { return '"' + $value.Replace('"','\"') + '"' }
 $arguments = '-NoProfile -ExecutionPolicy Bypass -File ' + (Quote-Arg $hostScript) + ' -ProjectRoot ' + (Quote-Arg $project) + ' -TaskDirectory ' + (Quote-Arg $task) + ' -StatusPath ' + (Quote-Arg $status) + ' -CodexThreadId ' + (Quote-Arg $CodexThreadId) + ' -ReasonixHome ' + (Quote-Arg $reasonixHomePath)
-$process = Start-Process -FilePath 'powershell.exe' -ArgumentList $arguments -WindowStyle Hidden -PassThru
+function Start-TaskHost { Start-Process -FilePath 'powershell.exe' -ArgumentList $arguments -WindowStyle Hidden -PassThru }
+function Read-TaskStatus { try { return [IO.File]::ReadAllText($status,[Text.Encoding]::UTF8)|ConvertFrom-Json } catch { throw "Reasonix task host exited without a readable task status." } }
+$process = Start-TaskHost
 Write-Output "Reasonix task running: $taskId (host PID $($process.Id)). View progress in Codex Helper or Reasonix Desktop."
 Write-Output "Waiting indefinitely (no command timeout; no task-duration limit) for the host to exit; stop only via Codex Helper Stop or closing Codex."
 $process.WaitForExit()
 if($process.ExitCode -ne 0){throw "Reasonix task host failed with exit code $($process.ExitCode)."}
+$statusData=Read-TaskStatus
+# A single automatic retry is safe only before the first model/tool event and
+# only for an executor-host fault. It avoids charging transient startup faults
+# as a user-visible failed attempt, while never repeating model or code work.
+$retryMarker=Join-Path $task '.helper-auto-retry-once'
+$canRetry=([string]$statusData.State -eq 'failed' -and [string]$statusData.FailureKind -eq 'host-error' -and [int]$statusData.EventCount -eq 0 -and [int]$statusData.ModelTurnCount -eq 0 -and [int]$statusData.ToolCallCount -eq 0 -and -not [IO.File]::Exists($retryMarker))
+if($canRetry){
+  [IO.File]::WriteAllText($retryMarker,[DateTime]::UtcNow.ToString('o'),[Text.UTF8Encoding]::new($false))
+  Write-Output "Reasonix host had a pre-run fault; retrying once automatically."
+  $process=Start-TaskHost; $process.WaitForExit()
+  if($process.ExitCode -ne 0){throw "Reasonix task host failed after automatic retry with exit code $($process.ExitCode)."}
+  $statusData=Read-TaskStatus
+}
+if($null-eq$statusData -or [string]$statusData.State -ne 'completed'){
+  $state=if($null-ne$statusData){[string]$statusData.State}else{'missing'}
+  $message=if($null-ne$statusData -and -not [string]::IsNullOrWhiteSpace([string]$statusData.Message)){[string]$statusData.Message}else{'no completion report was recorded'}
+  Write-Output "Reasonix task ended without completion (state=$state): $message"
+  # A host-error means the managed executor itself failed before it could
+  # classify a CLI result. Propagate it so callers never report a false finish.
+  if($null-eq$statusData -or [string]$statusData.FailureKind -eq 'host-error'){
+    throw "Reasonix task host did not complete (state=$state): $message"
+  }
+  return
+}
 Write-Output "Reasonix task finished: $taskId. GPT must now inspect REVIEW_PACKET.md and perform acceptance in this same turn."
 """;
 
@@ -1768,7 +1794,9 @@ try{
   'Do not read old runs or events under .codex-helper/runs, do not recursively scan bin/obj, do not re-read unchanged files, and do not re-run commands that already passed.'
   {{{permissionArgs}}}
   $cliEffort=if($script:planEffort -eq 'medium'){'high'}else{$script:planEffort}
-  $runArgs=@('run','--dir',$project,'--profile',$script:planProfile,'--effort',$cliEffort)
+  # Reasonix 1.34 removed the old --profile economy|balanced|delivery contract.
+  # Keep the policy in task metadata, but do not pass an obsolete CLI option.
+  $runArgs=@('run','--dir',$project,'--effort',$cliEffort)
   if($null-ne$script:planMaxSteps){ $runArgs+=@('--max-steps',[string]$script:planMaxSteps) }
   $runArgs += $permissionArgs
   # Reasonix 1.19.x requires every option before the final task text.

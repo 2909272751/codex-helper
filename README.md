@@ -2,7 +2,7 @@
 
 Codex Helper 是面向 Windows 10/11 的 Codex 专属工作台，统一管理官方账号、第三方 Responses API、重要项目、个人 Skills、Codex 配置、加密增量备份与批量迁移。
 
-当前开发版本：`4.3.0`
+当前开发版本：`4.3.2`
 
 ![Codex Helper Logo](assets/CodexHelper-256.png)
 

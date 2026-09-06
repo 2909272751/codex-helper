@@ -116,6 +116,36 @@ public static partial class DeepSeekHarnessSemVer
         return new DshSemVersion(major, minor, patch, match.Groups[4].Value, match.Groups[5].Value);
     }
 
+    /// <summary>按 SemVer 2.0 优先级比较两个已解析版本；构建元数据不参与优先级。</summary>
+    public static int Compare(DshSemVersion left, DshSemVersion right)
+    {
+        var core = left.Major.CompareTo(right.Major);
+        if (core != 0) return core;
+        core = left.Minor.CompareTo(right.Minor);
+        if (core != 0) return core;
+        core = left.Patch.CompareTo(right.Patch);
+        if (core != 0) return core;
+        if (string.IsNullOrEmpty(left.PreRelease)) return string.IsNullOrEmpty(right.PreRelease) ? 0 : 1;
+        if (string.IsNullOrEmpty(right.PreRelease)) return -1;
+
+        var leftParts = left.PreRelease.Split('.');
+        var rightParts = right.PreRelease.Split('.');
+        for (var i = 0; i < Math.Min(leftParts.Length, rightParts.Length); i++)
+        {
+            var a = leftParts[i];
+            var b = rightParts[i];
+            if (int.TryParse(a, out var an) && int.TryParse(b, out var bn))
+            {
+                core = an.CompareTo(bn);
+            }
+            else if (int.TryParse(a, out _)) core = -1;
+            else if (int.TryParse(b, out _)) core = 1;
+            else core = string.CompareOrdinal(a, b);
+            if (core != 0) return core;
+        }
+        return leftParts.Length.CompareTo(rightParts.Length);
+    }
+
     /// <summary>
     /// 计算 dsh 版本相对基线（默认已知基线 <see cref="DeepSeekHarnessVersions.FixedVersion"/>）的风险级别。
     /// 无法解析或 "latest" 视为 <see cref="HarnessVersionRiskLevel.Invalid"/>。

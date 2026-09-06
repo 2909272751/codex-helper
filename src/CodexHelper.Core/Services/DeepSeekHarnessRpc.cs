@@ -87,6 +87,10 @@ public sealed class HarnessRpcClient : IDisposable
     public Task<HarnessRpcResult> GetSessionHistoryAsync(string sessionId, CancellationToken cancellationToken = default)
         => CallAsync("session.history", new JsonObject { ["sessionId"] = sessionId }, cancellationToken);
 
+    /// <summary>session.models：读取一个会话实际已选中的可路由模型。该信息不在 session.list 投影中保证存在。</summary>
+    public Task<HarnessRpcResult> GetSessionModelsAsync(string sessionId, CancellationToken cancellationToken = default)
+        => CallAsync("session.models", new JsonObject { ["sessionId"] = sessionId }, cancellationToken);
+
     /// <summary>执行一次一元 RPC；网络/协议/业务错误均转换为可读失败，不抛出（取消除外）。</summary>
     public async Task<HarnessRpcResult> CallAsync(string method, JsonNode? payload, CancellationToken cancellationToken = default)
     {
@@ -198,7 +202,8 @@ public sealed record HarnessMuxFrame(
     string? TextDelta = null,
     string? ToolName = null,
     string? ToolArgsDelta = null,
-    long? SubscriptionLastSeq = null)
+    long? SubscriptionLastSeq = null,
+    string? ToolCallId = null)
 {
     /// <summary>assistant 增量文本保留上限（防记录完整合同正文/超大内容）。</summary>
     public const int MaxTextDeltaChars = 2048;
@@ -227,6 +232,7 @@ public sealed record HarnessMuxFrame(
         string? textDelta = null;
         string? toolName = null;
         string? toolArgsDelta = null;
+        string? toolCallId = null;
         long? subscriptionLastSeq = null;
         if (type == "session/subscribed"
             && payload["lastSeq"] is JsonValue baselineValue
@@ -253,12 +259,13 @@ public sealed record HarnessMuxFrame(
                 textDelta = Cap(FirstText(data?["text"], data?["delta"], data?["content"], part?["text"], part?["delta"], part?["content"], chunk?["text"]), MaxTextDeltaChars);
                 toolName = Cap(FirstText(data?["name"], data?["toolName"], tool?["name"], part?["name"], part?["toolName"], partTool?["name"], chunk?["name"]), 256);
                 toolArgsDelta = Cap(FirstText(data?["arguments"], data?["args"], tool?["arguments"], part?["arguments"], part?["args"], chunk?["arguments"], chunk?["argumentsDelta"]), MaxToolArgsDeltaChars);
+                toolCallId = Cap(FirstText(tool?["id"], partTool?["id"], chunk?["id"]), 256);
                 if (textDelta is not null || toolName is not null)
                     assistantChunkKind = eventType;
             }
         }
         var errorMessage = type == "stream/error" ? HarnessJson.Text((payload["error"] as JsonObject)?["message"]) : null;
-        return new HarnessMuxFrame(type, sessionId, eventType, turnEndKind, errorMessage, seq, assistantChunkKind, textDelta, toolName, toolArgsDelta, subscriptionLastSeq);
+        return new HarnessMuxFrame(type, sessionId, eventType, turnEndKind, errorMessage, seq, assistantChunkKind, textDelta, toolName, toolArgsDelta, subscriptionLastSeq, toolCallId);
     }
 
     /// <summary>取第一个非空文本值（工具/对象节点转紧凑 JSON 文本）。</summary>
@@ -396,6 +403,10 @@ public sealed class HarnessDegenerationDetector
     public int RepeatThreshold { get; init; } = 3;
     /// <summary>只读/查询工具同一签名连续出现达到该次数才判定退化（正常反复读取查询不误判）。</summary>
     public int ReadOnlyRepeatThreshold { get; init; } = 6;
+    /// <summary>无计划、编辑、检查或报告时允许的累计只读调用上限，避免不同参数的读取循环绕过重复签名检测。</summary>
+    public int MaxReadOnlyCallsWithoutProgress { get; init; } = 80;
+    /// <summary>同一工具持续发出空参数增量的上限；这不是有效工具调用，而是上游协议流异常。</summary>
+    public int EmptyToolDeltaThreshold { get; init; } = 6;
     /// <summary>单片段参与比较的最大长度；超出部分截断。</summary>
     public int FragmentCap { get; init; } = 2048;
     /// <summary>工具参数规范化后参与比较的最大长度；超出后视为不可可靠比较（不参与重复计数，避免截断前缀误判）。</summary>
@@ -423,6 +434,9 @@ public sealed class HarnessDegenerationDetector
     private int reasoningEventCount;
     /// <summary>无进展重复告警数（达到最小观察窗口时的告警次数）。</summary>
     private int noProgressWarnings;
+    private int readOnlyCallsWithoutProgress;
+    private int emptyToolDeltas;
+    private string? pendingToolId;
 
     private readonly record struct Entry(DateTime Time, string Signature);
 
@@ -456,12 +470,19 @@ public sealed class HarnessDegenerationDetector
     {
         if (string.Equals(next, stage, StringComparison.Ordinal)) return false;
         stage = next;
-        ClearNoProgress();
+        // read/start 仅是观察状态，不足以证明合同推进；跨回合的只读计数必须保留。
+        if (next is "plan" or "edit" or "check" or "report") NoteProgress();
+        else ClearNoProgress();
         return true;
     }
 
     /// <summary>显式记录一次进展证据（检查结果/报告写入等）：清除无进展重复计数。</summary>
-    public void NoteProgress() => ClearNoProgress();
+    public void NoteProgress()
+    {
+        readOnlyCallsWithoutProgress = 0;
+        emptyToolDeltas = 0;
+        ClearNoProgress();
+    }
 
     private void ClearNoProgress()
     {
@@ -498,6 +519,7 @@ public sealed class HarnessDegenerationDetector
         pendingToolName = null;
         pendingArgs.Clear();
         pendingOversize = false;
+        emptyToolDeltas = 0;
         window.Clear();
         windowChars = 0;
         lastToolName = null;
@@ -548,19 +570,41 @@ public sealed class HarnessDegenerationDetector
     /// 相同工具名 + 完整规范化参数连续重复即无有效进展；参数超限或已被截断（无法可靠比较）时
     /// 不参与重复计数，但会中断连续计数。
     /// </summary>
-    public void ObserveToolCall(string? toolName, string? argsDelta)
+    public void ObserveToolCall(string? toolName, string? argsDelta, string? toolCallId = null)
     {
         if (reason is not null) return;
         if (toolName is not null)
         {
+            if (!string.IsNullOrWhiteSpace(toolCallId) && string.Equals(toolCallId, pendingToolId, StringComparison.Ordinal))
+            {
+                if (!string.IsNullOrWhiteSpace(argsDelta)) emptyToolDeltas = 0;
+                AppendPendingArgs(argsDelta);
+                return;
+            }
+            // 某些 OpenAI 兼容网关会不断重发 `tool-call-delta(name=read)`，却从不
+            // 提供 arguments。这不是 80 次真实 read；保留首个 pending 调用等待参数，
+            // 连续空帧达到小窗口后明确报告协议异常。
+            if (string.Equals(toolName, pendingToolName, StringComparison.Ordinal)
+                && pendingArgs.Length == 0 && string.IsNullOrWhiteSpace(argsDelta))
+            {
+                if (++emptyToolDeltas >= EmptyToolDeltaThreshold)
+                {
+                    noProgressWarnings++;
+                    reason = $"工具 {TruncateForReason(toolName)} 连续发送空参数增量 {EmptyToolDeltaThreshold} 次，未形成可执行调用。";
+                }
+                return;
+            }
             CommitToolCall();
             pendingToolName = toolName;
+            pendingToolId = toolCallId;
             pendingArgs.Clear();
             pendingOversize = false;
+            emptyToolDeltas = string.IsNullOrWhiteSpace(argsDelta) ? 1 : 0;
             AppendPendingArgs(argsDelta);
         }
         else
         {
+            if (!string.IsNullOrWhiteSpace(argsDelta)) emptyToolDeltas = 0;
             AppendPendingArgs(argsDelta);
         }
     }
@@ -587,6 +631,7 @@ public sealed class HarnessDegenerationDetector
         var oversize = pendingOversize;
         var args = pendingOversize ? string.Empty : pendingArgs.ToString();
         pendingToolName = null;
+        pendingToolId = null;
         pendingArgs.Clear();
         pendingOversize = false;
         // 计划书签可以合法地以相同载荷多次更新且永不改动项目文件，不是生成循环证据。
@@ -596,6 +641,12 @@ public sealed class HarnessDegenerationDetector
         // 绝不参与重复判定（重复写入不应被熔断覆盖）。仅计入工具调用总数。
         if (ProgressTools.Contains(toolName)) { NoteProgress(); return; }
         var isReadOnly = ReadOnlyQueryTools.Contains(toolName);
+        if (isReadOnly && ++readOnlyCallsWithoutProgress > MaxReadOnlyCallsWithoutProgress)
+        {
+            noProgressWarnings++;
+            reason = $"连续只读工具调用超过 {MaxReadOnlyCallsWithoutProgress} 次，未出现计划、编辑、检查或报告进展。";
+            return;
+        }
         var normalized = string.Empty;
         if (!oversize)
         {

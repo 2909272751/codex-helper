@@ -9,8 +9,8 @@ public partial class App : Application
 
     protected override void OnStartup(StartupEventArgs e)
     {
-        // 隐藏宿主模式：不得创建 MainWindow、不得弹消息框。探测 127.0.0.1:3080，
-        // 已健康则安静退出 0；否则无窗口启动绝对 node + dsh 并等待子进程（阻塞等待，
+        // 隐藏宿主模式：不得创建 MainWindow、不得弹消息框。先在有限本机候选中发现最高有效 DSH，
+        // 再探测 127.0.0.1:3080；已健康则安静退出 0，否则无窗口启动绝对 node + dsh 并等待子进程（阻塞等待，
         // 无 UI 需要泵消息）。与主窗口单实例互斥无关，也不读取/写入任何 Helper 状态。
         var hiddenOptions = HarnessHiddenHostCli.TryParse(e.Args, out _);
         if (hiddenOptions is not null)
@@ -49,7 +49,10 @@ public partial class App : Application
     {
         try
         {
-            return Task.Run(() => DeepSeekHarnessHiddenHost.RunAsync(options.NodePath, options.DshEntryPath))
+            var dsh = new DeepSeekHarnessService(new CodexHelper.Core.Infrastructure.AppPaths())
+                .FindLatestDsh(options.DshEntryPath);
+            if (dsh is null) return HarnessHiddenHostCli.ExitFailed;
+            return Task.Run(() => DeepSeekHarnessHiddenHost.RunAsync(options.NodePath, dsh.EntryPath))
                 .GetAwaiter().GetResult();
         }
         catch

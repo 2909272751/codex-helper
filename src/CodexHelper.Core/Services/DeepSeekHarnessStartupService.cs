@@ -11,7 +11,7 @@ public sealed record HarnessStartupStatus(bool Exists, bool MatchesCurrentPaths,
 
 /// <summary>
 /// Harness Web Host 登录自启动（Windows 计划任务）管理。
-/// 计划任务执行已安装的 CodexHelper.exe 隐藏宿主模式（--harness-host --node &lt;绝对&gt; --dsh &lt;绝对&gt;），
+/// 计划任务执行已安装的 CodexHelper.exe 隐藏宿主模式（--harness-host --node &lt;绝对&gt;），
 /// 不再直接执行 node.exe：隐藏宿主先探测 127.0.0.1:3080，已健康安静退出，否则无窗口补位，
 /// 避免每分钟直接启动控制台版 node.exe 导致 Node.js 窗口闪现。
 /// 旧版直接启动 node 的计划任务会被识别为 stale。
@@ -92,7 +92,7 @@ public sealed class DeepSeekHarnessStartupService
     {
         var sid = WindowsIdentity.GetCurrent().User?.Value ?? throw new InvalidOperationException("无法读取当前 Windows 用户 SID。");
         var command = SecurityElement.Escape(Path.GetFullPath(helperExePath))!;
-        var arguments = SecurityElement.Escape(QuoteArgument("--harness-host") + " " + QuoteArgument("--node") + " " + QuoteArgument(Path.GetFullPath(nodePath)) + " " + QuoteArgument("--dsh") + " " + QuoteArgument(Path.GetFullPath(dshEntryPath)))!;
+        var arguments = SecurityElement.Escape(QuoteArgument("--harness-host") + " " + QuoteArgument("--node") + " " + QuoteArgument(Path.GetFullPath(nodePath)))!;
         var startBoundary = DateTime.Now.AddMinutes(1).ToString("yyyy-MM-dd'T'HH:mm:ss");
         return $"""
 <?xml version="1.0" encoding="UTF-16"?>
@@ -152,9 +152,11 @@ public sealed class DeepSeekHarnessStartupService
         var options = HarnessHiddenHostCli.TryParse(SplitArguments(action.Value.Arguments), out var parseError);
         if (options is null)
             return new(true, false, "登录自启动不是隐藏宿主模式（" + (string.IsNullOrWhiteSpace(parseError) ? "缺少 --harness-host" : parseError) + "），请重新配置。");
-        var matches = PathEquals(options.NodePath, nodePath) && PathEquals(options.DshEntryPath, dshEntryPath);
+        if (!string.IsNullOrWhiteSpace(options.DshEntryPath))
+            return new(true, false, "登录自启动仍固定 DSH 入口，无法自动切换新版；请重新配置。");
+        var matches = PathEquals(options.NodePath, nodePath);
         return new(true, matches,
-            matches ? "登录自启动已配置为隐藏宿主，路径有效。" : "登录自启动已存在，但程序路径已变化，请重新配置。");
+            matches ? "登录自启动已配置为隐藏宿主，将自动启动最高有效 DSH 版本。" : "登录自启动已存在，但 Node 路径已变化，请重新配置。");
     }
 
     /// <summary>按 Windows 命令行语义拆分参数：空白分隔、引号分组、\" 与 "" 视为转义引号。</summary>

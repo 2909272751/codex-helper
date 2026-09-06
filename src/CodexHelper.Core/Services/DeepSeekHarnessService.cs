@@ -114,16 +114,7 @@ public sealed class DeepSeekHarnessService
         if (node is not null) { nodePath = node.Path; }
 
         var dshCandidates = discovery.DiscoverDsh(userSelectedDshEntryPath);
-        HarnessDshCandidate? dsh = null;
-        foreach (var candidate in dshCandidates)
-        {
-            var version = ReadDshVersion(candidate.PackageRoot);
-            if (dsh is null || DshSourceRank(candidate.Source) < DshSourceRank(dsh.Source)
-                || (candidate.Source == dsh.Source && DeepSeekHarnessProbe.IsDshVersionSupported(version) && !DeepSeekHarnessProbe.IsDshVersionSupported(dsh.Version)))
-            {
-                dsh = candidate with { Version = version };
-            }
-        }
+        var dsh = SelectLatestDsh(dshCandidates);
 
         var nodeMessage = BuildNodeMessage(node);
         var dshMessage = BuildDshMessage(dsh);
@@ -204,6 +195,36 @@ public sealed class DeepSeekHarnessService
             ContractProfileMessage: profileMessage,
             CapabilityPermissionEnv: permissionEnv,
             PermissionEnvMessage: permissionEnvMessage);
+    }
+
+    /// <summary>
+    /// 在固定的本机候选范围内选择最高有效 SemVer 的 DSH。保存的旧路径仅作为回退候选，
+    /// 不能遮蔽后来安装的更高版本；不联网、不安装也不修改用户环境。
+    /// </summary>
+    public HarnessDshCandidate? FindLatestDsh(string? fallbackEntryPath = null)
+    {
+        var discovery = DiscoveryFactory?.Invoke() ?? new DeepSeekHarnessDiscovery();
+        return SelectLatestDsh(discovery.DiscoverDsh(fallbackEntryPath));
+    }
+
+    private HarnessDshCandidate? SelectLatestDsh(IReadOnlyList<HarnessDshCandidate> candidates)
+    {
+        HarnessDshCandidate? best = null;
+        DshSemVersion? bestVersion = null;
+        foreach (var candidate in candidates)
+        {
+            var version = ReadDshVersion(candidate.PackageRoot);
+            var parsed = DeepSeekHarnessSemVer.Parse(version);
+            if (parsed is null || !DeepSeekHarnessProbe.IsDshVersionSupported(version)) continue;
+            if (best is null || bestVersion is null
+                || DeepSeekHarnessSemVer.Compare(parsed, bestVersion) > 0
+                || (DeepSeekHarnessSemVer.Compare(parsed, bestVersion) == 0 && DshSourceRank(candidate.Source) < DshSourceRank(best.Source)))
+            {
+                best = candidate with { Version = version };
+                bestVersion = parsed;
+            }
+        }
+        return best;
     }
 
     /// <summary>
@@ -482,7 +503,7 @@ public static class DeepSeekHarnessProcess
     /// 无窗口（CreateNoWindow）、不经过 Shell（UseShellExecute=false）、UTF-8 输出重定向。
     /// 可独立测试（验证隐藏宿主不弹窗等要求）。
     /// </summary>
-    public static ProcessStartInfo BuildWebHostStartInfo(string nodePath, string dshEntryPath, string? permissionMode = null)
+    public static ProcessStartInfo BuildWebHostStartInfo(string nodePath, string dshEntryPath, string? permissionMode = null, IEnumerable<string>? trustedHosts = null)
     {
         var start = new ProcessStartInfo(nodePath)
         {
@@ -497,6 +518,11 @@ public static class DeepSeekHarnessProcess
         start.ArgumentList.Add("web");
         start.ArgumentList.Add("--host");
         start.ArgumentList.Add(DeepSeekHarnessVersions.WebHostBindAddress);
+        foreach (var authority in trustedHosts?.Where(value => !string.IsNullOrWhiteSpace(value)).Distinct(StringComparer.OrdinalIgnoreCase) ?? [])
+        {
+            start.ArgumentList.Add("--trusted-host");
+            start.ArgumentList.Add(authority);
+        }
         var permission = HarnessExecutionOptions.NormalizePermission(permissionMode);
         start.Environment["DSH_PERMISSION_MODE"] = permission;
         if (permission == "danger-full-access") start.Environment["DSH_APPROVAL_POLICY"] = "never";
@@ -508,11 +534,11 @@ public static class DeepSeekHarnessProcess
     /// stdout/stderr 异步排空，避免管道缓冲阻塞；同时保留有界尾部供启动失败诊断使用，
     /// 不保存完整输出（原始 stderr 绝不写入日志）。
     /// </summary>
-    public static Process? LaunchWebHost(string nodePath, string dshEntryPath, string? permissionMode = null)
+    public static Process? LaunchWebHost(string nodePath, string dshEntryPath, string? permissionMode = null, IEnumerable<string>? trustedHosts = null)
     {
         try
         {
-            var process = new Process { StartInfo = BuildWebHostStartInfo(nodePath, dshEntryPath, permissionMode) };
+            var process = new Process { StartInfo = BuildWebHostStartInfo(nodePath, dshEntryPath, permissionMode, trustedHosts) };
             if (!process.Start()) return null;
             var output = new HarnessProcessOutput();
             CapturedOutputs.Add(process, output);

@@ -82,8 +82,9 @@ public static class HarnessRunnerCli
     }
 
     /// <summary>
-    /// 把任务终态映射为退出码：completed/awaiting-gpt→0（成功，等待 GPT 验收）、cancelled→2、
-    /// 其余（failed/未知）→1。
+    /// 把任务状态映射为退出码。真实终态：completed/awaiting-gpt（已通过完成门禁，等待 GPT 验收）→0、
+    /// cancelled→2；一切非终态（starting/running/busy，任务尚未真实结束）与失败态（failed/未知）→1。
+    /// 上层必须只在 Runner 返回真实终态后才判定任务结束：running/busy/starting 绝不映射为成功。
     /// </summary>
     public static int MapExitCode(string state)
         => string.Equals(state, "completed", StringComparison.OrdinalIgnoreCase)
@@ -106,6 +107,7 @@ public static class HarnessRunnerCli
             "failed" => "失败",
             "running" => "运行中",
             "starting" => "启动中",
+            "busy" => "项目忙",
             _ => status.State ?? string.Empty
         };
         var message = ReasonixIntegrationService.RedactSecrets(status.Message ?? string.Empty);

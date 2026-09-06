@@ -142,6 +142,9 @@ internal static class Program
         ,("Harness 停止旧任务后新任务可启动（取消意图兑现/终态不被覆盖）", TestHarnessStopThenNewTaskStartsAsync)
         ,("Harness 任务中心不重复提交（运行中对账/重复启动不二次创建会话）", TestHarnessTaskCenterNoResubmitAsync)
         ,("Harness active-harness-task 记录语义（启动占位/cancel-requested/终态清除）", TestHarnessActiveTaskRecordAsync)
+        ,("Harness DSH 语义标题报告门禁（实际修改/验证结果/未完成项含 TaskId+指纹+exit 0 通过；缺成功证据/exit 1/错ID错指纹/陈旧失败）", TestHarnessSemanticTitleReportGateAsync)
+        ,("Harness CLI 终态语义（running/busy/starting 绝不映射成功，仅真实完成退出 0）", TestHarnessCliTerminalSemanticsAsync)
+        ,("Harness 组键续接诊断（无组键默认/不同组键隔离/报告未过门禁/续接成功原因可读）", TestHarnessContinuityDiagnosticAsync)
     ];
 
     private static async Task<int> Main()
@@ -1170,7 +1173,7 @@ internal static class Program
         // 版本源必须与当前发布版本一致。
         var props = await File.ReadAllTextAsync(Path.Combine(root, "Directory.Build.props"));
         var match = System.Text.RegularExpressions.Regex.Match(props, @"<Version>([^<]+)</Version>");
-        Assert(match.Success && match.Groups[1].Value == "4.3.2", "版本源必须为 4.3.2，实际：" + (match.Success ? match.Groups[1].Value : "未找到"));
+        Assert(match.Success && match.Groups[1].Value == "4.3.4", "版本源必须为 4.3.4，实际：" + (match.Success ? match.Groups[1].Value : "未找到"));
 
         // 安装器：含微软官方链接、无 full/portable 旧引导、运行库检测不依赖单一目录。
         var iss = await File.ReadAllTextAsync(Path.Combine(root, "installer", "CodexHelperRuntimeRequired.iss"));
@@ -1187,8 +1190,8 @@ internal static class Program
 
         // README：开发版本与当前正式 Release 保持一致，首页只提供版本化精简安装包。
         var readme = await File.ReadAllTextAsync(Path.Combine(root, "README.md"));
-        Assert(readme.Contains("当前开发版本：`4.3.2`", StringComparison.Ordinal), "README 当前开发版本应为 4.3.2。");
-        Assert(readme.Contains("releases/download/v4.3.0/codex-helper-v4.3.0-setup.exe", StringComparison.Ordinal) && readme.Contains("releases/tag/v4.3.0", StringComparison.Ordinal), "README 首页应指向 v4.3.0 正式 Release 与版本化安装包。");
+        Assert(readme.Contains("当前开发版本：`4.3.4`", StringComparison.Ordinal), "README 当前开发版本应为 4.3.4。");
+        Assert(readme.Contains("releases/download/v4.3.4/codex-helper-v4.3.4-setup.exe", StringComparison.Ordinal) && readme.Contains("releases/tag/v4.3.4", StringComparison.Ordinal), "README 首页应指向 v4.3.4 正式 Release 与版本化安装包。");
         Assert(readme.Contains("https://dotnet.microsoft.com/zh-cn/download/dotnet/8.0", StringComparison.Ordinal), "README 下载区应提供微软官方 .NET 8 下载页。");
         Assert(!readme.Contains("setup-full", StringComparison.OrdinalIgnoreCase) && !readme.Contains("portable.zip", StringComparison.OrdinalIgnoreCase), "README 不得再推荐 full/portable 下载。");
     }
@@ -7981,6 +7984,302 @@ remotePort = 58831
                     "StartAsync 应兑现取消意图为 cancelled：" + status.State + " / " + status.Message);
                 Assert(!host.Calls.Any(call => call.Method == "session.create"), "兑现取消意图后不得创建会话");
                 Assert(!host.Calls.Any(call => call.Method == "session.prompt"), "兑现取消意图后不得提交提示");
+            }
+        }
+        finally { TryDeleteDirectory(root); }
+    }
+
+    /// <summary>
+    /// DSH/Web-composer 语义标题报告门禁：`## 实际修改 / ## 验证结果 / ## 未完成项与说明`
+    /// 且含 TaskId、指纹与显式 exit 0 时通过；缺成功证据、exit 1、错 ID/指纹、陈旧报告仍失败。
+    /// 身份/时效/成功证据不因标题格式放宽。
+    /// </summary>
+    private static async Task TestHarnessSemanticTitleReportGateAsync()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "codex-helper-harness-titlegate-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var task = Path.Combine(root, "project", ".codex-helper", "runs", "run-title");
+            Directory.CreateDirectory(task);
+            await File.WriteAllTextAsync(Path.Combine(task, "SPEC.md"), "test");
+            var taskId = "run-title";
+            var fingerprint = TestFingerprint(task);
+            var started = DateTime.UtcNow.AddMinutes(-5);
+            var reportPath = Path.Combine(task, "EXECUTION_REPORT.md");
+
+            // DSH 样例（任务标识/指纹/语义标题 + 说明含 exit 0）→ 通过。
+            var dshOk = $"# EXECUTION_REPORT\n\n任务标识：{taskId}\n合同指纹：{fingerprint}\n\n## 实际修改\n- src/CodexHelper.Core/Services/HarnessExecutionReportValidator.cs\n\n## 验证结果\n- dotnet build（exit 0）\n\n## 未完成项与说明\n- 无\n";
+            File.WriteAllText(reportPath, dshOk, Encoding.UTF8);
+            File.SetLastWriteTimeUtc(reportPath, DateTime.UtcNow);
+            var ok = HarnessExecutionReportValidator.Validate(task, taskId, fingerprint, started);
+            Assert(ok.Valid, "DSH 标题报告含 exit 0 应通过：" + ok.Reason);
+
+            // 标题齐备但完全无成功证据 → 失败。
+            var noSuccess = $"# EXECUTION_REPORT\n\n任务标识：{taskId}\n合同指纹：{fingerprint}\n\n## 实际修改\n- src/a.cs\n\n## 验证结果\n- 见上文\n\n## 未完成项与说明\n- 无\n";
+            File.WriteAllText(reportPath, noSuccess, Encoding.UTF8);
+            File.SetLastWriteTimeUtc(reportPath, DateTime.UtcNow);
+            var missing = HarnessExecutionReportValidator.Validate(task, taskId, fingerprint, started);
+            Assert(!missing.Valid && missing.Reason.Contains("成功证据", StringComparison.Ordinal), "标题报告缺成功证据应失败：" + missing.Reason);
+
+            // 标题齐备但 exit 1 → 失败（绝不能放行失败退出码）。
+            var exitOne = $"# EXECUTION_REPORT\n\n任务标识：{taskId}\n合同指纹：{fingerprint}\n\n## 实际修改\n- src/a.cs\n\n## 验证结果\n- dotnet build（exit 1）\n\n## 未完成项与说明\n- 有未完成\n";
+            File.WriteAllText(reportPath, exitOne, Encoding.UTF8);
+            File.SetLastWriteTimeUtc(reportPath, DateTime.UtcNow);
+            var failed = HarnessExecutionReportValidator.Validate(task, taskId, fingerprint, started);
+            Assert(!failed.Valid && failed.Reason.Contains("退出码非零", StringComparison.Ordinal), "标题报告 exit 1 应失败：" + failed.Reason);
+
+            // 错误 taskId（标题式）→ 失败，身份校验不放松。
+            var wrongId = dshOk.Replace(taskId, "run-other", StringComparison.Ordinal);
+            File.WriteAllText(reportPath, wrongId, Encoding.UTF8);
+            File.SetLastWriteTimeUtc(reportPath, DateTime.UtcNow);
+            var idFail = HarnessExecutionReportValidator.Validate(task, taskId, fingerprint, started);
+            Assert(!idFail.Valid && idFail.Reason.Contains("任务 ID", StringComparison.Ordinal), "标题报告错误 taskId 应失败：" + idFail.Reason);
+
+            // 错误合同指纹（标题式）→ 失败。
+            var wrongFp = dshOk.Replace(fingerprint, "WRONG-FP", StringComparison.Ordinal);
+            File.WriteAllText(reportPath, wrongFp, Encoding.UTF8);
+            File.SetLastWriteTimeUtc(reportPath, DateTime.UtcNow);
+            var fpFail = HarnessExecutionReportValidator.Validate(task, taskId, fingerprint, started);
+            Assert(!fpFail.Valid && fpFail.Reason.Contains("合同指纹", StringComparison.Ordinal), "标题报告错误指纹应失败：" + fpFail.Reason);
+
+            // 陈旧（早于任务开始）标题式报告 → 失败。
+            File.SetLastWriteTimeUtc(reportPath, DateTime.UtcNow.AddHours(-1));
+            var stale = HarnessExecutionReportValidator.Validate(task, taskId, fingerprint, started);
+            Assert(!stale.Valid && stale.Reason.Contains("陈旧", StringComparison.Ordinal), "陈旧标题报告应失败：" + stale.Reason);
+        }
+        finally { TryDeleteDirectory(root); }
+    }
+
+    /// <summary>
+    /// Harness CLI/Runner 终态语义回归：starting/running/busy 绝不映射为成功退出码；
+    /// 只有真实完成（completed/awaiting-gpt）返回 0；失败/取消/未知映射清晰；摘要含可读中文。
+    /// </summary>
+    private static Task TestHarnessCliTerminalSemanticsAsync()
+    {
+        // 非终态绝不映射为成功。
+        Assert(HarnessRunnerCli.MapExitCode("starting") != HarnessRunnerCli.ExitCompleted, "starting 不得映射为完成退出码");
+        Assert(HarnessRunnerCli.MapExitCode("running") != HarnessRunnerCli.ExitCompleted, "running 不得映射为完成退出码");
+        Assert(HarnessRunnerCli.MapExitCode("busy") != HarnessRunnerCli.ExitCompleted, "busy 不得映射为完成退出码");
+        Assert(HarnessRunnerCli.MapExitCode("busy") != HarnessRunnerCli.ExitCancelled, "busy 不得映射为取消退出码");
+
+        // 真实终态语义。
+        Assert(HarnessRunnerCli.MapExitCode("completed") == HarnessRunnerCli.ExitCompleted, "completed 应映射完成退出码");
+        Assert(HarnessRunnerCli.MapExitCode("awaiting-gpt") == HarnessRunnerCli.ExitCompleted, "awaiting-gpt 应映射完成退出码（等待 GPT 验收）");
+        Assert(HarnessRunnerCli.MapExitCode("cancelled") == HarnessRunnerCli.ExitCancelled, "cancelled 应映射取消退出码");
+        Assert(HarnessRunnerCli.MapExitCode("failed") == HarnessRunnerCli.ExitFailed, "failed 应映射失败退出码");
+        Assert(HarnessRunnerCli.MapExitCode("bogus") == HarnessRunnerCli.ExitFailed, "未知状态应映射失败退出码");
+
+        // 摘要：busy/running 中文文案可读且不宣称完成。
+        var busy = new HarnessTaskStatus("run-x", @"C:\p", @"C:\p\.codex-helper\runs\run-x", "busy", "同一项目已被其他任务原子占用。",
+            DateTime.UtcNow, DateTime.UtcNow, 0, DeepSeekHarnessVersions.WebHostDefaultUrl);
+        var busyText = HarnessRunnerCli.BuildSummary(busy);
+        Assert(busyText.Contains("项目忙", StringComparison.Ordinal) && busyText.Contains("run-x", StringComparison.Ordinal), "busy 摘要应可读：" + busyText);
+        Assert(!busyText.Contains("已完成", StringComparison.Ordinal), "busy 摘要不得宣称完成：" + busyText);
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// 连续会话组键诊断：manifest 无 rootCauseKey 默认新建并写可读原因；不同 rootCauseKey
+    /// 的已完成任务保持隔离并给出“不同组键”原因；同组键但报告未过门禁给出未续接原因；
+    /// 同组键通过门禁的真实完成则续接同一会话并写明成功原因。
+    /// </summary>
+    private static async Task TestHarnessContinuityDiagnosticAsync()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "codex-helper-harness-cdiag-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var project = Path.Combine(root, "project");
+            var taskA = Path.Combine(project, ".codex-helper", "runs", "run-diag-a");
+            var taskB = Path.Combine(project, ".codex-helper", "runs", "run-diag-b");
+            Directory.CreateDirectory(taskA);
+            Directory.CreateDirectory(taskB);
+            await File.WriteAllTextAsync(Path.Combine(taskB, "SPEC.md"), "合同 B");
+            var taskIdB = Path.GetFileName(taskB);
+
+            // ---- 1) manifest 无 rootCauseKey：默认新建（不进续接路径），诊断说明保守隔离。 ----
+            await using (var host = new FakeHarnessHost
+            {
+                Respond = (method, _) => method switch
+                {
+                    "session.create" => new JsonObject { ["sessionId"] = "sess-diag-none" },
+                    "session.prompt" => new JsonObject { ["accepted"] = true },
+                    "session.list" => new JsonObject { ["items"] = new JsonArray() },
+                    _ => new JsonObject()
+                },
+                WsScripts =
+                [
+                    new Queue<string>([
+                        WsFrame("session/subscribed", "sess-diag-none"),
+                        WsFrame("session/event", "sess-diag-none", "turn/start", seq: 1),
+                        WsFrame("session/event", "sess-diag-none", "turn/end", "completed", seq: 2)
+                    ])
+                ]
+            })
+            {
+                await host.StartAsync();
+                var runner = new DeepSeekHarnessRunner(new AppPaths(Path.Combine(root, "app-diag-1")))
+                {
+                    WebUrl = host.BaseUrl,
+                    RelayProbe = new ConfirmedHarnessRelay(),
+                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。"))
+                };
+                WriteValidReport(taskB, taskIdB, TestFingerprint(taskB));
+                var status = await runner.StartAsync(project, taskB);
+                Assert(status.State == "awaiting-gpt" && status.ContinuityDiagnostic is not null
+                    && status.ContinuityDiagnostic.Contains("未声明 rootCauseKey", StringComparison.Ordinal),
+                    "无组键应新建会话并写可读隔离诊断：" + status.State + " / " + status.ContinuityDiagnostic);
+            }
+
+            // ---- 2) 不同组键的已完成任务：保持隔离，诊断明确“不同 rootCauseKey”。 ----
+            var taskC = Path.Combine(project, ".codex-helper", "runs", "run-diag-c");
+            Directory.CreateDirectory(taskC);
+            await File.WriteAllTextAsync(Path.Combine(taskC, "SPEC.md"), "前序合同 C（不同键）");
+            await File.WriteAllTextAsync(Path.Combine(taskC, "manifest.json"), "{\"rootCauseKey\":\"diag-x\"}");
+            var taskIdC = Path.GetFileName(taskC);
+            WriteValidReport(taskC, taskIdC, TestFingerprint(taskC));
+            await File.WriteAllTextAsync(Path.Combine(taskB, "manifest.json"), "{\"rootCauseKey\":\"diag-y\"}");
+            var fingerprintB = TestFingerprint(taskB);
+
+            await using (var host = new FakeHarnessHost
+            {
+                Respond = (method, _) => method switch
+                {
+                    "session.create" => new JsonObject { ["sessionId"] = "sess-diag-new" },
+                    "session.prompt" => new JsonObject { ["accepted"] = true },
+                    "session.list" => new JsonObject { ["items"] = new JsonArray(new JsonObject { ["sessionId"] = "sess-diag-c", ["running"] = false }) },
+                    "session.history" => new JsonObject { ["events"] = new JsonArray(new JsonObject { ["event"] = new JsonObject { ["seq"] = 5L } }) },
+                    _ => new JsonObject()
+                },
+                WsScripts =
+                [
+                    new Queue<string>([
+                        WsFrame("session/subscribed", "sess-diag-new"),
+                        WsFrame("session/event", "sess-diag-new", "turn/start", seq: 1),
+                        WsFrame("session/event", "sess-diag-new", "turn/end", "completed", seq: 2)
+                    ])
+                ]
+            })
+            {
+                await host.StartAsync();
+                var runner = new DeepSeekHarnessRunner(new AppPaths(Path.Combine(root, "app-diag-2")))
+                {
+                    WebUrl = host.BaseUrl,
+                    RelayProbe = new ConfirmedHarnessRelay(),
+                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。"))
+                };
+                // 前序不同键已完成任务（awaiting-gpt、报告通过门禁、带会话）。
+                var priorC = new HarnessTaskStatus(taskIdC, project, taskC, "awaiting-gpt", "已完成（不同键）。",
+                    DateTime.UtcNow.AddMinutes(-10), DateTime.UtcNow.AddMinutes(-1), 0, host.BaseUrl, "sess-diag-c",
+                    RootCauseKey: "diag-x", ContractFingerprint: TestFingerprint(taskC));
+                File.WriteAllText(runner.TaskDirectoryFor(taskIdC), JsonSerializer.Serialize(priorC,
+                    new JsonSerializerOptions { WriteIndented = true, Converters = { new HarnessUtcConverter() } }));
+
+                WriteValidReport(taskB, taskIdB, fingerprintB);
+                var status = await runner.StartAsync(project, taskB);
+                Assert(status.State == "awaiting-gpt" && status.SessionId == "sess-diag-new"
+                    && status.ContinuityDiagnostic is not null && status.ContinuityDiagnostic.Contains("不同 rootCauseKey", StringComparison.Ordinal),
+                    "不同组键应新建会话且诊断可读：" + status.State + " / " + status.SessionId + " / " + status.ContinuityDiagnostic);
+                Assert(!host.Calls.Any(call => call.Method == "session.history" && (call.Payload["sessionId"]?.GetValue<string>()) == "sess-diag-c"),
+                    "不同组键隔离，不应核验前序不同键会话历史");
+            }
+
+            // ---- 3) 同组键已完成（awaiting-gpt）+ 报告通过门禁 → 续接成功，诊断含原因。 ----
+            var taskD = Path.Combine(project, ".codex-helper", "runs", "run-diag-d");
+            Directory.CreateDirectory(taskD);
+            await File.WriteAllTextAsync(Path.Combine(taskD, "SPEC.md"), "前序同键 D");
+            await File.WriteAllTextAsync(Path.Combine(taskD, "manifest.json"), "{\"rootCauseKey\":\"diag-z\"}");
+            var taskIdD = Path.GetFileName(taskD);
+            WriteValidReport(taskD, taskIdD, TestFingerprint(taskD));
+            await File.WriteAllTextAsync(Path.Combine(taskB, "manifest.json"), "{\"rootCauseKey\":\"diag-z\"}");
+            var fingerprintB2 = TestFingerprint(taskB);
+
+            await using (var host = new FakeHarnessHost
+            {
+                Respond = (method, _) => method switch
+                {
+                    "session.list" => new JsonObject { ["items"] = new JsonArray(new JsonObject { ["sessionId"] = "sess-diag-d", ["running"] = false }) },
+                    "session.history" => new JsonObject { ["events"] = new JsonArray(new JsonObject { ["event"] = new JsonObject { ["seq"] = 9L } }) },
+                    "session.prompt" => new JsonObject { ["accepted"] = true },
+                    _ => new JsonObject()
+                },
+                WsScripts =
+                [
+                    new Queue<string>([
+                        WsFrame("session/subscribed", "sess-diag-d"),
+                        WsFrame("session/event", "sess-diag-d", "turn/start", seq: 10),
+                        WsFrame("session/event", "sess-diag-d", "turn/end", "completed", seq: 11)
+                    ])
+                ]
+            })
+            {
+                await host.StartAsync();
+                var runner = new DeepSeekHarnessRunner(new AppPaths(Path.Combine(root, "app-diag-3")))
+                {
+                    WebUrl = host.BaseUrl,
+                    RelayProbe = new ConfirmedHarnessRelay(),
+                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。"))
+                };
+                var priorD = new HarnessTaskStatus(taskIdD, project, taskD, "awaiting-gpt", "已完成（同键，已过门禁）。",
+                    DateTime.UtcNow.AddMinutes(-10), DateTime.UtcNow.AddMinutes(-1), 0, host.BaseUrl, "sess-diag-d",
+                    RootCauseKey: "diag-z", ContractFingerprint: TestFingerprint(taskD));
+                File.WriteAllText(runner.TaskDirectoryFor(taskIdD), JsonSerializer.Serialize(priorD,
+                    new JsonSerializerOptions { WriteIndented = true, Converters = { new HarnessUtcConverter() } }));
+
+                WriteValidReport(taskB, taskIdB, fingerprintB2);
+                var status = await runner.StartAsync(project, taskB);
+                Assert(status.State == "awaiting-gpt" && status.SessionId == "sess-diag-d"
+                    && status.ContinuitySourceTaskId == taskIdD && status.ContinuityRound == 2
+                    && status.ContinuityDiagnostic is not null && status.ContinuityDiagnostic.Contains("已续接", StringComparison.Ordinal),
+                    "同组键已过门禁应续接并写成功诊断：" + status.State + " / " + status.SessionId + " / " + status.ContinuityDiagnostic);
+            }
+
+            // ---- 4) 同组键但报告未过门禁：不续接，诊断说明原因。 ----
+            var taskE = Path.Combine(project, ".codex-helper", "runs", "run-diag-e");
+            Directory.CreateDirectory(taskE);
+            await File.WriteAllTextAsync(Path.Combine(taskE, "SPEC.md"), "前序同键 E（无报告）");
+            await File.WriteAllTextAsync(Path.Combine(taskE, "manifest.json"), "{\"rootCauseKey\":\"diag-w\"}");
+            var taskIdE = Path.GetFileName(taskE);
+            await File.WriteAllTextAsync(Path.Combine(taskB, "manifest.json"), "{\"rootCauseKey\":\"diag-w\"}");
+            var fingerprintB3 = TestFingerprint(taskB);
+
+            await using (var host = new FakeHarnessHost
+            {
+                Respond = (method, _) => method switch
+                {
+                    "session.create" => new JsonObject { ["sessionId"] = "sess-diag-e-new" },
+                    "session.prompt" => new JsonObject { ["accepted"] = true },
+                    "session.list" => new JsonObject { ["items"] = new JsonArray() },
+                    _ => new JsonObject()
+                },
+                WsScripts =
+                [
+                    new Queue<string>([
+                        WsFrame("session/subscribed", "sess-diag-e-new"),
+                        WsFrame("session/event", "sess-diag-e-new", "turn/start", seq: 1),
+                        WsFrame("session/event", "sess-diag-e-new", "turn/end", "completed", seq: 2)
+                    ])
+                ]
+            })
+            {
+                await host.StartAsync();
+                var runner = new DeepSeekHarnessRunner(new AppPaths(Path.Combine(root, "app-diag-4")))
+                {
+                    WebUrl = host.BaseUrl,
+                    RelayProbe = new ConfirmedHarnessRelay(),
+                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。"))
+                };
+                // 前序同键但无 EXECUTION_REPORT.md（报告未过门禁）。
+                var priorE = new HarnessTaskStatus(taskIdE, project, taskE, "awaiting-gpt", "无报告。",
+                    DateTime.UtcNow.AddMinutes(-10), DateTime.UtcNow.AddMinutes(-1), 0, host.BaseUrl, "sess-diag-e",
+                    RootCauseKey: "diag-w", ContractFingerprint: TestFingerprint(taskE));
+                File.WriteAllText(runner.TaskDirectoryFor(taskIdE), JsonSerializer.Serialize(priorE,
+                    new JsonSerializerOptions { WriteIndented = true, Converters = { new HarnessUtcConverter() } }));
+
+                WriteValidReport(taskB, taskIdB, fingerprintB3);
+                var status = await runner.StartAsync(project, taskB);
+                Assert(status.State == "awaiting-gpt" && status.SessionId == "sess-diag-e-new"
+                    && status.ContinuityDiagnostic is not null && status.ContinuityDiagnostic.Contains("报告", StringComparison.Ordinal),
+                    "同组键报告未过门禁应新建并诊断：" + status.State + " / " + status.ContinuityDiagnostic);
             }
         }
         finally { TryDeleteDirectory(root); }

@@ -42,7 +42,8 @@ public sealed record HarnessTaskStatus(
     string? EventTransport = null,
     string? EventTransportError = null,
     string? ContinuitySourceTaskId = null,
-    int ContinuityRound = 1)
+    int ContinuityRound = 1,
+    string? ContinuityDiagnostic = null)
 {
     public bool IsRunning => string.Equals(State, "running", StringComparison.OrdinalIgnoreCase)
         || string.Equals(State, "starting", StringComparison.OrdinalIgnoreCase);
@@ -367,11 +368,15 @@ public sealed class DeepSeekHarnessRunner
             // 显式 rootCauseKey 组键接回：相同项目且同组键已有运行任务时，后续合同必须接回
             // 该运行任务而不是新建会话；未声明组键时保持保守隔离（绝不基于自然语言猜测合并）。
             // 组键接回优先于"同项目其他运行合同 busy"：同组键意味着同一根因的碎片化任务应合并执行。
+            string? continuityDiagnostic = null;
             if (!string.IsNullOrWhiteSpace(rootCauseKey))
                 resumeSessionId = await FindGroupResumeSessionIdAsync(rpc, projectRoot, rootCauseKey, taskId, cancellationToken);
             if (resumeSessionId is not null)
+            {
                 resumeKind = ResumeKind.GroupRunning;
-            if (resumeSessionId is null)
+                continuityDiagnostic = "已接回同组键（rootCauseKey）运行中的会话，未重复提交、未新建会话。";
+            }
+            else
             {
                 var busyMessage = await FindConcurrentProjectBusyAsync(rpc, projectRoot, taskId, contractFingerprint, cancellationToken);
                 if (busyMessage is not null)
@@ -391,24 +396,38 @@ public sealed class DeepSeekHarnessRunner
                 if (!string.IsNullOrWhiteSpace(rootCauseKey))
                 {
                     var continuity = await FindEndedContinuityAsync(rpc, projectRoot, rootCauseKey, taskId, cancellationToken);
-                    if (continuity is not null)
+                    if (continuity.Candidate is not null)
                     {
-                        resumeSessionId = continuity.SessionId;
+                        resumeSessionId = continuity.Candidate.SessionId;
                         resumeKind = ResumeKind.EndedContinuity;
-                        continuitySourceTaskId = continuity.SourceTaskId;
-                        continuityRound = continuity.Round;
-                        continuityBaseline = continuity.LastSequence;
+                        continuitySourceTaskId = continuity.Candidate.SourceTaskId;
+                        continuityRound = continuity.Candidate.Round;
+                        continuityBaseline = continuity.Candidate.LastSequence;
+                        continuityDiagnostic = "已续接同组键（rootCauseKey）的已完成并通过门禁会话，提交增量合同新回合。";
                         status = status with
                         {
                             SessionId = resumeSessionId,
                             ContinuitySourceTaskId = continuitySourceTaskId,
                             ContinuityRound = continuityRound,
-                            SessionState = "continuing"
+                            SessionState = "continuing",
+                            ContinuityDiagnostic = continuityDiagnostic
                         };
-                        WriteContinuityContext(taskDirectory, continuity);
+                        WriteContinuityContext(taskDirectory, continuity.Candidate);
+                    }
+                    else
+                    {
+                        // 续接未发生：写清原因（组键无匹配 / 前序报告未过门禁 / 会话不可核验），供任务中心诊断。
+                        status = status with { ContinuityDiagnostic = continuity.Reason };
                     }
                 }
+                else
+                {
+                    // 未声明显式组键：不基于项目名或自然语言猜测合并，新建会话并写明原因。
+                    status = status with { ContinuityDiagnostic = "manifest 未声明 rootCauseKey，保持保守隔离，未尝试续接已完成会话。" };
+                }
             }
+            if (continuityDiagnostic is not null && status.ContinuityDiagnostic is null)
+                status = status with { ContinuityDiagnostic = continuityDiagnostic };
         }
         // 统一接回核验：resumeSessionId 非空表示接回运行中会话（同 taskId+同合同指纹，或同项目+同显式组键）。
         if (resumeSessionId is not null && resumeKind != ResumeKind.EndedContinuity)
@@ -818,6 +837,12 @@ public sealed class DeepSeekHarnessRunner
     private sealed record ContinuityCandidate(string SourceTaskId, string SessionId, string ContractFingerprint,
         int Round, long LastSequence);
 
+    /// <summary>连续会话探测结果：Candidate 非空表示可续接；Reason 说明续接未发生的原因（供诊断）。</summary>
+    private sealed record ContinuityProbe(ContinuityCandidate? Candidate, string Reason)
+    {
+        public static ContinuityProbe None(string reason) => new(null, reason);
+    }
+
     /// <summary>接回前核验结果：会话运行中 / 已结束 / 不存在 / Host 无法核验。</summary>
     private enum ResumeVerifyResult { Running, Ended, NotFound, Unverifiable }
 
@@ -852,11 +877,12 @@ public sealed class DeepSeekHarnessRunner
     }
 
     /// <summary>
-    /// 找到同项目、同显式 rootCauseKey 的最近可信完成回合。候选必须是 awaiting-gpt，
+    /// 探测同项目、同显式 rootCauseKey 的最近可信完成回合。候选必须是 awaiting-gpt，
     /// 且其原始报告再次通过门禁；Host 必须确认该会话仍存在且已结束，并能读取 history
-    /// 得到新回合开始前的事件基线。任何一项不满足均保守返回 null。
+    /// 得到新回合开始前的事件基线。任何一项不满足均保守返回 None（附可读原因，供诊断
+    /// 续接未发生是“无匹配/报告未过门禁/会话不可核验”中的哪一种）。
     /// </summary>
-    private async Task<ContinuityCandidate?> FindEndedContinuityAsync(HarnessRpcClient rpc, string projectRoot,
+    private async Task<ContinuityProbe> FindEndedContinuityAsync(HarnessRpcClient rpc, string projectRoot,
         string rootCauseKey, string taskId, CancellationToken cancellationToken)
     {
         var normalized = NormalizeRoot(projectRoot);
@@ -870,32 +896,58 @@ public sealed class DeepSeekHarnessRunner
                 && HarnessExecutionReportValidator.Validate(task.TaskDirectory, task.TaskId, task.ContractFingerprint, task.StartedUtc).Valid)
             .OrderByDescending(task => task.UpdatedUtc)
             .ToList();
-        if (candidates.Count == 0) return null;
+        if (candidates.Count == 0)
+        {
+            // 没有匹配的已完成前序时区分诊断：是“根本没有组键前序/前序报告未过门禁”，
+            // 还是“同一项目存在不同 rootCauseKey 的已完成任务”（保持隔离，绝不跨组键合并）。
+            var otherKeyEnded = GetRecentTasks(200).Any(task =>
+                string.Equals(task.State, "awaiting-gpt", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(task.TaskId, taskId, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(NormalizeRoot(task.ProjectRoot), normalized, StringComparison.Ordinal)
+                && !string.IsNullOrWhiteSpace(task.RootCauseKey)
+                && !string.Equals(task.RootCauseKey, rootCauseKey, StringComparison.Ordinal)
+                && !string.IsNullOrWhiteSpace(task.SessionId)
+                && HarnessExecutionReportValidator.Validate(task.TaskDirectory, task.TaskId, task.ContractFingerprint, task.StartedUtc).Valid);
+            return ContinuityProbe.None(otherKeyEnded
+                ? "同一项目存在不同 rootCauseKey 的已完成任务；不同组键保持隔离，不跨组键续接，未续接。"
+                : "同组键（rootCauseKey）前序任务中没有已通过报告门禁的 awaiting-gpt（无匹配前序、报告缺失/陈旧/未过门禁或会话信息不完整），未续接。");
+        }
 
         var list = await rpc.ListSessionsAsync(cancellationToken);
-        if (!list.Success) return null;
+        if (!list.Success)
+            return ContinuityProbe.None("Host 无法核验同组键前序会话（session.list 失败），为保守隔离未续接。");
+
         foreach (var task in candidates)
         {
             var item = list.Value?["items"]?.AsArray()
                 .FirstOrDefault(node => string.Equals(HarnessJson.Text(node?["sessionId"]), task.SessionId, StringComparison.Ordinal));
             var running = item?["running"] is System.Text.Json.Nodes.JsonValue runningValue
                 && runningValue.TryGetValue<bool>(out var isRunning) && isRunning;
-            if (item is null || running) continue;
+            if (running)
+                return ContinuityProbe.None("同组键前序任务「" + task.TaskId + "」的会话仍在运行，应走运行中接回而非已完成续接。");
+            if (item is null)
+                continue;
 
             var history = await rpc.GetSessionHistoryAsync(task.SessionId!, cancellationToken);
-            var events = history.Success ? history.Value?["events"]?.AsArray() : null;
-            if (events is null) continue;
-            var sequence = events.Select(node => ReadEventSequence(node)).Where(seq => seq.HasValue).Select(seq => seq!.Value).DefaultIfEmpty(-1).Max();
+            if (!history.Success)
+                return ContinuityProbe.None("同组键前序任务「" + task.TaskId + "」会话已结束但 history 不可读（" + HarnessJson.Truncate(history.ErrorMessage, 120) + "），无法取得事件基线，未续接。");
+            // Host 的 projections.asOfSeq 是当前历史页的可信最高序号。优先使用它，避免为了
+            // 续接而扫描数万条旧事件；旧 Host 没有该投影时才回退到兼容的 events 扫描。
+            var sequence = ReadEventSequence(history.Value?["projections"]?["asOfSeq"])
+                ?? history.Value?["events"]?.AsArray()?.Select(node => ReadEventSequence(node)).Where(seq => seq.HasValue).Select(seq => seq!.Value).DefaultIfEmpty(-1).Max()
+                ?? -1;
             // A nonempty history without explicit sequence cannot safely filter its previous turn/end.
-            if (sequence < 0) continue;
-            return new ContinuityCandidate(task.TaskId, task.SessionId!, task.ContractFingerprint!,
-                Math.Max(1, task.ContinuityRound) + 1, sequence);
+            if (sequence < 0)
+                return ContinuityProbe.None("同组键前序任务「" + task.TaskId + "」的会话历史缺少可信事件序号，无法安全续接，未续接。");
+            return new ContinuityProbe(new ContinuityCandidate(task.TaskId, task.SessionId!, task.ContractFingerprint!,
+                Math.Max(1, task.ContinuityRound) + 1, sequence), "通过门禁");
         }
-        return null;
+        return ContinuityProbe.None("同组键前序会话已不在 Host 中，无法核验，未续接。");
     }
 
     private static long? ReadEventSequence(System.Text.Json.Nodes.JsonNode? node)
     {
+        if (node is System.Text.Json.Nodes.JsonValue direct && direct.TryGetValue<long>(out var directSequence)) return directSequence;
         if (node?["seq"] is System.Text.Json.Nodes.JsonValue value && value.TryGetValue<long>(out var sequence)) return sequence;
         if (node?["sequence"] is System.Text.Json.Nodes.JsonValue alternate && alternate.TryGetValue<long>(out sequence)) return sequence;
         if (node?["event"]?["seq"] is System.Text.Json.Nodes.JsonValue eventValue && eventValue.TryGetValue<long>(out sequence)) return sequence;
@@ -1365,8 +1417,8 @@ public sealed class DeepSeekHarnessRunner
         // machine-style instruction wall made CommandGoat emit incomplete tool deltas.
         // Detailed boundaries remain in the project-local contract files.
         => incremental
-            ? $"这是同一工作的增量合同。先阅读任务目录 {taskDirectory} 中当前的 SPEC.md、HANDOFF.md 和 manifest.json；如存在，再阅读 DELTA.md 与 CONTINUITY_CONTEXT.md。只按当前 HANDOFF.md 的直接依赖范围工作，不要为理解旧合同递归扫描项目。完成后在任务目录写 EXECUTION_REPORT.md，列出修改文件、验证结果和未完成项。任务标识：{taskId}，合同指纹：{contractFingerprint}。"
-            : $"请阅读任务目录 {taskDirectory} 中的 SPEC.md、HANDOFF.md 和 manifest.json，在项目 {projectRoot} 内完成该任务。严格遵守 HANDOFF.md 的读写范围；完成后在任务目录写 EXECUTION_REPORT.md，简要列出修改文件、验证结果和未完成项。任务标识：{taskId}，合同指纹：{contractFingerprint}。";
+            ? $"这是同一工作的增量合同。方案已冻结：先阅读任务目录 {taskDirectory} 中当前的 SPEC.md、HANDOFF.md 和 manifest.json；如存在，再阅读 DELTA.md 与 CONTINUITY_CONTEXT.md。只按当前 HANDOFF.md 的直接依赖范围工作，不得为理解旧合同扩展读取范围。只读取派生的 WORKER_ACCEPTANCE.md，绝不读取 ACCEPTANCE.md；按 PROGRESS.json 协议更新进度。完成后在任务目录写 EXECUTION_REPORT.md，必须列出任务 ID、合同指纹、退出码、修改文件、workerChecks：与风险/未完成项。任务标识：{taskId}，合同指纹：{contractFingerprint}。"
+            : $"方案已冻结：请阅读任务目录 {taskDirectory} 中的 SPEC.md、HANDOFF.md 和 manifest.json，在项目 {projectRoot} 内完成该任务。严格遵守 HANDOFF.md 的读写范围；只读取派生的 WORKER_ACCEPTANCE.md，绝不读取 ACCEPTANCE.md；按 PROGRESS.json 协议更新进度。完成后在任务目录写 EXECUTION_REPORT.md，必须列出任务 ID、合同指纹、退出码、修改文件、workerChecks：与风险/未完成项。任务标识：{taskId}，合同指纹：{contractFingerprint}。";
 
     private static string ComputeContractFingerprint(string taskDirectory)
     {

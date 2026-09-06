@@ -42,7 +42,7 @@ public sealed class HarnessRpcClient : IDisposable
     private readonly string baseUrl;
 
     /// <param name="baseUrl">Host 基地址（默认 http://127.0.0.1:3080）。</param>
-    /// <param name="http">可选注入的 HttpClient（默认新建，Timeout 10 秒，随实例释放）。</param>
+    /// <param name="http">可选注入的 HttpClient（默认新建，Timeout 30 秒，随实例释放）。</param>
     public HarnessRpcClient(string? baseUrl = null, HttpClient? http = null, TimeSpan? timeout = null)
     {
         this.baseUrl = (string.IsNullOrWhiteSpace(baseUrl) ? DeepSeekHarnessVersions.WebHostDefaultUrl : baseUrl).TrimEnd('/');
@@ -53,7 +53,9 @@ public sealed class HarnessRpcClient : IDisposable
         }
         else
         {
-            this.http = new HttpClient { Timeout = timeout ?? TimeSpan.FromSeconds(10) };
+            // session.history 可能携带长会话的事件页；10 秒会把仍健康的历史读取误判为不可用，
+            // 进而破坏安全的连续会话。30 秒仅扩大单次 RPC 的容错窗口，不改变取消语义。
+            this.http = new HttpClient { Timeout = timeout ?? TimeSpan.FromSeconds(30) };
             ownsHttp = true;
         }
     }

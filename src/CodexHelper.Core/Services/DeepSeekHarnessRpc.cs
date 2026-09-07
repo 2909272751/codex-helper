@@ -125,6 +125,24 @@ public sealed class HarnessRpcClient : IDisposable
     public Task<HarnessRpcResult> GetSessionHistoryAsync(string sessionId, CancellationToken cancellationToken = default)
         => CallAsync("session.history", new JsonObject { ["sessionId"] = sessionId }, cancellationToken);
 
+    /// <summary>
+    /// 轻量历史/基线读取：以 DSH 实际支持的 session.history 分页参数请求最小尾部窗口，
+    /// 只取 projections.asOfSeq（会话级可信最高序号，旧 Host 可能缺失），绝不下载完整事件列表。
+    /// DSH rc.6 schema：请求可带 beforeSeq（向后分页锚点）与 maxMessages（正整数，按消息数
+    /// 从窗口尾部向前分页，chunk 按 sourceEventSeqs 分组不切消息）；省略 beforeSeq 时 Host
+    /// 在响应中附带 projections 块（asOfSeq = 会话投影水位）。这里 maxMessages=1 只取最后
+    /// 一组消息，响应有界、远小于 2MB 上限；旧 Host 会把未知键剥离并返回默认大页，此时
+    /// 仍由 CallAsync 的 2MB 上限保守截断，语义与既有行为一致（宁可不续接也不猜基线）。
+    /// </summary>
+    public Task<HarnessRpcResult> GetSessionHistoryBaselineAsync(string sessionId, CancellationToken cancellationToken = default)
+        => CallAsync("session.history", new JsonObject
+        {
+            ["sessionId"] = sessionId,
+            // 消息数而非事件数：尾页按消息分组，单个大回合的 chunk 仍会整组返回；
+            // 对同组键前序"最近一次 turn/end 后"的基线探测足够且响应有界。
+            ["maxMessages"] = 1
+        }, cancellationToken);
+
     /// <summary>session.models：读取一个会话实际已选中的可路由模型。该信息不在 session.list 投影中保证存在。</summary>
     public Task<HarnessRpcResult> GetSessionModelsAsync(string sessionId, CancellationToken cancellationToken = default)
         => CallAsync("session.models", new JsonObject { ["sessionId"] = sessionId }, cancellationToken);

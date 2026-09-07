@@ -31,7 +31,7 @@ public static class HarnessExecutionOptions
         "standard" => "使用 DSH 原生 standard 预设，合同提示与默认一致。",
         "minimal" => "使用 DSH 原生 minimal 预设，仅提供持久 bash 与 str_replace_editor 双工具。",
         "plan" => "只输出实施计划，不修改项目文件；合同提示明确禁止实施与写入。",
-        _ => "中文进度、直接实施、只做 workerChecks、结构化 EXECUTION_REPORT；使用 Helper 托管的 codex-contract 预设，不支持时降级 standard。"
+        _ => "中文进度、直接实施、只做 workerChecks、结构化 EXECUTION_REPORT；使用 Helper 托管的 codex-contract 预设，不支持时降级 standard。该模式支持快速连续：首次基线合同独立读取任务合同并实施；可信同组键（rootCauseKey）前序回合通过报告门禁后，后续回合以增量方式续接同一 DSH 会话，先读 Helper 生成的有界 PROJECT_CONTEXT.md 与当前 HANDOFF.md，禁止递归扫描项目。"
     };
 
     /// <summary>
@@ -209,13 +209,13 @@ public sealed class HarnessContractProfileService
     public const string ContractPersonaText =
         "你是 Codex Helper 的合同实现执行器，模型为 {{model}}，工作目录为 {{cwd}}。\n" +
         "只执行任务目录内的 SPEC.md 与 HANDOFF.md。方案已冻结：最多一次性列出不超过 5 项简短实施动作，然后直接实施，禁止重新设计或重新规划。\n" +
-        "本任务按五阶段协议执行：合同校验、一次性冻结计划、批量实现、workerChecks 单次执行、写报告并停止；每阶段只能前进，禁止回到规划阶段，不因发现可以顺便优化而扩大范围。\n" +
+        "本任务按五阶段协议执行：合同校验、一次性冻结计划、批量实现、workerChecks 单次执行、写报告并停止；每阶段只能前进，禁止回到规划阶段，不因发现可以顺便优化而扩大范围。快速连续：首次基线合同独立读取任务合同后直接实施；可信同组键（rootCauseKey）前序回合通过报告门禁后，后续回合只读 Helper 生成的有界 PROJECT_CONTEXT.md（来源标识与门禁事实）与当前 HANDOFF.md 直接依赖范围，禁止递归扫描：禁止为理解旧合同递归扫描项目，禁止递归扫描仓库或无关配置。\n" +
         "集中读取授权文件后批量编辑，同一未变化文件不得重复读取；相同只读工具调用不得连续重复。所有用户可见自然语言（计划、分析、中间说明、工具前后说明、进度、测试解释和最终报告）必须使用简体中文；仅代码标识符、命令、路径和原始错误可保留英文。\n" +
         "同一失败原因达到当前强度阈值立即停止；禁止重复构建、重复测试、重复打包；未在 manifest 列出的安装/打包/发布不得执行。禁止截图、禁止查看图片、禁止做视觉结论、禁止发布结论；完成后只运行 workerChecks：有显式 workerChecks 时只能逐项运行该列表且每项最多一次，严禁追加任何未列出的构建、测试、检查或自查。无显式 workerChecks 时只对受影响项目做一次 Release build（无法确定项目时在报告中交给 GPT），不自动运行完整测试套件，不递归扫描仓库寻找测试入口。\n" +
-        "凭据与任务正文绝不进入命令行；完成即报告：写入 EXECUTION_REPORT.md 并停止，等待 GPT 验收。";
+        "凭据与任务正文绝不进入命令行；完成即报告：写入 EXECUTION_REPORT.md，成功退出码必须单独写成一行“- 退出码：0”，该行不得附加括号、命令或解释（解释可写在 workerChecks 条目中），随后停止，等待 GPT 验收。";
 
     private static string BuildMetadata()
-        => "name: Codex 合同模式\ndescription: GPT 规划验收，Harness 仅实现与 workerChecks。\norder: 0\n";
+        => "name: Codex 合同模式\ndescription: GPT 规划验收，Harness 仅实现与 workerChecks；支持快速连续（同组键前序回合续接同一会话，Helper 生成有界 PROJECT_CONTEXT.md）。\norder: 0\n";
 
     /// <summary>从 dsh 入口向上找包含 package.json 且带 config/agent-presets 的包根目录。</summary>
     private static string? FindPackageRoot(string entry)

@@ -106,7 +106,7 @@ internal static class Program
         ("Harness 接回核验与并发单飞（session.list 核验/已结束缺失不接回/并发只提交一次）", TestHarnessResumeVerifyAndSingleFlightAsync),
         ("Harness 隐藏宿主参数与启动（健康安静退出/缺失参数/启动参数 CreateNoWindow/等待子进程退出码）", TestHarnessHiddenHostAsync),
         ("Harness 计划任务 XML 隐藏宿主动作（非 node/绝对路径/转义/旧 node 识别 stale）", TestHarnessStartupXmlAsync)
-        ,("Harness 合同设置默认值、归一化、preset 与完全控制环境", TestHarnessContractOptionsAsync)
+        ,("Harness 合同设置默认值、归一化、preset 与完全控制环境（连续字串禁止递归扫描/固定键单行退出码/下载安装指向 v4.4.1）", TestHarnessContractOptionsAsync)
         ,("Harness 执行策略映射与强度预算（模式→agentPreset/强度检查预算/恢复推荐）", TestHarnessExecutionPolicyAsync)
         ,("Harness 任务状态字段（模式/权限/强度/会话状态/降级记录）", TestHarnessTaskStatusFieldsAsync)
         ,("全量测试进程退出回归（子进程看门狗/无遗留）", TestTestProcessExitRegressionAsync)
@@ -122,12 +122,13 @@ internal static class Program
         ,("滚动链纯逻辑（无溢出/顶部/底部/中间/空视口/delta0）", TestScrollChainLogicAsync)
         ,("Harness 启动失败诊断（正常启动/退出码/插件崩溃/ANSI/超长/脱敏/空输出）", TestHarnessStartupDiagnosticsAsync)
         ,("Harness 合同会话隔离（不同合同不同 Session/指纹变化强制新会话/同项目其他运行合同 busy/旧 affinity 不复用）", TestHarnessContractSessionIsolationAsync)
-        ,("Harness 报告完成门禁（有效报告通过/缺失/陈旧/错 ID/错指纹/缺字段失败/REVIEW_PACKET 记录校验）", TestHarnessReportGateAsync)
+        ,("Harness 报告完成门禁（有效报告通过/固定键单行通过/带括号失败/缺失/陈旧/错 ID/错指纹/缺字段失败/REVIEW_PACKET 记录校验）", TestHarnessReportGateAsync)
         ,("Harness step 重置与工具分片聚合（turn/start 重置/分片不误计数/参数超限不误判/HTTP 轮询一致）", TestHarnessStepResetAndToolAggregationAsync)
         ,("Harness runner 零证据（会话已建/无事件/无步骤/无 token 最终 failed，不长期运行中）", TestHarnessRunnerZeroEvidenceFailsAsync)
         ,("Harness runner 断流后 HTTP 有进度（不误判失败/保持 running/增量回退到终态）", TestHarnessRunnerHttpProgressAfterDisconnectAsync)
         ,("Harness rootCauseKey 组键接回（同组键接回/不同组键新建）", TestHarnessRootCauseKeyResumeAsync)
         ,("Harness 已完成连续会话（显式组键复用/事件基线/上下文脱敏/负面隔离）", TestHarnessEndedContinuityAsync)
+        ,("Harness 已完成连续会话（巨大历史轻量基线：maxMessages 请求携带断言/小尾窗续接/旧 Host 不支持保守不续接）", TestHarnessHistoryBaselineContinuityAsync)
         ,("Harness 阶段进展防护（不同目标读取不停止/写入检查报告进展清重复/同阶段无进展循环停止/大量推理不改步骤/摘要分离）", TestHarnessProgressAwareGuardAsync)
         ,("Harness 跨任务目录单飞占位（无会话 starting 持租约即占位，第二合同 busy 含旧任务 ID；孤儿 starting 不阻塞）", TestHarnessCrossDirectorySingleflightOccupancyAsync)
         ,("Harness 会话创建前停止持久化取消意图（停止后 StartAsync 兑现取消，不建会话不提交）", TestHarnessPersistedCancelIntentStartAsync)
@@ -5504,6 +5505,34 @@ internal static class Program
         File.SetLastWriteTimeUtc(path, lastWriteUtc ?? DateTime.UtcNow.AddMinutes(5));
     }
 
+    /// <summary>
+    /// 构造超过 HarnessRpcClient 2MB 响应上限的"完整默认 session.history 响应"（数百个带大
+    /// 正文的事件），用于回归模拟：若实现回退为不带轻量参数读取完整历史，客户端必然在 2MB
+    /// 上限处丢弃正文（投影尚未解析）→ 续接被保守拒绝。只读共享，一次构造。
+    /// </summary>
+    private static readonly System.Text.Json.Nodes.JsonNode? HugeHistoryValue = BuildHugeHistoryResponse();
+
+    private static System.Text.Json.Nodes.JsonNode? BuildHugeHistoryResponse()
+    {
+        var events = new System.Text.Json.Nodes.JsonArray();
+        for (var i = 1; i <= 320; i++)
+            events.Add(new System.Text.Json.Nodes.JsonObject
+            {
+                ["event"] = new System.Text.Json.Nodes.JsonObject
+                {
+                    ["type"] = "turn/end",
+                    ["seq"] = (long)i,
+                    ["time"] = 1L,
+                    ["data"] = new System.Text.Json.Nodes.JsonObject
+                    {
+                        ["reason"] = new System.Text.Json.Nodes.JsonObject { ["kind"] = "completed" },
+                        ["text"] = new string('x', 8000)
+                    }
+                }
+            });
+        return new System.Text.Json.Nodes.JsonObject { ["events"] = events };
+    }
+
     private static async Task TestHarnessRpcProtocolAsync()
     {
         var root = Path.Combine(Path.GetTempPath(), "codex-helper-harness-rpc-" + Guid.NewGuid().ToString("N"));
@@ -5774,6 +5803,8 @@ internal static class Program
                 Assert(promptText.Contains("任务 ID", StringComparison.Ordinal) && promptText.Contains("退出码", StringComparison.Ordinal)
                     && promptText.Contains("修改文件", StringComparison.Ordinal) && promptText.Contains("workerChecks：", StringComparison.Ordinal)
                     && promptText.Contains("风险/未完成项", StringComparison.Ordinal), "提示应说明固定键报告格式：" + promptText);
+                Assert(promptText.Contains("单独写成一行“- 退出码：0”", StringComparison.Ordinal) && promptText.Contains("不得附加括号、命令或解释", StringComparison.Ordinal),
+                    "初始提示必须要求成功退出码独占一行且不附加括号/命令/解释：" + promptText);
                 Assert(host.Calls.Count(call => call.Method == "session.create") == 1, "runner 只应创建一个会话");
             }
 
@@ -6931,6 +6962,27 @@ remotePort = 58831
             Assert(first.Contains("只运行 workerChecks", StringComparison.Ordinal), "preset 必须限定只运行 workerChecks。");
             Assert(first.Contains("Release build", StringComparison.Ordinal) && first.Contains("完整测试套件", StringComparison.Ordinal), "preset 必须声明默认检查只做 Release build 且不跑完整测试套件。");
             Assert(first.Contains("EXECUTION_REPORT.md", StringComparison.Ordinal) && first.Contains("等待 GPT 验收", StringComparison.Ordinal), "preset 必须声明结束即报告并等待 GPT 验收。");
+            Assert(HarnessExecutionOptions.DescribeMode("codex-contract").Contains("快速连续", StringComparison.Ordinal),
+                "合同模式描述必须说明快速连续能力：" + HarnessExecutionOptions.DescribeMode("codex-contract"));
+            Assert(first.Contains("快速连续", StringComparison.Ordinal) && first.Contains("PROJECT_CONTEXT.md", StringComparison.Ordinal),
+                "preset persona 必须声明快速连续续接与有界 PROJECT_CONTEXT.md：");
+            Assert(first.Contains("禁止递归扫描", StringComparison.Ordinal) || first.Contains("不可递归扫描", StringComparison.Ordinal),
+                "preset persona 必须禁止为理解旧合同递归扫描项目。");
+            // 连续字串“禁止递归扫描”必须逐字出现在 persona 的快速连续规则句中，且规则句包含“递归扫描项目”。
+            var fastRuleSentence = first[(first.IndexOf("快速连续：", StringComparison.Ordinal))..];
+            Assert(fastRuleSentence.Contains("禁止递归扫描", StringComparison.Ordinal) && fastRuleSentence.Contains("递归扫描项目", StringComparison.Ordinal),
+                "preset persona 快速连续规则句必须含连续字串“禁止递归扫描”：");
+            // 固定键单行退出码：persona 末句必须要求成功退出码单独写成一行“- 退出码：0”，
+            // 且不得附加括号/命令/解释（解释写入 workerChecks 条目）。
+            Assert(first.Contains("单独写成一行“- 退出码：0”", StringComparison.Ordinal), "preset persona 必须要求固定键退出码独占一行。");
+            Assert(first.Contains("不得附加括号", StringComparison.Ordinal) && first.Contains("workerChecks", StringComparison.Ordinal),
+                "preset persona 必须说明退出码行不得附加括号且解释写入 workerChecks：" + first.Substring(first.Length - 300));
+            // DescribeMode 的快速连续说明同样包含连续“禁止递归扫描”，保持“同时保持原有语义”。
+            Assert(HarnessExecutionOptions.DescribeMode("codex-contract").Contains("禁止递归扫描", StringComparison.Ordinal),
+                "合同模式描述必须包含连续字串“禁止递归扫描”：" + HarnessExecutionOptions.DescribeMode("codex-contract"));
+            Assert(HarnessExecutionOptions.DescribeMode("codex-contract").Contains("rootCauseKey", StringComparison.Ordinal)
+                && HarnessExecutionOptions.DescribeMode("codex-contract").Contains("报告门禁", StringComparison.Ordinal),
+                "合同模式描述的快速连续语义必须保持（rootCauseKey 门禁与有界 PROJECT_CONTEXT.md）：" + HarnessExecutionOptions.DescribeMode("codex-contract"));
         }
         finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
         return Task.CompletedTask;
@@ -7506,6 +7558,26 @@ remotePort = 58831
             File.WriteAllText(runner.TaskDirectoryFor(firstId), JsonSerializer.Serialize(prior,
                 new JsonSerializerOptions { WriteIndented = true, Converters = { new HarnessUtcConverter() } }));
 
+            // 来源 EXECUTION_REPORT.md 即使含 token=secret、绝对路径或超长文本（模拟事故/恶意
+            // 残留），生成的 PROJECT_CONTEXT.md 也绝不能包含它们：整篇覆写来源报告为标题式
+            // 泄漏内容（结构键齐全仍通过门禁，门禁只验结构、不摘录），随后验证 PROJECT_CONTEXT.md
+            // 完全不受影响（若有人恢复“从来源报告摘录”且过滤不完整，token 断言即捕获回归）。
+            var floodText = new string('x', 4096) + "超长尾部标记";
+            var leakyReport =
+                $"# EXECUTION_REPORT\n\n任务标识：{firstId}\n合同指纹：{firstFingerprint}\n\n" +
+                "## 修改文件\n" +
+                "- token=secret-access-key-9f8e7d6c5b4a3b2a1c\n" +
+                "- src/CodexHelper.Core/Services/DeepSeekHarnessRunner.cs\n" +
+                "- 超长文本行：" + floodText + "\n" +
+                "## workerChecks\n" +
+                "- 残留绝对路径：C:\\Users\\victim\\Documents\\creds.txt（exit=0）\n" +
+                "- focused test：PASS，exit=0\n" +
+                "## 风险与未完成项\n- 无\n";
+            await File.WriteAllTextAsync(Path.Combine(first, "EXECUTION_REPORT.md"), leakyReport, System.Text.Encoding.UTF8);
+            File.SetLastWriteTimeUtc(Path.Combine(first, "EXECUTION_REPORT.md"), DateTime.UtcNow);
+            Assert(HarnessExecutionReportValidator.Validate(first, firstId, firstFingerprint, prior.StartedUtc).Valid,
+                "混入敏感残留的报告仍应通过结构门禁（门禁只验结构、不做内容摘录）。");
+
             var result = await runner.StartAsync(project, second);
             Assert(result.State == "awaiting-gpt" && result.SessionId == "sess-continuity" && result.ContinuitySourceTaskId == firstId && result.ContinuityRound == 2,
                 "可信已完成合同应复用原会话并进入第二回合：" + result.State + " / " + result.SessionId);
@@ -7514,12 +7586,179 @@ remotePort = 58831
             var context = await File.ReadAllTextAsync(Path.Combine(second, "CONTINUITY_CONTEXT.md"));
             Assert(context.Contains(firstId, StringComparison.Ordinal) && !context.Contains("旧合同正文", StringComparison.Ordinal),
                 "连续上下文只能含来源元数据，不能复制合同正文。");
+            // PROJECT_CONTEXT.md：正常连续生成、来源 ID 可见、旧 SPEC 正文不泄漏、字符串大小有上限。
+            var projectContextPath = Path.Combine(second, "PROJECT_CONTEXT.md");
+            Assert(File.Exists(projectContextPath), "快速连续续接应生成有界的 PROJECT_CONTEXT.md。");
+            var projectContext = await File.ReadAllTextAsync(projectContextPath);
+            Assert(projectContext.Contains(firstId, StringComparison.Ordinal), "PROJECT_CONTEXT.md 应包含来源任务 ID：" + projectContext);
+            Assert(projectContext.Contains(firstId + " 的会话", StringComparison.Ordinal) || projectContext.Contains("来源会话", StringComparison.Ordinal) || projectContext.Contains("会话 ID", StringComparison.Ordinal),
+                "PROJECT_CONTEXT.md 应包含来源会话标识：" + projectContext);
+            Assert(!projectContext.Contains("旧合同正文", StringComparison.Ordinal), "PROJECT_CONTEXT.md 不得泄漏旧 SPEC 正文。");
+            // 来源报告脱敏：报告含 token=secret、绝对路径与超长文本时，PROJECT_CONTEXT.md 也
+            // 不包含这些内容（生成方不再读取/摘录来源报告），且保持有界。
+            Assert(!projectContext.Contains("token=secret", StringComparison.OrdinalIgnoreCase), "PROJECT_CONTEXT.md 不得包含来源报告的密钥文本：" + projectContext);
+            Assert(!projectContext.Contains("C:\\Users\\victim", StringComparison.Ordinal), "PROJECT_CONTEXT.md 不得包含来源报告的绝对路径：" + projectContext);
+            Assert(!projectContext.Contains("超长尾部标记", StringComparison.Ordinal), "PROJECT_CONTEXT.md 不得包含来源报告的超长文本：" + projectContext);
+            Assert(!projectContext.Contains("secret-access-key", StringComparison.OrdinalIgnoreCase), "PROJECT_CONTEXT.md 不得包含来源报告的敏感残留：" + projectContext);
+            Assert(!projectContext.Contains("修改文件", StringComparison.Ordinal) && !projectContext.Contains("workerChecks", StringComparison.Ordinal),
+                "PROJECT_CONTEXT.md 不应再摘录来源报告的修改文件/workerChecks 条目：" + projectContext);
+            Assert(projectContext.Length <= 4096, "PROJECT_CONTEXT.md 必须有界（当前长度 " + projectContext.Length + "）。");
 
             var isolated = Path.Combine(project, ".codex-helper", "runs", "run-continuity-isolated");
             Directory.CreateDirectory(isolated);
             await File.WriteAllTextAsync(Path.Combine(isolated, "SPEC.md"), "不同键");
             await File.WriteAllTextAsync(Path.Combine(isolated, "manifest.json"), "{\"rootCauseKey\":\"continuity-y\"}");
             Assert(!File.Exists(Path.Combine(isolated, "CONTINUITY_CONTEXT.md")), "不同显式组键不应获得连续上下文。");
+            Assert(!File.Exists(Path.Combine(isolated, "PROJECT_CONTEXT.md")), "不同显式组键不应获得快速连续任务上下文。");
+        }
+        finally { TryDeleteDirectory(root); }
+    }
+
+    /// <summary>
+    /// 巨大历史场景的轻量基线回归（SPEC：修复超大历史阻断同组键连续会话）。
+    /// 正例：同组键前序完整 session.history 默认响应大于 2MB（RPC 上限会截断正文），但携带
+    /// maxMessages 的轻量基线请求得到含 projections.asOfSeq 的小响应 → 后续合同只提交
+    /// session.prompt、绝不 session.create，复用来源会话且 ContinuityRound=2；并断言请求确实
+    /// 携带了轻量限制参数（maxMessages），同时断言读取完整历史（不带轻量参数）会触发 2MB
+    /// 截断（证明旧实现路径必然失败）。
+    /// 负例：Host 不支持轻量参数（剥离 maxMessages 返回完整大页/无投影无可信序号）→ 仍保守
+    /// 不续接（绝不猜测基线），新建会话并给出可读诊断。
+    /// </summary>
+    private static async Task TestHarnessHistoryBaselineContinuityAsync()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "codex-helper-harness-history-baseline-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            // 静态超大响应必须真实超过 2MB（RPC 客户端 text.Length > 2_000_000 即丢弃）。
+            Assert(HugeHistoryValue is not null && HugeHistoryValue!.ToJsonString().Length > 2_000_000,
+                "回归夹具：完整默认 history 响应必须超过 2MB 上限，否则无法模拟根因场景。");
+
+            var project = Path.Combine(root, "project");
+            var first = Path.Combine(project, ".codex-helper", "runs", "run-huge-a");
+            var second = Path.Combine(project, ".codex-helper", "runs", "run-huge-b");
+            Directory.CreateDirectory(first);
+            Directory.CreateDirectory(second);
+            await File.WriteAllTextAsync(Path.Combine(first, "SPEC.md"), "巨大历史前序合同");
+            await File.WriteAllTextAsync(Path.Combine(first, "manifest.json"), "{\"rootCauseKey\":\"huge-x\"}");
+            await File.WriteAllTextAsync(Path.Combine(second, "SPEC.md"), "新合同");
+            await File.WriteAllTextAsync(Path.Combine(second, "HANDOFF.md"), "仅允许直接依赖");
+            await File.WriteAllTextAsync(Path.Combine(second, "manifest.json"), "{\"rootCauseKey\":\"huge-x\"}");
+            var firstId = Path.GetFileName(first);
+            var secondId = Path.GetFileName(second);
+            var firstFingerprint = TestFingerprint(first);
+            var secondFingerprint = TestFingerprint(second);
+            WriteValidReport(first, firstId, firstFingerprint);
+            WriteValidReport(second, secondId, secondFingerprint);
+
+            // ---- 正例：轻量基线请求（maxMessages=1）返回含 projections.asOfSeq 的小响应。
+            // ---- 若实现错误地不带轻量参数请求完整历史，则返回 HugeHistoryValue（>2MB）
+            // ---- 必然被 RPC 2MB 上限截断 → 续接失败（测试断言即捕获回归）。
+            await using (var host = new FakeHarnessHost
+            {
+                Respond = (method, payload) => method switch
+                {
+                    "session.list" => new JsonObject { ["items"] = new JsonArray(new JsonObject { ["sessionId"] = "sess-huge", ["running"] = false }) },
+                    "session.history" => payload?["maxMessages"] is null
+                        ? HugeHistoryValue
+                        : new JsonObject
+                        {
+                            ["events"] = new JsonArray(new JsonObject { ["event"] = new JsonObject { ["seq"] = 400L } }),
+                            ["hasMore"] = false,
+                            ["projections"] = new JsonObject { ["asOfSeq"] = 400L, ["values"] = new JsonObject() }
+                        },
+                    "session.prompt" => new JsonObject { ["accepted"] = true },
+                    _ => new JsonObject()
+                },
+                WsScripts =
+                [
+                    new Queue<string>([
+                        WsFrame("session/subscribed", "sess-huge"),
+                        // 旧回合终态（seq=400）在基线之前；新回合从 401 开始，不能提前结束。
+                        WsFrame("session/event", "sess-huge", "turn/start", seq: 401),
+                        WsFrame("session/event", "sess-huge", "turn/end", "completed", seq: 402)
+                    ])
+                ]
+            })
+            {
+                await host.StartAsync();
+                var runner = new DeepSeekHarnessRunner(new AppPaths(Path.Combine(root, "app-huge-ok")))
+                {
+                    WebUrl = host.BaseUrl,
+                    RelayProbe = new ConfirmedHarnessRelay(),
+                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。"))
+                };
+                var prior = new HarnessTaskStatus(firstId, project, first, "awaiting-gpt", "已完成（巨大历史）。",
+                    DateTime.UtcNow.AddMinutes(-5), DateTime.UtcNow.AddMinutes(-1), 0, host.BaseUrl, "sess-huge",
+                    RootCauseKey: "huge-x", ContractFingerprint: firstFingerprint);
+                File.WriteAllText(runner.TaskDirectoryFor(firstId), JsonSerializer.Serialize(prior,
+                    new JsonSerializerOptions { WriteIndented = true, Converters = { new HarnessUtcConverter() } }));
+
+                var result = await runner.StartAsync(project, second);
+                Assert(result.State == "awaiting-gpt" && result.SessionId == "sess-huge"
+                    && result.ContinuitySourceTaskId == firstId && result.ContinuityRound == 2,
+                    "巨大历史且轻量基线可用时应复用来源会话续接第二回合：" + result.State + " / " + result.SessionId + " / " + result.ContinuityRound);
+                Assert(!host.Calls.Any(call => call.Method == "session.create"), "轻量基线续接不得创建新会话。");
+                Assert(host.Calls.Count(call => call.Method == "session.prompt") == 1, "轻量基线续接只提交一次增量提示。");
+                // 断言请求确实携带轻量限制参数：每次 session.history 都带 maxMessages。
+                var historyCalls = host.Calls.Where(call => call.Method == "session.history").ToList();
+                Assert(historyCalls.Count >= 1, "续接探测必须调用 session.history 轻量基线读取。");
+                foreach (var call in historyCalls)
+                    Assert(call.Payload?["maxMessages"] is not null,
+                        "会话历史请求必须携带轻量限制参数 maxMessages（否则会下载完整历史并触发 2MB 截断）。");
+                Assert(File.Exists(Path.Combine(second, "CONTINUITY_CONTEXT.md")), "续接应生成连续上下文。");
+            }
+
+            // ---- 负例：旧 Host 不支持轻量参数——剥离 maxMessages 仍返回默认完整大页
+            // ---- （>2MB 被 RPC 截断），或返回无投影且无可信事件的空页 → 保守不续接。
+            var negativeTask = Path.Combine(project, ".codex-helper", "runs", "run-huge-neg");
+            Directory.CreateDirectory(negativeTask);
+            await File.WriteAllTextAsync(Path.Combine(negativeTask, "SPEC.md"), "负例合同");
+            await File.WriteAllTextAsync(Path.Combine(negativeTask, "manifest.json"), "{\"rootCauseKey\":\"huge-x\"}");
+            var negativeId = Path.GetFileName(negativeTask);
+            var negativeFingerprint = TestFingerprint(negativeTask);
+            WriteValidReport(negativeTask, negativeId, negativeFingerprint);
+            await using (var host = new FakeHarnessHost
+            {
+                Respond = (method, _) => method switch
+                {
+                    "session.create" => new JsonObject { ["sessionId"] = "sess-huge-new" },
+                    "session.prompt" => new JsonObject { ["accepted"] = true },
+                    "session.list" => new JsonObject { ["items"] = new JsonArray(new JsonObject { ["sessionId"] = "sess-huge", ["running"] = false }) },
+                    // 旧 Host：忽略 maxMessages（不支持轻量参数），仍返回超大完整页 → 2MB 截断。
+                    "session.history" => HugeHistoryValue,
+                    _ => new JsonObject()
+                },
+                WsScripts =
+                [
+                    new Queue<string>([
+                        WsFrame("session/subscribed", "sess-huge-new"),
+                        WsFrame("session/event", "sess-huge-new", "turn/start", seq: 1),
+                        WsFrame("session/event", "sess-huge-new", "turn/end", "completed", seq: 2)
+                    ])
+                ]
+            })
+            {
+                await host.StartAsync();
+                var runner = new DeepSeekHarnessRunner(new AppPaths(Path.Combine(root, "app-huge-neg")))
+                {
+                    WebUrl = host.BaseUrl,
+                    RelayProbe = new ConfirmedHarnessRelay(),
+                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。"))
+                };
+                var prior = new HarnessTaskStatus(firstId, project, first, "awaiting-gpt", "已完成（巨大历史）。",
+                    DateTime.UtcNow.AddMinutes(-5), DateTime.UtcNow.AddMinutes(-1), 0, host.BaseUrl, "sess-huge",
+                    RootCauseKey: "huge-x", ContractFingerprint: firstFingerprint);
+                File.WriteAllText(runner.TaskDirectoryFor(firstId), JsonSerializer.Serialize(prior,
+                    new JsonSerializerOptions { WriteIndented = true, Converters = { new HarnessUtcConverter() } }));
+
+                var result = await runner.StartAsync(project, negativeTask);
+                Assert(result.State == "awaiting-gpt" && result.SessionId == "sess-huge-new",
+                    "旧 Host 不支持轻量参数且历史不可读时应保守新建会话而非伪续接：" + result.State + " / " + result.SessionId);
+                Assert(result.ContinuitySourceTaskId is null && result.ContinuityRound == 1,
+                    "旧 Host 不支持轻量参数时不得伪续接（无来源任务、回合保持 1）：" + result.ContinuitySourceTaskId + " / " + result.ContinuityRound);
+                Assert(host.Calls.Count(call => call.Method == "session.create") == 1, "保守路径应恰好创建一次新会话。");
+                Assert(!File.Exists(Path.Combine(negativeTask, "CONTINUITY_CONTEXT.md")), "保守未续接不得生成连续上下文。");
+            }
         }
         finally { TryDeleteDirectory(root); }
     }
@@ -7582,6 +7821,28 @@ remotePort = 58831
             Assert(ok.State == "awaiting-gpt", "有效报告应通过完成门禁：" + ok.State + " / " + ok.Message);
             var packet = await File.ReadAllTextAsync(Path.Combine(project, ".codex-helper", "runs", "run-gate-ok", "REVIEW_PACKET.md"));
             Assert(packet.Contains("报告校验", StringComparison.Ordinal) && packet.Contains("通过", StringComparison.Ordinal), "REVIEW_PACKET 应记录报告校验通过：" + packet);
+
+            // 1b) 固定键单行写法 `- 退出码：0`（独占一行、无附加字符）→ 通过（完成门禁兼容固定键）。
+            var fixedLine = await RunGateScenarioAsync("run-gate-fixedline", task =>
+            {
+                var path = Path.Combine(task, "EXECUTION_REPORT.md");
+                File.WriteAllText(path, BuildReportText("run-gate-fixedline", TestFingerprint(task)), Encoding.UTF8);
+                File.SetLastWriteTimeUtc(path, DateTime.UtcNow.AddMinutes(5));
+            }, expectPacket: true);
+            Assert(fixedLine.State == "awaiting-gpt", "固定键单行退出码报告应通过完成门禁：" + fixedLine.State + " / " + fixedLine.Message);
+
+            // 1c) 固定键带括号写法 `- 退出码：0（说明）`（在独占一行行内附加括号说明）→ 必须失败，
+            //     完成门禁保持收紧：只有干净的独占一行 `- 退出码：0` 才放行。
+            var bracketed = await RunGateScenarioAsync("run-gate-bracketed", task =>
+            {
+                var path = Path.Combine(task, "EXECUTION_REPORT.md");
+                var text = BuildReportText("run-gate-bracketed", TestFingerprint(task))
+                    .Replace("- 退出码：0\n", "- 退出码：0（说明）\n", StringComparison.Ordinal);
+                File.WriteAllText(path, text, Encoding.UTF8);
+                File.SetLastWriteTimeUtc(path, DateTime.UtcNow.AddMinutes(5));
+            }, expectPacket: false);
+            Assert(bracketed.State == "failed" && bracketed.Message.Contains("退出码", StringComparison.Ordinal),
+                "固定键带括号说明的退出码行必须失败：" + bracketed.State + " / " + bracketed.Message);
 
             // 2) 报告缺失 → failed + 说明缺失原因。
             var missing = await RunGateScenarioAsync("run-gate-missing", null, expectPacket: false);
@@ -10161,6 +10422,8 @@ remotePort = 58831
                 Assert(prompts[1].Contains("max-tokens", StringComparison.Ordinal) && prompts[1].Contains("从最后检查点继续", StringComparison.Ordinal)
                     && prompts[1].Contains("禁止重新递归扫描", StringComparison.Ordinal) && !prompts[1].Contains("方案已冻结：请阅读任务目录", StringComparison.Ordinal),
                     "恢复提示应只要求从检查点继续，不得重复初始合同提示：" + prompts[1]);
+                Assert(prompts[1].Contains("单独写成一行“- 退出码：0”", StringComparison.Ordinal) && prompts[1].Contains("不得附加括号、命令或解释", StringComparison.Ordinal),
+                    "恢复提示必须同样要求成功退出码独占一行：" + prompts[1]);
                 var persisted = runner.TryRead(taskId);
                 Assert(persisted is not null && persisted.HasAttemptedMaxTokenRecovery, "恢复标记应持久化，重启后不得重复恢复");
             }

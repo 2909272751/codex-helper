@@ -855,7 +855,7 @@ public sealed class DeepSeekHarnessRunner
 
     /// <summary>一个已由 GPT 门禁认可、可作为下一份增量合同来源的已结束会话。</summary>
     private sealed record ContinuityCandidate(string SourceTaskId, string SessionId, string ContractFingerprint,
-        int Round, long LastSequence);
+        string? SourceTaskDirectory, int Round, long LastSequence);
 
     /// <summary>连续会话探测结果：Candidate 非空表示可续接；Reason 说明续接未发生的原因（供诊断）。</summary>
     private sealed record ContinuityProbe(ContinuityCandidate? Candidate, string Reason)
@@ -948,11 +948,15 @@ public sealed class DeepSeekHarnessRunner
             if (item is null)
                 continue;
 
-            var history = await rpc.GetSessionHistoryAsync(task.SessionId!, cancellationToken);
+            var history = await rpc.GetSessionHistoryBaselineAsync(task.SessionId!, cancellationToken);
             if (!history.Success)
                 return ContinuityProbe.None("同组键前序任务「" + task.TaskId + "」会话已结束但 history 不可读（" + HarnessJson.Truncate(history.ErrorMessage, 120) + "），无法取得事件基线，未续接。");
-            // Host 的 projections.asOfSeq 是当前历史页的可信最高序号。优先使用它，避免为了
-            // 续接而扫描数万条旧事件；旧 Host 没有该投影时才回退到兼容的 events 扫描。
+            // 轻量基线：请求只带 maxMessages=1 的小尾部窗口（DSH rc.6 session.history 分页
+            // 参数），响应有界、不会被 2MB 上限截断。Host 的 projections.asOfSeq 是该会话的
+            // 可信最高序号（会话投影水位，非页内窗口），优先使用它，避免为续接扫描数万条旧
+            // 事件；旧 Host 不支持轻量参数（剥离未知键返回默认大页被 2MB 上限截断）或不带
+            // projections 时才回退到本次响应内 events 的有界尾部扫描；仍无可信序号则保守
+            // 未续接，绝不猜测基线。
             var sequence = ReadEventSequence(history.Value?["projections"]?["asOfSeq"])
                 ?? history.Value?["events"]?.AsArray()?.Select(node => ReadEventSequence(node)).Where(seq => seq.HasValue).Select(seq => seq!.Value).DefaultIfEmpty(-1).Max()
                 ?? -1;
@@ -960,7 +964,7 @@ public sealed class DeepSeekHarnessRunner
             if (sequence < 0)
                 return ContinuityProbe.None("同组键前序任务「" + task.TaskId + "」的会话历史缺少可信事件序号，无法安全续接，未续接。");
             return new ContinuityProbe(new ContinuityCandidate(task.TaskId, task.SessionId!, task.ContractFingerprint!,
-                Math.Max(1, task.ContinuityRound) + 1, sequence), "通过门禁");
+                task.TaskDirectory, Math.Max(1, task.ContinuityRound) + 1, sequence), "通过门禁");
         }
         return ContinuityProbe.None("同组键前序会话已不在 Host 中，无法核验，未续接。");
     }
@@ -974,7 +978,14 @@ public sealed class DeepSeekHarnessRunner
         return null;
     }
 
-    /// <summary>写入无合同正文的连续上下文。它仅标明来源和门禁事实，避免把旧提示/报告泄漏到新合同。</summary>
+    /// <summary>
+    /// 写入无合同正文的连续上下文。它仅标明来源和门禁事实，避免把旧提示/报告泄漏到新合同；
+    /// 同时生成有界的 PROJECT_CONTEXT.md 供 BuildPrompt 的增量先读清单引用。两者都绝不读取或
+    /// 摘录来源任务 EXECUTION_REPORT.md——来源报告中的修改文件/workerChecks 条目、敏感文本、
+    /// 命令或绝对路径一律不进入后续模型上下文；上下文只含 Helper 元数据（来源任务/会话、连续
+    /// 回合、报告门禁事实、当前 HANDOFF 优先级与读取规则），绝不复制旧合同/报告全文、提示词、
+    /// 令牌或凭据。
+    /// </summary>
     private static void WriteContinuityContext(string taskDirectory, ContinuityCandidate candidate)
     {
         var path = Path.Combine(taskDirectory, "CONTINUITY_CONTEXT.md");
@@ -990,7 +1001,28 @@ public sealed class DeepSeekHarnessRunner
             "- 请优先查看当前目录的 DELTA.md（如存在），并仅按当前 HANDOFF.md 的直接依赖范围工作。"
         };
         AtomicFile.WriteAllText(path, string.Join(Environment.NewLine, lines) + Environment.NewLine);
+
+        // PROJECT_CONTEXT.md：有界、Helper 生成的上下文，只含来源标识与门禁事实（无解析依赖）。
+        var projectContext = BuildProjectContext(candidate);
+        if (!string.IsNullOrWhiteSpace(projectContext))
+            AtomicFile.WriteAllText(Path.Combine(taskDirectory, "PROJECT_CONTEXT.md"), projectContext);
     }
+
+    /// <summary>
+    /// 有界生成快速连续的 PROJECT_CONTEXT.md。内容为纯 Helper 元数据：来源任务/会话 ID、
+    /// 连续回合、报告门禁通过事实、当前 HANDOFF 优先级与快速连续读取规则。
+    /// 绝不读取或摘录来源任务 EXECUTION_REPORT.md（来源报告中即使含 token=secret、绝对路径
+    /// 或超长文本也不会进入本上下文）；保证长度有界，返回内容绝不抛异常。
+    /// </summary>
+    private static string BuildProjectContext(ContinuityCandidate candidate)
+        => "# 快速连续任务上下文（Helper 生成，有界）\n" +
+            $"- 来源任务 ID：{candidate.SourceTaskId}\n" +
+            $"- 来源会话 ID：{candidate.SessionId}\n" +
+            $"- 连续回合：{candidate.Round}\n" +
+            "- 来源报告已通过执行报告完成门禁。\n" +
+            "- 本合同与当前任务目录的 HANDOFF.md 优先级最高，直接依赖不明确时不得扩展读取范围。\n" +
+            "- 快速连续读取规则：只集中读取授权文件片段；禁止递归扫描项目与无关配置；禁止重复读取未变化文件。\n" +
+            "- 本上下文由 Helper 生成，只含来源标识与门禁事实，不含来源报告正文、命令、绝对路径或凭据。\n";
 
     /// <summary>
     /// 监听事件流直到会话终态（turn/end）。运行中事件（turn/start）实时写状态；
@@ -1584,8 +1616,8 @@ public sealed class DeepSeekHarnessRunner
         // machine-style instruction wall made CommandGoat emit incomplete tool deltas.
         // Detailed boundaries remain in the project-local contract files.
         => incremental
-            ? $"这是同一工作的增量合同。方案已冻结：先阅读任务目录 {taskDirectory} 中当前的 SPEC.md、HANDOFF.md 和 manifest.json；如存在，再阅读 DELTA.md 与 CONTINUITY_CONTEXT.md。只按当前 HANDOFF.md 的直接依赖范围工作，不得为理解旧合同扩展读取范围。只读取派生的 WORKER_ACCEPTANCE.md，绝不读取 ACCEPTANCE.md；按 PROGRESS.json 协议更新进度。完成后在任务目录写 EXECUTION_REPORT.md，必须列出任务 ID、合同指纹、退出码、修改文件、workerChecks：与风险/未完成项。任务标识：{taskId}，合同指纹：{contractFingerprint}。"
-            : $"方案已冻结：请阅读任务目录 {taskDirectory} 中的 SPEC.md、HANDOFF.md 和 manifest.json，在项目 {projectRoot} 内完成该任务。严格遵守 HANDOFF.md 的读写范围；只读取派生的 WORKER_ACCEPTANCE.md，绝不读取 ACCEPTANCE.md；按 PROGRESS.json 协议更新进度。完成后在任务目录写 EXECUTION_REPORT.md，必须列出任务 ID、合同指纹、退出码、修改文件、workerChecks：与风险/未完成项。任务标识：{taskId}，合同指纹：{contractFingerprint}。";
+            ? $"这是同一工作的快速连续增量合同（可信同组键已结束回合的后续）。方案已冻结：先阅读任务目录 {taskDirectory} 中当前的 SPEC.md、HANDOFF.md 和 manifest.json；如存在，再按顺序阅读 DELTA.md、CONTINUITY_CONTEXT.md 与 Helper 生成的 PROJECT_CONTEXT.md（只含来源标识与门禁事实）。只按当前 HANDOFF.md 的直接依赖范围工作。不可递归扫描项目；不可为理解旧合同读取 README、锁文件或无关配置；只有当前 HANDOFF 直接依赖不足时才能最小化扩展并在 EXECUTION_REPORT.md 说明。只读取派生的 WORKER_ACCEPTANCE.md，绝不读取 ACCEPTANCE.md；按 PROGRESS.json 协议更新进度。完成后在任务目录写 EXECUTION_REPORT.md，必须列出任务 ID、合同指纹、退出码、修改文件、workerChecks：与风险/未完成项；其中成功退出码必须单独写成一行“- 退出码：0”，不得附加括号、命令或解释。任务标识：{taskId}，合同指纹：{contractFingerprint}。"
+            : $"方案已冻结：请阅读任务目录 {taskDirectory} 中的 SPEC.md、HANDOFF.md 和 manifest.json，在项目 {projectRoot} 内完成该任务。严格遵守 HANDOFF.md 的读写范围；只读取派生的 WORKER_ACCEPTANCE.md，绝不读取 ACCEPTANCE.md；按 PROGRESS.json 协议更新进度。完成后在任务目录写 EXECUTION_REPORT.md，必须列出任务 ID、合同指纹、退出码、修改文件、workerChecks：与风险/未完成项；其中成功退出码必须单独写成一行“- 退出码：0”，不得附加括号、命令或解释。任务标识：{taskId}，合同指纹：{contractFingerprint}。";
 
     /// <summary>
     /// 单回合 max-tokens 截断的恢复提示：只要求执行器读取当前任务目录与已改动的直接文件、
@@ -1593,7 +1625,7 @@ public sealed class DeepSeekHarnessRunner
     /// 整个项目。绝不重复初始合同提示、绝不复制合同正文/凭据。
     /// </summary>
     private static string BuildRecoveryPrompt(string taskDirectory, string taskId, string? contractFingerprint)
-        => $"上一回合因单回合输出达到 max-tokens 上限而截断，本合同尚未完成。方案继续冻结：请先只阅读当前任务目录 {taskDirectory} 中的 SPEC.md、HANDOFF.md、manifest.json、WORKER_ACCEPTANCE.md、PROGRESS.json 与 HARNESS_STATUS.json（绝不读取 ACCEPTANCE.md），并只读取你上一回合实际改动过的直接文件以确认最后检查点。从最后检查点继续完成本合同，禁止重新设计、禁止重新递归扫描整个项目；先完成一个最小可验证阶段，运行 workerChecks（每项最多一次），再在任务目录写 EXECUTION_REPORT.md，必须列出任务 ID、合同指纹、退出码、修改文件、workerChecks 与风险/未完成项。任务标识：{taskId}，合同指纹：{contractFingerprint}。";
+        => $"上一回合因单回合输出达到 max-tokens 上限而截断，本合同尚未完成。方案继续冻结：请先只阅读当前任务目录 {taskDirectory} 中的 SPEC.md、HANDOFF.md、manifest.json、WORKER_ACCEPTANCE.md、PROGRESS.json 与 HARNESS_STATUS.json（绝不读取 ACCEPTANCE.md），并只读取你上一回合实际改动过的直接文件以确认最后检查点。从最后检查点继续完成本合同，禁止重新设计、禁止重新递归扫描整个项目；先完成一个最小可验证阶段，运行 workerChecks（每项最多一次），再在任务目录写 EXECUTION_REPORT.md，必须列出任务 ID、合同指纹、退出码、修改文件、workerChecks 与风险/未完成项；其中成功退出码必须单独写成一行“- 退出码：0”，不得附加括号、命令或解释。任务标识：{taskId}，合同指纹：{contractFingerprint}。";
 
     private static string ComputeContractFingerprint(string taskDirectory)
     {

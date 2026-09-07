@@ -2,17 +2,17 @@
 
 Codex Helper 是面向 Windows 10/11 的 Codex 专属工作台，统一管理官方账号、第三方 Responses API、重要项目、个人 Skills、Codex 配置、加密增量备份与批量迁移。
 
-当前开发版本：`4.4.1`
+当前版本：`4.4.4`
 
 ![Codex Helper Logo](assets/CodexHelper-256.png)
 
 ## 下载安装
 
-**Codex Helper v4.4.1** 精简一键安装包（GitHub Release，当前稳定版）：
+**Codex Helper v4.4.4**（GitHub Release，当前稳定版）：
 
-- 精简安装包：`codex-helper-v4.4.1-setup.exe`（依赖 Windows x64 的 **.NET 8 Desktop Runtime**，安装 .NET 8 SDK 也可满足）
-- [打开 v4.4.1 Release 页面](https://github.com/2909272751/codex-helper/releases/tag/v4.4.1)
-- [直接下载精简安装包](https://github.com/2909272751/codex-helper/releases/download/v4.4.1/codex-helper-v4.4.1-setup.exe)
+- 精简安装包：`codex-helper-v4.4.4-setup.exe`（依赖 Windows x64 的 **.NET 8 Desktop Runtime**，安装 .NET 8 SDK 也可满足）
+- [打开 v4.4.4 Release 页面](https://github.com/2909272751/codex-helper/releases/tag/v4.4.4)
+- [直接下载精简安装包](https://github.com/2909272751/codex-helper/releases/download/v4.4.4/codex-helper-v4.4.4-setup.exe)
 - [微软官方 .NET 8 下载页](https://dotnet.microsoft.com/zh-cn/download/dotnet/8.0)
 
 > 若安装器提示缺少运行库，请先安装 **.NET 8 Desktop Runtime（Windows x64）**，再重新打开并运行本安装包。自 `v3.3.3` 起项目只发布精简安装包与对应的 SHA-256 校验文件，不再提供完整离线安装包或便携 ZIP。
@@ -34,6 +34,12 @@ Codex Helper 是面向 Windows 10/11 的 Codex 专属工作台，统一管理官
 Harness 卡片提供“一键配置 Codex + Harness”：保存已探测的绝对 Node/CLI 路径、启用 Harness 协作规则、立即启动并健康检查本机 Host，同时为当前 Windows 用户创建低权限计划任务。计划任务执行已安装的 `CodexHelper.exe` 隐藏宿主模式（`--harness-host --node <绝对路径> --dsh <绝对路径>`），隐藏宿主先探测 `127.0.0.1:3080`：Host 已健康则安静退出，否则无窗口（`CreateNoWindow`、不经过 Shell）启动绝对 `node.exe + dsh web --host 127.0.0.1` 并等待子进程——不再每分钟直接启动控制台版 `node.exe`，避免 Node.js 窗口闪现；不依赖 Reasonix、终端、PATH 或 Helper 常驻。登录时启动，并每分钟做一次无重入补位（`IgnoreNew`），Host 意外退出后可自动恢复。任务无运行时长上限、允许电池供电、失败最多按一分钟间隔重启三次。旧版直接启动 `node.exe` 的计划任务会被识别为 stale，重新配置即替换。“移除登录自启动”只删除后续自启动，不终止当前任务或 Host；公司策略禁止计划任务时会明确报错，不静默退化到启动文件夹。
 
 Harness 任务中心刷新时会把本地 `running/starting` 状态与 Host 的真实 `session.list`/`session.history` 对账：一次列表核对所有活动记录，真实会话已结束时自动写回 completed/cancelled/failed（按 history 最后一个 `turn/end` 的 reason.kind 映射），会话在 Host 中不存在时诚实标记失败、绝不伪造完成；Host 不可达或响应不可信时不改写任何状态，列表仍按本地状态文件展示（离线兼容）。
+
+`4.4.4`（当前开发版本）修复超大历史阻断同组键连续会话：`FindEndedContinuityAsync` 原先通过完整 `session.history` 请求取得 `projections.asOfSeq` 事件基线，RPC 在 2 MB 响应上限处丢弃正文导致投影尚未解析，同项目同 `rootCauseKey` 的已完成前序被保守拒绝并错误新建会话。现在新增专门的轻量历史/基线读取：按 DSH `session.history` 实际支持的分页参数（`maxMessages` 小尾部窗口，不下载完整事件列表）请求足以得到 `projections.asOfSeq` 的最小响应；仅已结束连续会话探测的基线路径使用该轻量能力，运行中终态监听与对账语义不变。旧 Host 不支持轻量参数（剥离后返回完整大页被 2 MB 上限截断）或仍无可信序号时保持既有保守“未续接”诊断，绝不创建伪续接。下载安装仍指向已发布的 v4.4.1。
+
+`4.4.3` 固定键完成门禁兼容：快速连续规则文字明确连续“禁止递归扫描”，初始/快速连续增量/max-token 恢复三类提示统一要求 `EXECUTION_REPORT.md` 把成功退出码单独写成一行 `- 退出码：0`（不得附加括号、命令或解释，解释写入 workerChecks 条目）；报告门禁与合同模式测试补齐固定键与连续字串覆盖。门禁本身不放宽：非零退出仍视为失败。下载安装仍指向已发布的 v4.4.1。
+
+`4.4.2` 加入快速连续合同（fast continuity）能力：可信同组键（rootCauseKey）前序回合通过报告门禁后，后续合同以增量方式续接同一 DSH 会话，Helper 在任务目录生成**有界**的 `PROJECT_CONTEXT.md`——只含来源任务/会话 ID、连续回合与报告门禁通过事实、当前 HANDOFF 优先级与读取规则等 Helper 元数据，**绝不读取或摘录来源 `EXECUTION_REPORT.md`**（来源报告即使含 `token=secret`、绝对路径、命令或超长文本也不会进入后续模型上下文），绝不复制旧合同/报告全文、提示词、令牌或凭据；增量合同提示（`BuildPrompt` 的 incremental 分支）把 `PROJECT_CONTEXT.md` 加入先读清单，并明确不可递归扫描项目、不可为理解旧合同读取 README/锁文件/无关配置，只有当前 HANDOFF 直接依赖不足时才允许最小化扩展并在报告说明；preset persona、合同模式描述与 preset metadata 如实说明“首次基线与可信同组键后续回合”的差异。跨组键隔离与报告完成门禁判定不变。
 
 `4.4.1` 修复 DSH 报告门禁的真实兼容路径：接受 workerCheck 标准写法 `exit=0`，但仍拒绝非零退出；刷新对账会重新核验仅因旧报告格式门禁而失败、且 Host 可验证已结束的同一会话，不重提合同、不新建会话，报告有效时恢复为等待 GPT 验收。
 

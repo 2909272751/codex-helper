@@ -145,6 +145,13 @@ internal static class Program
         ,("Harness active-harness-task 记录语义（启动占位/cancel-requested/终态清除）", TestHarnessActiveTaskRecordAsync)
         ,("Harness DSH 语义标题报告门禁（实际修改/验证结果/未完成项含 TaskId+指纹+exit 0 通过；缺成功证据/exit 1/错ID错指纹/陈旧失败）", TestHarnessSemanticTitleReportGateAsync)
         ,("Harness CLI 终态语义（running/busy/starting 绝不映射成功，仅真实完成退出 0）", TestHarnessCliTerminalSemanticsAsync)
+        ,("Harness 监督器 start 记录句柄与重复 start 单飞（首次写记录/字段完整/不含合同正文/二次返回既有句柄不重复启动）", TestHarnessSupervisorStartRecordsAsync)
+        ,("Harness 监督器 await 活动受控 PID 不终态（存活 PID 接管等待/中断取消不写终态记录）", TestHarnessSupervisorAwaitActiveNoTerminalAsync)
+        ,("Harness 监督器 await 真实 exit + awaiting-gpt/报告门禁通过才成功（child 退出读真相门禁/报告不合格失败/取消终态）", TestHarnessSupervisorAwaitRealExitGateAsync)
+        ,("Harness 监督器 PID 消失真相仍 running 不得成功（无对账明确不确定/现有安全对账后仍不虚报完成）", TestHarnessSupervisorPidGoneRunningNotSuccessAsync)
+        ,("Harness 监督器终态可重连读取与旧同步回归（terminal await/status 重读/Parse 旧形态与 -Mode 解析/结论退出码映射）", TestHarnessSupervisorTerminalReconnectAndLegacyAsync)
+        ,("Harness 监督器真实受控进程接管（真实 spawn PID/attach 存活不终态/身份不符不接管/杀后按真相门禁收尾）", TestHarnessSupervisorRealProcessTakeoverAsync)
+        ,("Harness 监督器终态重连门禁收紧（旧 completed+当前真相缺失/running/报告失效→uncertain/failed 退出码非0；当前 cancelled/failed 覆盖旧记录；成功重连保留）", TestHarnessSupervisorTerminalReconnectGateAsync)
         ,("Harness 组键续接诊断（无组键默认/不同组键隔离/报告未过门禁/续接成功原因可读）", TestHarnessContinuityDiagnosticAsync)
         ,("Harness max-tokens 自动恢复（length/max-tokens 识别/同一会话短恢复一次/上限 1/再次截断真实失败/不建第二会话）", TestHarnessMaxTokenRecoveryAsync)
         ,("Harness max-tokens 恢复门禁与失败诊断（恢复后无报告 failed/提交失败/Host 不可核验/HTTP 轮询恢复）", TestHarnessMaxTokenRecoveryGateAndFallbacksAsync)
@@ -4639,6 +4646,10 @@ internal static class Program
             Assert(File.Exists(Path.Combine(codexRoot, "skills", "harness-executor", "SKILL.md")), "Harness 模式应写 executor skill");
             Assert(guidance.Contains("known compatibility baseline", StringComparison.Ordinal), "指导应把 rc.5 作为兼容基线而非硬固定版本");
             Assert(guidance.Contains("newer valid semantic versions", StringComparison.Ordinal), "指导应允许通过能力探测的新版本");
+            Assert(guidance.Contains("额度与上下文纪律", StringComparison.Ordinal), "Harness 指导必须包含额度纪律，不能只留在 Codex Helper 项目本身。");
+            Assert(guidance.Contains("不超过 2 文件、约 80 行", StringComparison.Ordinal), "Harness 指导必须保留 GPT 直改微任务路由。");
+            Assert(guidance.Contains("不得用 Codex heartbeat", StringComparison.Ordinal)
+                && guidance.Contains("session.history", StringComparison.Ordinal), "Harness 指导必须禁止等待期以 Codex 轮询和历史正文消耗上下文。");
 
             // 切到 Off → 移除 Harness 规则。
             settings.CollaborationMode = "Off";
@@ -5739,10 +5750,14 @@ internal static class Program
                     new Queue<string>([
                         WsFrame("session/subscribed", "sess-run-1"),
                         "@wait:session.prompt",
-                        WsFrame("session/event", "sess-run-1", "turn/start"),
+                        WsFrame("session/event", "sess-run-1", "turn/start", seq: 500),
+                        // 长思考只产生文本分片、没有工具阶段变化：必须仍写入 liveness 心跳，
+                        // 不能让外层因状态文件静默而误判受阻。
+                        WsRealTextChunkFrame("sess-run-1", 501, "正在分析合同关系。"),
+                        WsRealTextChunkFrame("sess-run-1", 502, "继续生成中。"),
                         // session.prompt 已在监听器启动前提交；留出足够时间让测试观察 running 并写入报告门禁文件。
                         "@delay:1500",
-                        WsFrame("session/event", "sess-run-1", "turn/end", "completed")
+                        WsFrame("session/event", "sess-run-1", "turn/end", "completed", seq: 503)
                     ])
                 ]
             })
@@ -5753,6 +5768,7 @@ internal static class Program
                 {
                     WebUrl = host.BaseUrl,
                     RelayProbe = new ConfirmedHarnessRelay(),
+                    LivenessHeartbeatInterval = TimeSpan.Zero,
                     HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。"))
                 };
                 var taskId = Path.GetFileName(task);
@@ -5769,6 +5785,17 @@ internal static class Program
                 }, message: "应观察到 running 状态且 sessionId/合同指纹已持久化");
                 Assert(mid!.State == "running" && mid.SessionId == "sess-run-1" && mid.IsRunning, "运行中状态不正确");
                 Assert(mid.State != "awaiting-gpt", "运行中不得提前标 awaiting-gpt");
+                HarnessTaskStatus? heartbeat = null;
+                await WaitUntilAsync(() =>
+                {
+                    heartbeat = runner.TryRead(taskId);
+                    return heartbeat is not null
+                        && heartbeat.State == "running"
+                        && heartbeat.ReasoningEventCount >= 1
+                        && heartbeat.Message.Contains("持续收到当前会话事件", StringComparison.Ordinal);
+                }, message: "仅有推理分片时也应写入 running liveness 心跳");
+                Assert(heartbeat!.Steps == 0 && heartbeat.ToolCallCount == 0,
+                    "liveness 心跳不能伪造步骤或工具进展");
                 // worker 在会话运行期间写入 EXECUTION_REPORT.md（真实时序：晚于任务开始时间）。
                 WriteValidReport(task, taskId, mid.ContractFingerprint!, lastWriteUtc: DateTime.UtcNow);
 
@@ -8396,6 +8423,477 @@ remotePort = 58831
         Assert(busyText.Contains("项目忙", StringComparison.Ordinal) && busyText.Contains("run-x", StringComparison.Ordinal), "busy 摘要应可读：" + busyText);
         Assert(!busyText.Contains("已完成", StringComparison.Ordinal), "busy 摘要不得宣称完成：" + busyText);
         return Task.CompletedTask;
+    }
+
+    /// <summary>测试用受控受管进程句柄：退出由 MarkExited 驱动，等待可被外部取消（与真实进程语义一致）。</summary>
+    private sealed class FakeSupervisedProcess : IHarnessSupervisedProcess
+    {
+        private readonly TaskCompletionSource<bool> exited = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public FakeSupervisedProcess(int id, DateTime? startTimeUtc = null)
+        {
+            Id = id;
+            StartTimeUtc = startTimeUtc ?? DateTime.UtcNow;
+        }
+
+        public int Id { get; }
+        public DateTime StartTimeUtc { get; }
+        public bool HasExited { get; private set; }
+        public int? ExitCode { get; private set; }
+
+        public void MarkExited(int code)
+        {
+            ExitCode = code;
+            HasExited = true;
+            exited.TrySetResult(true);
+        }
+
+        public async Task WaitForExitAsync(CancellationToken cancellationToken)
+        {
+            if (HasExited) return;
+            cancellationToken.ThrowIfCancellationRequested();
+            var canceled = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            using var registration = cancellationToken.Register(static state => ((TaskCompletionSource<bool>)state!).TrySetCanceled(), canceled);
+            var winner = await Task.WhenAny(exited.Task, canceled.Task);
+            await winner; // 进程退出正常返回；外部取消抛 OperationCanceledException。
+        }
+    }
+
+    /// <summary>构造监督测试合同目录（SPEC/HANDOFF/manifest + 正文哨兵），返回 (项目根, 任务目录, taskId)。</summary>
+    private static (string Project, string Task, string TaskId) CreateSupervisorTask(string root, string runName)
+    {
+        var project = Path.Combine(root, "project");
+        var task = Path.Combine(project, ".codex-helper", "runs", runName);
+        Directory.CreateDirectory(task);
+        File.WriteAllText(Path.Combine(task, "SPEC.md"), $"# SPEC {runName}\n秘密合同正文不得进入监督记录、命令行或摘要。", Encoding.UTF8);
+        File.WriteAllText(Path.Combine(task, "HANDOFF.md"), "# HANDOFF\n监督协议聚焦测试。", Encoding.UTF8);
+        File.WriteAllText(Path.Combine(task, "manifest.json"), "{\"taskId\":\"" + runName + "\"}", Encoding.UTF8);
+        return (project, task, runName);
+    }
+
+    /// <summary>直接写入任务目录真相源 HARNESS_STATUS.json（UTF-8，兼容日期转换器）。</summary>
+    private static void WriteTruthStatus(string taskDirectory, HarnessTaskStatus status)
+    {
+        var path = Path.Combine(taskDirectory, HarnessTaskStateStore.StatusFileName);
+        File.WriteAllText(path, JsonSerializer.Serialize(status,
+            new JsonSerializerOptions { WriteIndented = true, Converters = { new HarnessUtcConverter() } }), Encoding.UTF8);
+    }
+
+    /// <summary>注入同一受控假进程的监督器（spawn 与 attach 共用该假进程）。</summary>
+    private static HarnessSupervisor MakeFakeSupervisor(FakeSupervisedProcess child)
+        => new()
+        {
+            SpawnRunner = _ => child,
+            AttachRunner = (pid, _) => pid == child.Id ? child : null
+        };
+
+    /// <summary>
+    /// 监督器 start：首次启动写监督记录（schema/taskId/指纹/两绝对路径/PID/启动 UTC/状态/核验 UTC），
+    /// 记录不含合同正文；重复 start 单飞返回既有活跃句柄（不重复启动）；任务已到真实终态也不重复启动。
+    /// </summary>
+    private static async Task TestHarnessSupervisorStartRecordsAsync()
+    {
+        await WithTempDirectoryAsync("harness-sup-start", async root =>
+        {
+            var (project, task, taskId) = CreateSupervisorTask(root, "run-sup-a");
+            var child = new FakeSupervisedProcess(4242, DateTime.UtcNow.AddSeconds(-3));
+            var spawnCount = 0;
+            var supervisor = new HarnessSupervisor
+            {
+                SpawnRunner = _ => { spawnCount++; return child; },
+                AttachRunner = (pid, _) => pid == child.Id ? child : null
+            };
+            var started = await supervisor.StartAsync(project, task);
+            Assert(!started.Reused && started.RunnerPid == 4242 && started.SupervisionState == HarnessSupervisor.RunningState
+                && spawnCount == 1, "首次 start 应启动受管 Runner 并返回句柄：" + started.Message);
+            var record = HarnessSupervisor.TryReadRecord(task);
+            Assert(record is not null, "首次 start 后应存在监督记录");
+            Assert(record!.SchemaVersion == HarnessSupervisor.RecordSchemaVersion
+                && record.TaskId == taskId
+                && string.Equals(record.ProjectRoot, Path.GetFullPath(project), StringComparison.OrdinalIgnoreCase)
+                && string.Equals(record.TaskDirectory, Path.GetFullPath(task), StringComparison.OrdinalIgnoreCase)
+                && record.RunnerPid == 4242
+                && record.SupervisionState == HarnessSupervisor.RunningState
+                && record.TerminalOutcome is null, "监督记录字段应完整且为运行态");
+            Assert(record.ContractFingerprint == TestFingerprint(task), "监督记录应含合同指纹");
+            Assert((record.RunnerStartedUtc - child.StartTimeUtc).Duration() < TimeSpan.FromSeconds(1), "监督记录应含 Runner 启动 UTC（PID 重用身份）");
+            Assert((DateTime.UtcNow - record.LastVerifiedUtc).Duration() < TimeSpan.FromMinutes(5), "监督记录应含最后核验 UTC");
+            var recordText = File.ReadAllText(Path.Combine(task, HarnessSupervisor.RecordFileName), Encoding.UTF8);
+            Assert(!recordText.Contains("秘密合同正文", StringComparison.Ordinal), "监督记录绝不包含合同正文");
+
+            var dup = await supervisor.StartAsync(project, task);
+            Assert(dup.Reused && dup.RunnerPid == 4242 && spawnCount == 1 && dup.Message.Contains("未重复", StringComparison.Ordinal),
+                "重复 start 必须返回既有活跃句柄且不重复启动：" + dup.Message);
+
+            // 任务真相已到真实终态时重复 start：返回终态句柄、不重复启动。
+            WriteTruthStatus(task, new HarnessTaskStatus(taskId, project, task, "awaiting-gpt", "任务已完成。",
+                DateTime.UtcNow.AddMinutes(-10), DateTime.UtcNow, 0, DeepSeekHarnessVersions.WebHostDefaultUrl,
+                ContractFingerprint: TestFingerprint(task)));
+            WriteValidReport(task, taskId, TestFingerprint(task));
+            var again = await supervisor.StartAsync(project, task);
+            Assert(again.Reused && again.SupervisionState == HarnessSupervisor.TerminalState && spawnCount == 1,
+                "任务已到真实终态时重复 start 应返回终态句柄且不重复启动：" + again.Message);
+        });
+    }
+
+    /// <summary>
+    /// await 在活动受控 PID 前不得返回终态：attach 存活 PID 并等待；中断（取消）不写任何监督终态记录。
+    /// </summary>
+    private static async Task TestHarnessSupervisorAwaitActiveNoTerminalAsync()
+    {
+        await WithTempDirectoryAsync("harness-sup-await-active", async root =>
+        {
+            var (project, task, taskId) = CreateSupervisorTask(root, "run-sup-b");
+            var child = new FakeSupervisedProcess(5252);
+            var supervisor = MakeFakeSupervisor(child);
+            await supervisor.StartAsync(project, task);
+            WriteTruthStatus(task, new HarnessTaskStatus(taskId, project, task, "running", "会话执行中。",
+                DateTime.UtcNow, DateTime.UtcNow, 0, DeepSeekHarnessVersions.WebHostDefaultUrl,
+                ContractFingerprint: TestFingerprint(task)));
+            using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(300));
+            try
+            {
+                await supervisor.AwaitAsync(project, task, cts.Token);
+                Assert(false, "受管 PID 存活时 await 不得返回任何终态结论");
+            }
+            catch (OperationCanceledException)
+            {
+                // 中断 = 等待被取消，不是任务终态。
+            }
+            var record = HarnessSupervisor.TryReadRecord(task);
+            Assert(record is not null && record.SupervisionState == HarnessSupervisor.RunningState && record.TerminalOutcome is null,
+                "活动 PID 等待中断不得写入任何监督终态");
+            Assert(!child.HasExited, "等待中断不得结束受管子进程");
+        });
+    }
+
+    /// <summary>
+    /// await 真实收尾语义：子 Runner 退出后只基于"真相非 running + 报告门禁通过"成功；
+    /// awaiting-gpt 但报告未过门禁 → failed；取消真相 → cancelled；均不虚报完成。
+    /// </summary>
+    private static async Task TestHarnessSupervisorAwaitRealExitGateAsync()
+    {
+        await WithTempDirectoryAsync("harness-sup-exit", async root =>
+        {
+            var (project, taskA, taskIdA) = CreateSupervisorTask(root, "run-sup-c1");
+            var childA = new FakeSupervisedProcess(6262);
+            var supervisorA = MakeFakeSupervisor(childA);
+            await supervisorA.StartAsync(project, taskA);
+            WriteTruthStatus(taskA, new HarnessTaskStatus(taskIdA, project, taskA, "awaiting-gpt", "任务已在 Harness 会话完成。",
+                DateTime.UtcNow.AddMinutes(-10), DateTime.UtcNow, 0, DeepSeekHarnessVersions.WebHostDefaultUrl,
+                ContractFingerprint: TestFingerprint(taskA)));
+            WriteValidReport(taskA, taskIdA, TestFingerprint(taskA));
+            childA.MarkExited(0);
+            var ok = await supervisorA.AwaitAsync(project, taskA);
+            Assert(ok.Outcome == HarnessSupervisor.OutcomeCompleted && ok.TaskStatus?.State == "awaiting-gpt",
+                "真实 exit + awaiting-gpt + 报告门禁通过才成功：" + ok.Outcome + " / " + ok.Message);
+            Assert(HarnessRunnerCli.MapSupervisorOutcomeExitCode(ok.Outcome) == HarnessRunnerCli.ExitCompleted, "completed 结论应映射退出码 0");
+            var recA = HarnessSupervisor.TryReadRecord(taskA);
+            Assert(recA is not null && recA.IsTerminal && recA.TerminalOutcome == HarnessSupervisor.OutcomeCompleted,
+                "成功收尾应写终态监督记录（保留审计）");
+
+            var (_, taskB, taskIdB) = CreateSupervisorTask(root, "run-sup-c2");
+            var childB = new FakeSupervisedProcess(6263);
+            var supervisorB = MakeFakeSupervisor(childB);
+            await supervisorB.StartAsync(project, taskB);
+            WriteTruthStatus(taskB, new HarnessTaskStatus(taskIdB, project, taskB, "awaiting-gpt", "任务完成但报告陈旧。",
+                DateTime.UtcNow.AddMinutes(-10), DateTime.UtcNow, 0, DeepSeekHarnessVersions.WebHostDefaultUrl,
+                ContractFingerprint: TestFingerprint(taskB)));
+            WriteValidReport(taskB, taskIdB, TestFingerprint(taskB), lastWriteUtc: DateTime.UtcNow.AddDays(-1));
+            childB.MarkExited(0);
+            var bad = await supervisorB.AwaitAsync(project, taskB);
+            Assert(bad.Outcome == HarnessSupervisor.OutcomeFailed && bad.Message.Contains("门禁", StringComparison.Ordinal),
+                "报告未过门禁不得成功：" + bad.Outcome + " / " + bad.Message);
+            Assert(HarnessRunnerCli.MapSupervisorOutcomeExitCode(bad.Outcome) == HarnessRunnerCli.ExitFailed, "失败结论应映射退出码 1");
+
+            var (_, taskC, taskIdC) = CreateSupervisorTask(root, "run-sup-c3");
+            var childC = new FakeSupervisedProcess(6264);
+            var supervisorC = MakeFakeSupervisor(childC);
+            await supervisorC.StartAsync(project, taskC);
+            WriteTruthStatus(taskC, new HarnessTaskStatus(taskIdC, project, taskC, "cancelled", "用户已停止任务。",
+                DateTime.UtcNow, DateTime.UtcNow, 0, DeepSeekHarnessVersions.WebHostDefaultUrl,
+                ContractFingerprint: TestFingerprint(taskC)));
+            childC.MarkExited(0);
+            var cancelled = await supervisorC.AwaitAsync(project, taskC);
+            Assert(cancelled.Outcome == HarnessSupervisor.OutcomeCancelled
+                && HarnessRunnerCli.MapSupervisorOutcomeExitCode(cancelled.Outcome) == HarnessRunnerCli.ExitCancelled,
+                "取消真相应映射取消结论：" + cancelled.Message);
+        });
+    }
+
+    /// <summary>
+    /// PID 消失但真相仍 running/starting：无对账时明确写出 uncertain，绝不得成功；
+    /// 执行注入的现有安全对账后若仍非成功终态也不得虚报 completed。
+    /// </summary>
+    private static async Task TestHarnessSupervisorPidGoneRunningNotSuccessAsync()
+    {
+        await WithTempDirectoryAsync("harness-sup-pidgone", async root =>
+        {
+            var (project, task, taskId) = CreateSupervisorTask(root, "run-sup-d");
+            var child = new FakeSupervisedProcess(7171);
+            await MakeFakeSupervisor(child).StartAsync(project, task);
+            WriteTruthStatus(task, new HarnessTaskStatus(taskId, project, task, "running", "会话仍在 Host 中运行。",
+                DateTime.UtcNow, DateTime.UtcNow, 0, DeepSeekHarnessVersions.WebHostDefaultUrl,
+                ContractFingerprint: TestFingerprint(task)));
+
+            // PID 消失（attach 无法核验）且无对账注入 → 明确不确定。
+            var noReconcile = new HarnessSupervisor { AttachRunner = (_, _) => null };
+            var uncertain = await noReconcile.AwaitAsync(project, task);
+            Assert(uncertain.Outcome == HarnessSupervisor.OutcomeUncertain,
+                "PID 消失且真相 running 必须返回不确定而非成功：" + uncertain.Outcome + " / " + uncertain.Message);
+            Assert(HarnessRunnerCli.MapSupervisorOutcomeExitCode(uncertain.Outcome) == HarnessRunnerCli.ExitFailed, "不确定不得映射为成功退出码");
+            var rec = HarnessSupervisor.TryReadRecord(task);
+            Assert(rec is not null && rec.IsTerminal && rec.TerminalOutcome == HarnessSupervisor.OutcomeUncertain,
+                "不确定结论应写终态监督记录");
+
+            // 注入现有安全对账（模拟 Host 对账改写为 failed）：仍不虚报完成。
+            var (_, task2, taskId2) = CreateSupervisorTask(root, "run-sup-d2");
+            var child2 = new FakeSupervisedProcess(7172);
+            await MakeFakeSupervisor(child2).StartAsync(project, task2);
+            WriteTruthStatus(task2, new HarnessTaskStatus(taskId2, project, task2, "starting", "正在启动/对账中。",
+                DateTime.UtcNow, DateTime.UtcNow, 0, DeepSeekHarnessVersions.WebHostDefaultUrl,
+                ContractFingerprint: TestFingerprint(task2)));
+            var reconcileInvoked = false;
+            var reconciled = new HarnessSupervisor
+            {
+                AttachRunner = (_, _) => null,
+                ReconcileAsync = _ =>
+                {
+                    reconcileInvoked = true;
+                    WriteTruthStatus(task2, new HarnessTaskStatus(taskId2, project, task2, "failed", "对账发现会话已停止且缺少可信终态。",
+                        DateTime.UtcNow.AddMinutes(-10), DateTime.UtcNow, 0, DeepSeekHarnessVersions.WebHostDefaultUrl,
+                        ContractFingerprint: TestFingerprint(task2)));
+                    return Task.FromResult(new DeepSeekHarnessRunner.HarnessReconcileResult(1, "对账已改写 1 个任务状态。"));
+                }
+            };
+            var after = await reconciled.AwaitAsync(project, task2);
+            Assert(after.Outcome == HarnessSupervisor.OutcomeFailed
+                && !string.Equals(after.Outcome, HarnessSupervisor.OutcomeCompleted, StringComparison.Ordinal),
+                "安全对账后仍非成功终态时不得虚报完成：" + after.Outcome + " / " + after.Message);
+            Assert(reconcileInvoked, "PID 消失且真相非终态时应执行注入的现有安全对账");
+        });
+    }
+
+    /// <summary>
+    /// 终态可重连读取（await/status 直接读既有终态监督记录）与旧同步入口回归
+    /// （无 -Mode 保持旧形态、-Mode 解析、未知模式报错、结论退出码映射、start 摘要不宣称完成）。
+    /// </summary>
+    private static async Task TestHarnessSupervisorTerminalReconnectAndLegacyAsync()
+    {
+        await WithTempDirectoryAsync("harness-sup-reconnect", async root =>
+        {
+            var (project, task, taskId) = CreateSupervisorTask(root, "run-sup-e");
+            var child = new FakeSupervisedProcess(8181);
+            var supervisor = MakeFakeSupervisor(child);
+            await supervisor.StartAsync(project, task);
+            WriteTruthStatus(task, new HarnessTaskStatus(taskId, project, task, "awaiting-gpt", "任务已完成。",
+                DateTime.UtcNow.AddMinutes(-10), DateTime.UtcNow, 0, DeepSeekHarnessVersions.WebHostDefaultUrl,
+                ContractFingerprint: TestFingerprint(task)));
+            WriteValidReport(task, taskId, TestFingerprint(task));
+            child.MarkExited(0);
+            var first = await supervisor.AwaitAsync(project, task);
+            Assert(first.Outcome == HarnessSupervisor.OutcomeCompleted, "首次 await 应成功：" + first.Message);
+
+            var again = await supervisor.AwaitAsync(project, task);
+            Assert(again.ReconnectedTerminal && again.Outcome == HarnessSupervisor.OutcomeCompleted, "终态 await 应可重连读取：" + again.Outcome);
+            var snapshot = supervisor.Status(project, task);
+            Assert(snapshot.Found && snapshot.IsTerminal && snapshot.TerminalOutcome == HarnessSupervisor.OutcomeCompleted
+                && snapshot.LastVerifiedUtc is not null, "status 应读取终态监督记录并刷新核验时间");
+            var summary = HarnessRunnerCli.BuildSupervisorStatusSummary(snapshot);
+            Assert(summary.Contains(taskId, StringComparison.Ordinal) && !summary.Contains("秘密合同正文", StringComparison.Ordinal),
+                "status 摘要应定位任务且不泄露合同正文");
+
+            // 旧同步入口回归：无 -Mode 保持旧形态（Mode=null），-Mode 解析与未知模式报错。
+            var legacy = HarnessRunnerCli.Parse(new[] { "-ProjectRoot", project, "-TaskDirectory", task });
+            Assert(legacy.Error is null && legacy.Mode is null && legacy.ProjectRoot is not null, "旧同步形态解析应保持 Mode=null");
+            var withMode = HarnessRunnerCli.Parse(new[] { "-Mode", "start", "-ProjectRoot", project, "-TaskDirectory", task });
+            Assert(withMode.Error is null && withMode.Mode == HarnessRunnerCli.ModeStart, "应解析 -Mode start");
+            var awaitMode = HarnessRunnerCli.Parse(new[] { "-Mode", "await", "-ProjectRoot", project, "-TaskDirectory", task });
+            Assert(awaitMode.Error is null && awaitMode.Mode == HarnessRunnerCli.ModeAwait, "应解析 -Mode await");
+            var badMode = HarnessRunnerCli.Parse(new[] { "-Mode", "watch", "-ProjectRoot", project, "-TaskDirectory", task });
+            Assert(badMode.Error is not null && badMode.Error.Contains("未知监督模式", StringComparison.Ordinal), "未知监督模式应报参数错误");
+            Assert(HarnessRunnerCli.MapExitCode("running") != HarnessRunnerCli.ExitCompleted, "旧同步 running 仍不得映射成功");
+            Assert(HarnessRunnerCli.MapExitCode("starting") != HarnessRunnerCli.ExitCompleted, "旧同步 starting 仍不得映射成功");
+
+            var startResult = new HarnessSupervisorStartResult(true, taskId, task, 8181, DateTime.UtcNow,
+                HarnessSupervisor.RunningState, "未重复启动，可接回等待真实终态。");
+            var startSummary = HarnessRunnerCli.BuildSupervisorStartSummary(startResult);
+            Assert(startSummary.Contains("可重连标识", StringComparison.Ordinal) && !startSummary.Contains("已完成", StringComparison.Ordinal),
+                "start 摘要不得宣称完成：" + startSummary);
+            var awaitSummary = HarnessRunnerCli.BuildSupervisorAwaitSummary(again);
+            Assert(awaitSummary.Contains("监督等待结论", StringComparison.Ordinal), "await 摘要应含结论行：" + awaitSummary);
+        });
+    }
+
+    /// <summary>
+    /// 真实 OS 受控进程接管：真实 spawn PID + attach 存活等待不终态；启动时间身份不符的 PID 不被接管
+    /// （明确不确定而非等待/成功）；杀子进程后按真相 + 报告门禁成功收尾（PID 重用防护走真实 OS 身份）。
+    /// </summary>
+    private static async Task TestHarnessSupervisorRealProcessTakeoverAsync()
+    {
+        await WithTempDirectoryAsync("harness-sup-real", async root =>
+        {
+            var (project, task, taskId) = CreateSupervisorTask(root, "run-sup-real");
+            var supervisor = new HarnessSupervisor(); // 不注入工厂：走真实 OS 进程 spawn/attach/wait。
+            Process? child = null;
+            try
+            {
+                var start = new ProcessStartInfo("powershell.exe")
+                {
+                    UseShellExecute = false,
+                    RedirectStandardOutput = false,
+                    RedirectStandardError = false,
+                    CreateNoWindow = true
+                };
+                start.ArgumentList.Add("-NoProfile");
+                start.ArgumentList.Add("-Command");
+                start.ArgumentList.Add("Start-Sleep -Seconds 20");
+                child = Process.Start(start)!;
+                var childStartUtc = child.StartTime.ToUniversalTime();
+                WriteTruthStatus(task, new HarnessTaskStatus(taskId, project, task, "running", "会话执行中。",
+                    DateTime.UtcNow, DateTime.UtcNow, 0, DeepSeekHarnessVersions.WebHostDefaultUrl,
+                    ContractFingerprint: TestFingerprint(task)));
+                var now = DateTime.UtcNow;
+
+                // 1) 真实 PID/启动 UTC 的监督记录；attach 存活 PID：等待中断（取消）不写终态。
+                HarnessSupervisor.WriteRecord(new HarnessSupervisorRecord(HarnessSupervisor.RecordSchemaVersion, taskId,
+                    Path.GetFullPath(project), Path.GetFullPath(task), TestFingerprint(task), child.Id,
+                    childStartUtc, now, now, HarnessSupervisor.RunningState));
+                using (var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(400)))
+                {
+                    try
+                    {
+                        await supervisor.AwaitAsync(project, task, cts.Token);
+                        Assert(false, "真实活动受控 PID 前 await 不得返回终态");
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        // 中断 = 等待被取消，不是任务终态。
+                    }
+                }
+                Assert(HarnessSupervisor.TryReadRecord(task)!.SupervisionState == HarnessSupervisor.RunningState,
+                    "真实活动 PID 中断后监督记录仍为运行态");
+
+                // 2) PID 重用防护：启动时间身份不符的"看似存活" PID 不得被接管（返回不确定，绝不等待/虚报完成）。
+                HarnessSupervisor.WriteRecord(new HarnessSupervisorRecord(HarnessSupervisor.RecordSchemaVersion, taskId,
+                    Path.GetFullPath(project), Path.GetFullPath(task), TestFingerprint(task), child.Id,
+                    childStartUtc.AddSeconds(-10), now, now, HarnessSupervisor.RunningState));
+                var mismatched = await supervisor.AwaitAsync(project, task);
+                Assert(mismatched.Outcome == HarnessSupervisor.OutcomeUncertain
+                    && !string.Equals(mismatched.Outcome, HarnessSupervisor.OutcomeCompleted, StringComparison.Ordinal),
+                    "启动时间身份不符的 PID 不得被当作受管 Runner 接管或虚报完成：" + mismatched.Outcome + " / " + mismatched.Message);
+
+                // 3) 杀子进程 → 修正身份 → 写真实终态真相（awaiting-gpt + 报告门禁）→ await 成功收尾。
+                try { child.Kill(entireProcessTree: true); } catch { }
+                await child.WaitForExitAsync();
+                WriteTruthStatus(task, new HarnessTaskStatus(taskId, project, task, "awaiting-gpt", "任务已完成。",
+                    DateTime.UtcNow.AddMinutes(-10), DateTime.UtcNow, 0, DeepSeekHarnessVersions.WebHostDefaultUrl,
+                    ContractFingerprint: TestFingerprint(task)));
+                WriteValidReport(task, taskId, TestFingerprint(task));
+                HarnessSupervisor.WriteRecord(new HarnessSupervisorRecord(HarnessSupervisor.RecordSchemaVersion, taskId,
+                    Path.GetFullPath(project), Path.GetFullPath(task), TestFingerprint(task), child.Id,
+                    childStartUtc, now, now, HarnessSupervisor.RunningState));
+                var final = await supervisor.AwaitAsync(project, task);
+                Assert(final.Outcome == HarnessSupervisor.OutcomeCompleted,
+                    "真实 exit + 真相门禁应成功收尾：" + final.Outcome + " / " + final.Message);
+                Assert(HarnessSupervisor.TryReadRecord(task)!.TerminalOutcome == HarnessSupervisor.OutcomeCompleted,
+                    "真实收尾应写终态监督记录（保留审计）");
+            }
+            finally
+            {
+                if (child is not null)
+                {
+                    try { child.Kill(entireProcessTree: true); } catch { }
+                    try { child.Dispose(); } catch { }
+                }
+            }
+        });
+    }
+
+    /// <summary>
+    /// 阶段二：终态重连门禁收紧——旧 completed 记录绝不能在当前真相缺失/仍 running/当前报告失效时被沿用
+    /// （返回 uncertain/failed，退出码非 0，摘要说明需安全对账）；当前 cancelled/failed 真相覆盖旧记录；
+    /// 当前真相 awaiting-gpt + 报告门禁通过的成功重连保留（completed，退出码 0）。
+    /// </summary>
+    private static async Task TestHarnessSupervisorTerminalReconnectGateAsync()
+    {
+        await WithTempDirectoryAsync("harness-sup-reconnect-gate", async root =>
+        {
+            var project = Path.Combine(root, "project");
+
+            // 造一份"旧 completed 终态监督记录"（真相状态由各场景单独写）。
+            void WriteOldCompletedRecord(string taskDir)
+            {
+                var now = DateTime.UtcNow;
+                HarnessSupervisor.WriteRecord(new HarnessSupervisorRecord(HarnessSupervisor.RecordSchemaVersion,
+                    Path.GetFileName(taskDir), Path.GetFullPath(project), Path.GetFullPath(taskDir), TestFingerprint(taskDir),
+                    4242, now.AddMinutes(-30), now.AddMinutes(-30), now, HarnessSupervisor.TerminalState,
+                    TerminalOutcome: HarnessSupervisor.OutcomeCompleted, RunnerExitCode: 0));
+            }
+
+            // ---- 1) 旧 completed + 当前真相缺失：uncertain（摘要说明需安全对账），退出码非 0；旧 completed 被清除。 ----
+            var (_, taskMissing, taskIdMissing) = CreateSupervisorTask(root, "run-gate-missing");
+            WriteOldCompletedRecord(taskMissing); // 不写 HARNESS_STATUS.json。
+            var missing = await new HarnessSupervisor().AwaitAsync(project, taskMissing);
+            Assert(missing.Outcome == HarnessSupervisor.OutcomeUncertain && missing.ReconnectedTerminal,
+                "旧 completed+真相缺失必须返回 uncertain 而非旧 completed：" + missing.Outcome + " / " + missing.Message);
+            Assert(missing.Message.Contains("对账", StringComparison.Ordinal), "不确定摘要应说明需要安全对账：" + missing.Message);
+            Assert(HarnessRunnerCli.MapSupervisorOutcomeExitCode(missing.Outcome) != HarnessRunnerCli.ExitCompleted, "真相缺失不得映射成功退出码");
+            Assert(HarnessSupervisor.TryReadRecord(taskMissing)!.TerminalOutcome == HarnessSupervisor.OutcomeUncertain, "旧 completed 应被同步清除为 uncertain");
+
+            // ---- 2) 旧 completed + 当前真相 running：uncertain（说明当前真相），退出码非 0。 ----
+            var (_, taskRunning, taskIdRunning) = CreateSupervisorTask(root, "run-gate-running");
+            WriteOldCompletedRecord(taskRunning);
+            WriteTruthStatus(taskRunning, new HarnessTaskStatus(taskIdRunning, project, taskRunning, "running", "会话仍在 Host 运行。",
+                DateTime.UtcNow, DateTime.UtcNow, 0, DeepSeekHarnessVersions.WebHostDefaultUrl, ContractFingerprint: TestFingerprint(taskRunning)));
+            var running = await new HarnessSupervisor().AwaitAsync(project, taskRunning);
+            Assert(running.Outcome == HarnessSupervisor.OutcomeUncertain && running.Message.Contains("仍为 running", StringComparison.Ordinal),
+                "旧 completed+真相 running 必须返回 uncertain 并说明当前真相：" + running.Outcome + " / " + running.Message);
+            Assert(HarnessRunnerCli.MapSupervisorOutcomeExitCode(running.Outcome) != HarnessRunnerCli.ExitCompleted, "running 真相不得映射成功退出码");
+
+            // ---- 3) 旧 completed + 当前真相 awaiting-gpt 但当前报告失效：failed（退出码 1），不得沿用旧 completed。 ----
+            var (_, taskGate, taskIdGate) = CreateSupervisorTask(root, "run-gate-invalid-report");
+            WriteOldCompletedRecord(taskGate);
+            WriteTruthStatus(taskGate, new HarnessTaskStatus(taskIdGate, project, taskGate, "awaiting-gpt", "任务完成但报告陈旧。",
+                DateTime.UtcNow.AddMinutes(-10), DateTime.UtcNow, 0, DeepSeekHarnessVersions.WebHostDefaultUrl, ContractFingerprint: TestFingerprint(taskGate)));
+            WriteValidReport(taskGate, taskIdGate, TestFingerprint(taskGate), lastWriteUtc: DateTime.UtcNow.AddDays(-1));
+            var gate = await new HarnessSupervisor().AwaitAsync(project, taskGate);
+            Assert(gate.Outcome == HarnessSupervisor.OutcomeFailed && gate.Message.Contains("门禁", StringComparison.Ordinal),
+                "当前报告失效时不得沿用旧 completed：" + gate.Outcome + " / " + gate.Message);
+            Assert(HarnessRunnerCli.MapSupervisorOutcomeExitCode(gate.Outcome) == HarnessRunnerCli.ExitFailed, "报告失效应映射退出码 1");
+            Assert(HarnessSupervisor.TryReadRecord(taskGate)!.TerminalOutcome == HarnessSupervisor.OutcomeFailed, "监督记录应同步为 failed");
+
+            // ---- 4) 当前真相 cancelled/failed 覆盖旧 completed 记录。 ----
+            var (_, taskCancelled, taskIdCancelled) = CreateSupervisorTask(root, "run-gate-cancelled");
+            WriteOldCompletedRecord(taskCancelled);
+            WriteTruthStatus(taskCancelled, new HarnessTaskStatus(taskIdCancelled, project, taskCancelled, "cancelled", "用户已停止任务。",
+                DateTime.UtcNow, DateTime.UtcNow, 0, DeepSeekHarnessVersions.WebHostDefaultUrl, ContractFingerprint: TestFingerprint(taskCancelled)));
+            var cancelled = await new HarnessSupervisor().AwaitAsync(project, taskCancelled);
+            Assert(cancelled.Outcome == HarnessSupervisor.OutcomeCancelled
+                && HarnessRunnerCli.MapSupervisorOutcomeExitCode(cancelled.Outcome) == HarnessRunnerCli.ExitCancelled,
+                "当前 cancelled 真相应覆盖旧 completed 记录：" + cancelled.Outcome + " / " + cancelled.Message);
+            Assert(HarnessSupervisor.TryReadRecord(taskCancelled)!.TerminalOutcome == HarnessSupervisor.OutcomeCancelled, "监督记录应同步为 cancelled");
+
+            var (_, taskFailed, taskIdFailed) = CreateSupervisorTask(root, "run-gate-failed");
+            WriteOldCompletedRecord(taskFailed);
+            WriteTruthStatus(taskFailed, new HarnessTaskStatus(taskIdFailed, project, taskFailed, "failed", "任务失败。",
+                DateTime.UtcNow, DateTime.UtcNow, 0, DeepSeekHarnessVersions.WebHostDefaultUrl, ContractFingerprint: TestFingerprint(taskFailed)));
+            var failed = await new HarnessSupervisor().AwaitAsync(project, taskFailed);
+            Assert(failed.Outcome == HarnessSupervisor.OutcomeFailed
+                && HarnessRunnerCli.MapSupervisorOutcomeExitCode(failed.Outcome) == HarnessRunnerCli.ExitFailed,
+                "当前 failed 真相应覆盖旧 completed 记录：" + failed.Outcome + " / " + failed.Message);
+
+            // ---- 5) 保留成功重连：旧 completed + 当前 awaiting-gpt + 报告门禁通过 → completed（退出码 0）。 ----
+            var (_, taskOk, taskIdOk) = CreateSupervisorTask(root, "run-gate-ok");
+            WriteOldCompletedRecord(taskOk);
+            WriteTruthStatus(taskOk, new HarnessTaskStatus(taskIdOk, project, taskOk, "awaiting-gpt", "任务已完成。",
+                DateTime.UtcNow.AddMinutes(-10), DateTime.UtcNow, 0, DeepSeekHarnessVersions.WebHostDefaultUrl, ContractFingerprint: TestFingerprint(taskOk)));
+            WriteValidReport(taskOk, taskIdOk, TestFingerprint(taskOk));
+            var ok = await new HarnessSupervisor().AwaitAsync(project, taskOk);
+            Assert(ok.Outcome == HarnessSupervisor.OutcomeCompleted && ok.ReconnectedTerminal
+                && HarnessRunnerCli.MapSupervisorOutcomeExitCode(ok.Outcome) == HarnessRunnerCli.ExitCompleted,
+                "当前真相+报告门禁通过的成功重连应保留 completed：" + ok.Outcome + " / " + ok.Message);
+        });
     }
 
     /// <summary>

@@ -2,9 +2,14 @@ using CodexHelper.Core.Infrastructure;
 using CodexHelper.Core.Services;
 
 // Harness 托管执行器控制台入口（薄壳）：
-// 只接受绝对 ProjectRoot 与 TaskDirectory，调用 DeepSeekHarnessRunner.StartAsync 等待真实终态，
-// 输出不含任务正文/凭据的中文摘要，并用退出码区分完成(0)/失败(1)/取消(2)/参数错误(3)。
-// 参数解析、退出码映射与摘要构建的可测试核心逻辑在 CodexHelper.Core 的 HarnessRunnerCli。
+// 只接受绝对 ProjectRoot 与 TaskDirectory；任务正文绝不进入命令行，摘要只输出脱敏状态与定位信息。
+// 旧调用形态（无 -Mode）：调用 DeepSeekHarnessRunner.StartAsync 前台等待真实终态，并用退出码
+//   区分完成(0)/失败(1)/取消(2)/参数错误(3)——running/busy/starting 绝不映射为成功。
+// 监督模式（-Mode start|await|status，阶段一持久等待协议）：
+//   start  后台启动受控 Runner 子进程并立即返回安全摘要与可重连标识（start 返回绝不代表任务完成）；
+//   await  按监督记录接回等待真实终态（子 Runner 退出 + HARNESS_STATUS.json 非 running + 报告门禁）；
+//   status 固定大小脱敏摘要，不读取 DSH 聊天/session.history。
+// 参数解析、退出码映射与摘要构建的可测试核心逻辑在 CodexHelper.Core 的 HarnessRunnerCli 与 HarnessSupervisor。
 var parsed = HarnessRunnerCli.Parse(args);
 if (parsed.Error is not null)
 {
@@ -13,6 +18,58 @@ if (parsed.Error is not null)
     return HarnessRunnerCli.ExitUsageError;
 }
 
+if (!string.IsNullOrWhiteSpace(parsed.Mode))
+{
+    var supervisor = new HarnessSupervisor
+    {
+        // await 需要"现有安全对账"能力：受管 Runner 消失而任务仍运行时按 Host 会话列表对账，绝不虚报完成。
+        ReconcileAsync = parsed.Mode == HarnessRunnerCli.ModeAwait
+            ? ct => new DeepSeekHarnessRunner(new AppPaths()).ReconcileRecentTasksAsync(ct)
+            : null
+    };
+    try
+    {
+        switch (parsed.Mode.ToLowerInvariant())
+        {
+            case HarnessRunnerCli.ModeStart:
+            {
+                // start：启动受控子进程并立即返回安全摘要；绝不等待真实终态、绝不表述为任务完成。
+                var started = await supervisor.StartAsync(parsed.ProjectRoot!, parsed.TaskDirectory!);
+                Console.WriteLine(HarnessRunnerCli.BuildSupervisorStartSummary(started));
+                return HarnessRunnerCli.ExitCompleted;
+            }
+            case HarnessRunnerCli.ModeAwait:
+            {
+                // await：按监督记录接回并等待真实终态（阻塞直到结论；受管 Runner 仍存活时任意进程可接回）。
+                var awaited = await supervisor.AwaitAsync(parsed.ProjectRoot!, parsed.TaskDirectory!);
+                Console.WriteLine(HarnessRunnerCli.BuildSupervisorAwaitSummary(awaited));
+                return HarnessRunnerCli.MapSupervisorOutcomeExitCode(awaited.Outcome);
+            }
+            case HarnessRunnerCli.ModeStatus:
+            {
+                var snapshot = supervisor.Status(parsed.ProjectRoot!, parsed.TaskDirectory!);
+                Console.WriteLine(HarnessRunnerCli.BuildSupervisorStatusSummary(snapshot));
+                // status 的 0 只表示摘要输出成功，绝不表示任务完成（摘要里以文字区分 running/终态）。
+                return HarnessRunnerCli.ExitCompleted;
+            }
+            default:
+                return HarnessRunnerCli.ExitUsageError;
+        }
+    }
+    catch (OperationCanceledException)
+    {
+        // 仅等待被中断：受管 Runner 仍在后台，绝不表述为任务完成/取消。
+        Console.Error.WriteLine("监督等待被中断；受管 Runner 仍在运行，可随时用同一命令（-Mode await）重新接回等待，本地等待不消耗 Codex token。");
+        return HarnessRunnerCli.ExitFailed;
+    }
+    catch (Exception ex)
+    {
+        Console.Error.WriteLine("监督命令执行失败：" + ex.Message);
+        return HarnessRunnerCli.ExitFailed;
+    }
+}
+
+// 旧同步调用形态：前台等待真实终态（兼容既有 invoke-harness.ps1 直接调用与回归测试）。
 var runner = new DeepSeekHarnessRunner(new AppPaths());
 try
 {

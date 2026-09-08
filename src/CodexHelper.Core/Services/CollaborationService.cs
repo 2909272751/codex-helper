@@ -128,6 +128,12 @@ For implementation tasks that change project files, GPT is the planner and judge
 - 同一产品工作流的后续合同（新阶段/增量回合/截断恢复）必须写入 manifest.json 的显式 `rootCauseKey`（稳定、可审计的非空字符串），不同工作流使用不同组键，绝不把不同根因合并到同一组键；无组键的旧记录继续被保守隔离读取，不再作为续接依据。
 - 大型工作必须按可验证阶段拆分合同（先完成最小可验证阶段、运行 workerChecks、再进入下一阶段），避免在单个回合内做完整个大工作；Helper 会自动向同一会话续接同组键合同，并在单回合 `max-tokens` 截断时（stopReason=length）自动恢复一次，但自动恢复有上限且绝不伪装完成。
 - 旧 `.codex-helper/tasks/*` 状态仍可被读取兼容，但不会获得组键续接；迁移方式：打开旧任务目录确认其内容与报告，把要延续的工作流按上文重建为一个带 `rootCauseKey` 的新 `runs/run-*` 合同，旧目录保留只读备份即可。
+
+### 额度与上下文纪律（强制）
+- 先按规模路由：不超过 2 文件、约 80 行、低风险且无跨模块接线的修复，直接由 GPT 实施和聚焦验收，不创建 Harness 合同；只有中大型实施才提交 Harness。用户明确指定 Harness/DeepSeek 时例外。
+- Runner 运行期间由受管进程本地等待。不得用 Codex heartbeat、重复短轮询或重复读取 `session.history` 确认存活；存活探针只读取固定大小的状态摘要、Runner PID 与 `session.list` 的 `running` 布尔值。
+- 除终态诊断外，不得把 DSH 消息正文、推理流、工具参数、全量历史、递归目录清单或全量日志带回 Codex 上下文。每个工作流只做一次计划提交和一次终态验收；续接只带 `rootCauseKey` 与压缩连续上下文，绝不复制旧合同或报告全文。
+- 不得因事件流静默、短暂无输出、WebSocket 断流或工具命令返回而新建合同、判定完成或标记受阻；仍以 Runner 退出、非运行终态和报告门禁三者共同决定。重复调用触发的防循环取消是唯一例外，必须如实报告且不得自动重提。
 {{HarnessVisualBoundaryRule}}
 {{HarnessGuidanceEnd}}
 """;
@@ -170,14 +176,17 @@ For implementation tasks that change project files, GPT is the planner and judge
     }
 
     /// <summary>
-    /// invoke-harness.ps1：只接收绝对 ProjectRoot 与 TaskDirectory 两个参数，校验后自动寻找
-    /// 已安装或开发输出中的 CodexHelper.HarnessRunner.exe 并调用，透传退出码（0=完成/1=失败/2=取消/3=参数错误）。
-    /// 任务正文绝不进入命令行（脚本只转发两个路径；任务正文由 Runner 从任务目录文件读取）。
+    /// invoke-harness.ps1：只接收绝对 ProjectRoot 与 TaskDirectory（可选 -Mode start/await/status），
+    /// 校验后自动寻找已安装或开发输出中的 CodexHelper.HarnessRunner.exe 并调用，透传退出码
+    /// （0=完成/1=失败或不确定/2=取消/3=参数错误）。任务正文绝不进入命令行（脚本只转发路径；
+    /// 任务正文由 Runner 从任务目录文件读取）。持久等待监督协议：无 -Mode 为旧同步形态（前台等真实终态）；
+    /// -Mode start 后台启动受控 Runner 并立即返回可重连标识；-Mode await 按同一任务目录接回等待真实终态。
     /// </summary>
     private static string BuildHarnessInvokeScript() => """
 param(
     [Parameter(Mandatory=$true)][string]$ProjectRoot,
-    [Parameter(Mandatory=$true)][string]$TaskDirectory
+    [Parameter(Mandatory=$true)][string]$TaskDirectory,
+    [ValidateSet('start','await','status')][string]$Mode = ''
 )
 $ErrorActionPreference = 'Stop'
 $project = [IO.Path]::GetFullPath($ProjectRoot).TrimEnd('\')
@@ -219,14 +228,19 @@ function Find-HarnessRunner {
 }
 
 $runner = Find-HarnessRunner
-# 只转发两个绝对路径；任务正文由 Runner 从任务目录文件读取，绝不进入命令行。
-& $runner -ProjectRoot $project -TaskDirectory $task
+# 只转发两个绝对路径（+ 可选监督模式）；任务正文由 Runner 从任务目录文件读取，绝不进入命令行。
+if ($Mode) {
+    & $runner -Mode $Mode -ProjectRoot $project -TaskDirectory $task
+} else {
+    & $runner -ProjectRoot $project -TaskDirectory $task
+}
 exit $LASTEXITCODE
 """;
 
     /// <summary>
     /// SKILL.md：任务合同与进度说明优先简体中文，给出明确调用命令（只传两个绝对路径、
-    /// 等待真实终态与退出码语义），并把视觉边界改为“实现执行器/Harness 禁止截图”。
+    /// 推荐 start + 可重连 await 监督协议、等待真实终态与退出码语义），并把视觉边界改为
+    /// “实现执行器/Harness 禁止截图”。
     /// </summary>
     private static string BuildHarnessSkill() => $$"""
 ---
@@ -236,13 +250,27 @@ description: 通过 Helper 托管的 DeepSeek Harness Runner 执行已规划的�
 
 # DeepSeek Harness 执行器
 
-GPT 负责规划与验收，本 skill 只负责把合同任务交给 Helper 托管的 Harness Runner 执行，并在同一调用中等待真实终态。
+GPT 负责规划与验收，本 skill 只负责把合同任务交给 Helper 托管的 Harness Runner 执行，并在监督协议下等待真实终态。
 
 ## 调用命令
 
+### 推荐：持久等待监督协议（start + 可重连 await）
+
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File invoke-harness.ps1 -ProjectRoot <绝对项目根目录> -TaskDirectory <绝对任务目录> -Mode start
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File invoke-harness.ps1 -ProjectRoot <绝对项目根目录> -TaskDirectory <绝对任务目录> -Mode await
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File invoke-harness.ps1 -ProjectRoot <绝对项目根目录> -TaskDirectory <绝对任务目录> -Mode status
+
+- `start` 校验两绝对路径与合同后，在后台启动一个独立受控 Runner 子进程，立即只返回安全摘要与可重连标识（taskId = 任务目录名）；**start 返回绝不代表任务完成**，也绝不产生第二次提交。
+- `await` 按同一任务目录读取监督记录并等待真实终态：只有“子 Runner 已退出 + HARNESS_STATUS.json 非 running + EXECUTION_REPORT.md 通过完成门禁”才算成功。受管 Runner 仍存活时，**任何新进程（包括会话中断/重连后）都可以再次执行 await 接回同一等待**，绝不重投 DSH 合同、绝不重复提交。等待期间不轮询日志、不重复提交、不读取 DSH 聊天/推理/完整事件流。
+- `status` 只输出固定大小脱敏摘要（监督状态/PID/真相状态/最后核验时间）。
+- 本地等待不消耗 Codex token；DSH 模型用量独立计费。Codex App 若无动态工具能力不会被主动唤醒——中断后由 GPT/脚本用同一任务目录重新执行 await 接回即可。
+- 退出码：await 0=完成（awaiting-gpt 且报告门禁通过）、1=失败/不确定、2=取消；start/status 的 0 只表示命令成功，不表示任务完成。
+
+### 旧同步形态（兼容，前台等待真实终态）
+
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File invoke-harness.ps1 -ProjectRoot <绝对项目根目录> -TaskDirectory <绝对任务目录>
 
-只传两个绝对路径参数；任务正文只从任务目录内的合同文件读取（SPEC.md、HANDOFF.md、manifest.json），绝不进入命令行。运行后等待命令返回真实终态：0=完成、1=失败、2=取消、3=参数错误；不得轮询日志、不得重复提交、不得绕过托管 Runner 用其他方式提交。执行期间可在 Codex Helper 的 Harness 任务中心查看进度。
+运行后等待命令返回真实终态：0=完成、1=失败、2=取消、3=参数错误；running/busy/starting 绝不映射为成功。不得绕过托管 Runner 用其他方式提交。执行期间可在 Codex Helper 的 Harness 任务中心查看进度。
 
 ## 任务合同与进度
 

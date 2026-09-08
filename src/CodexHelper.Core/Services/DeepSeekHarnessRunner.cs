@@ -120,6 +120,9 @@ public sealed class DeepSeekHarnessRunner
     /// 长时间无帧不等同于会话无进展，属于载流链路静默；达到时长即放弃本轮连接计入重连次数，
     /// 耗尽后降级到既有 HTTP 终态轮询并写明降级事实，绝不永久卡在“重连其中一步”。</summary>
     public TimeSpan EventFrameTimeout { get; init; } = TimeSpan.FromSeconds(30);
+    /// <summary>运行中仅收到推理/文本分片而没有阶段变化时的状态心跳间隔。
+    /// 这是存活证据而非“完成进展”：避免外层把健康的长思考错误显示为受阻，同时限制磁盘写入频率。</summary>
+    public TimeSpan LivenessHeartbeatInterval { get; init; } = TimeSpan.FromSeconds(15);
     /// <summary>Host readiness gate（合同提交前执行；默认 EnsureWebHostReadyAsync）。</summary>
     public Func<CancellationToken, Task<HarnessHostReadyResult>>? HostReadyEnsurer { get; init; }
 
@@ -1042,6 +1045,7 @@ public sealed class DeepSeekHarnessRunner
         var attempts = 0;
         var lastSeq = initialLastSequence;
         var detector = new HarnessDegenerationDetector();
+        var lastLivenessWriteUtc = DateTime.UtcNow;
         while (true)
         {
             try
@@ -1237,6 +1241,22 @@ public sealed class DeepSeekHarnessRunner
                             {
                                 current = WithSummary(current with { Message = "检测到真实工具调用（" + ShortToolName(frame.ToolName) + "）。", UpdatedUtc = DateTime.UtcNow }, detector);
                                 Write(current);
+                                lastLivenessWriteUtc = DateTime.UtcNow;
+                            }
+                            else if (DateTime.UtcNow - lastLivenessWriteUtc >= LivenessHeartbeatInterval)
+                            {
+                                // 模型长思考、工具参数分片或文本流可在很长时间内没有阶段变化。
+                                // 必须把“仍收到当前会话事件”的事实写入状态，供外层受管等待/对账使用；
+                                // 不把它计为工具、步骤或 workerCheck，也不改变防循环判定。
+                                current = WithSummary(current with
+                                {
+                                    State = "running",
+                                    Message = "会话仍在生成或推理中，持续收到当前会话事件。",
+                                    UpdatedUtc = DateTime.UtcNow,
+                                    SessionState = "running"
+                                }, detector);
+                                Write(current);
+                                lastLivenessWriteUtc = DateTime.UtcNow;
                             }
                         }
                     }
@@ -1627,7 +1647,8 @@ public sealed class DeepSeekHarnessRunner
     private static string BuildRecoveryPrompt(string taskDirectory, string taskId, string? contractFingerprint)
         => $"上一回合因单回合输出达到 max-tokens 上限而截断，本合同尚未完成。方案继续冻结：请先只阅读当前任务目录 {taskDirectory} 中的 SPEC.md、HANDOFF.md、manifest.json、WORKER_ACCEPTANCE.md、PROGRESS.json 与 HARNESS_STATUS.json（绝不读取 ACCEPTANCE.md），并只读取你上一回合实际改动过的直接文件以确认最后检查点。从最后检查点继续完成本合同，禁止重新设计、禁止重新递归扫描整个项目；先完成一个最小可验证阶段，运行 workerChecks（每项最多一次），再在任务目录写 EXECUTION_REPORT.md，必须列出任务 ID、合同指纹、退出码、修改文件、workerChecks 与风险/未完成项；其中成功退出码必须单独写成一行“- 退出码：0”，不得附加括号、命令或解释。任务标识：{taskId}，合同指纹：{contractFingerprint}。";
 
-    private static string ComputeContractFingerprint(string taskDirectory)
+    /// <summary>合同指纹（SPEC.md/HANDOFF.md/manifest.json 内容哈希，十六进制）。供任务状态、监督记录与报告门禁共用。</summary>
+    public static string ComputeContractFingerprint(string taskDirectory)
     {
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         foreach (var name in new[] { "SPEC.md", "HANDOFF.md", "manifest.json" })

@@ -322,7 +322,7 @@ public sealed class HarnessSupervisor
         if (truth is not null && !truth.IsRunning)
         {
             var (outcome, message) = DeriveTerminal(truth, taskDirectory);
-            WriteTerminalWithEvidence(record, outcome, truth);
+            WriteRecord(MarkTerminal(record, outcome, record.RunnerExitCode));
             return new HarnessSupervisorAwaitResult(outcome, message, truth);
         }
 
@@ -344,13 +344,13 @@ public sealed class HarnessSupervisor
             if (reconciled is not null && !reconciled.IsRunning)
             {
                 var (outcome, message) = DeriveTerminal(reconciled, taskDirectory);
-                WriteTerminalWithEvidence(record, outcome, reconciled);
+                WriteRecord(MarkTerminal(record, outcome, record.RunnerExitCode));
                 return new HarnessSupervisorAwaitResult(outcome, message, reconciled);
             }
             truth = reconciled;
         }
         var messageText = $"受管 Runner 已退出/消失，但任务真相状态仍为 {stateBefore}{(truth is null ? "" : "（对账后仍非真实终态）")}；已执行现有安全对账仍无法确认真实终态，任务未完成：请用任务中心对该任务执行对账/停止，或人工核验 Harness 会话后再判定。绝不虚报 completed。";
-        WriteTerminalWithEvidence(record, OutcomeUncertain, truth);
+        WriteRecord(MarkTerminal(record, OutcomeUncertain, record.RunnerExitCode));
         return new HarnessSupervisorAwaitResult(OutcomeUncertain, messageText, truth);
     }
 
@@ -375,9 +375,7 @@ public sealed class HarnessSupervisor
             var (outcome, message) = DeriveTerminal(truth, taskDirectory);
             // 复算结论与旧记录不一致时同步监督记录（如旧 completed 不得覆盖当前 cancelled/failed；报告修复后失败也可升级为完成）。
             if (!string.Equals(outcome, recordedOutcome, StringComparison.OrdinalIgnoreCase))
-                WriteTerminalWithEvidence(record, outcome, truth);
-            else
-                EnsureEvidenceMatchesOutcome(record, outcome, truth);
+                WriteRecord(MarkTerminal(record, outcome, record.RunnerExitCode));
             return new HarnessSupervisorAwaitResult(outcome, "监督终态重连读取：" + message, truth, ReconnectedTerminal: true);
         }
 
@@ -388,7 +386,7 @@ public sealed class HarnessSupervisor
                 ? "任务目录真相源（HARNESS_STATUS.json）缺失或损坏"
                 : $"任务真相状态仍为 {truth.State}（非真实终态）";
             var message = $"监督记录曾标记完成，但{reason}，无法由当前真相与报告门禁重新确认完成；请用任务中心对该任务执行安全对账后再判定，绝不虚报 completed。";
-            WriteTerminalWithEvidence(record, OutcomeUncertain, truth); // 清除旧 completed，避免后续任何读取再复现。
+            WriteRecord(MarkTerminal(record, OutcomeUncertain, record.RunnerExitCode)); // 清除旧 completed，避免后续任何读取再复现。
             return new HarnessSupervisorAwaitResult(OutcomeUncertain, "监督终态重连读取：" + message, truth, ReconnectedTerminal: true);
         }
 
@@ -448,52 +446,6 @@ public sealed class HarnessSupervisor
             RunnerExitCode = runnerExitCode,
             LastVerifiedUtc = DateTime.UtcNow
         };
-
-    /// <summary>
-    /// 终态写入统一入口：先落监督记录终态，再按结论同步最小可信终态证明
-    /// （<see cref="HarnessTerminalEvidenceStore"/>）。只在结论为 completed（即 Runner 已退出 +
-    /// HARNESS_STATUS.json 非 running + 报告门禁通过）时写入证据；其余终态删除/不残留证据。
-    /// </summary>
-    private static void WriteTerminalWithEvidence(HarnessSupervisorRecord record, string outcome, HarnessTaskStatus? truth)
-    {
-        var terminal = MarkTerminal(record, outcome, record.RunnerExitCode);
-        WriteRecord(terminal);
-        SyncEvidence(terminal, truth?.State);
-    }
-
-    /// <summary>
-    /// 重连读取场景（结论与旧记录一致时不会重写监督记录）仍须保证证据与结论一致：
-    /// completed → 证据存在；非 completed → 证据不残留。
-    /// </summary>
-    private static void EnsureEvidenceMatchesOutcome(HarnessSupervisorRecord record, string outcome, HarnessTaskStatus? truth)
-    {
-        if (string.Equals(outcome, OutcomeCompleted, StringComparison.OrdinalIgnoreCase))
-            SyncEvidence(record with { LastVerifiedUtc = DateTime.UtcNow }, truth?.State);
-        else
-            HarnessTerminalEvidenceStore.TryDelete(record.TaskDirectory);
-    }
-
-    /// <summary>证据与当前监督结论同步：completed 才写，否则删除（该文件只代表"可信终态已完成"）。</summary>
-    private static void SyncEvidence(HarnessSupervisorRecord terminal, string? truthState)
-    {
-        if (string.Equals(terminal.TerminalOutcome, OutcomeCompleted, StringComparison.OrdinalIgnoreCase))
-        {
-            HarnessTerminalEvidenceStore.WriteRecord(terminal.TaskDirectory, new HarnessTerminalEvidence(
-                HarnessTerminalEvidenceStore.RecordSchemaVersion,
-                terminal.TaskId,
-                terminal.ContractFingerprint ?? string.Empty,
-                terminal.RunnerPid,
-                terminal.RunnerStartedUtc,
-                HarnessSupervisor.OutcomeCompleted,
-                DateTime.UtcNow,
-                terminal.RunnerExitCode,
-                truthState));
-        }
-        else
-        {
-            HarnessTerminalEvidenceStore.TryDelete(terminal.TaskDirectory);
-        }
-    }
 
     // ---- 真相源/终态推导 ----
 

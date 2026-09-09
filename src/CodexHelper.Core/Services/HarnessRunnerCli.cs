@@ -25,6 +25,8 @@ public static class HarnessRunnerCli
     public const string ModeAwait = "await";
     /// <summary>监督模式：status（固定大小脱敏摘要，不读 DSH 文本）。</summary>
     public const string ModeStatus = "status";
+    /// <summary>监督模式：automate（本地验收守候 + 阶段二真实验收驱动：真实终态后执行一次独立 Codex 验收，绝不重投 DSH）。</summary>
+    public const string ModeAutomate = "automate";
 
     /// <summary>参数解析结果；Error 非空时不可执行。Mode 为空表示旧调用形态（同步真实终态等待）。</summary>
     public sealed record RunnerArguments(string? ProjectRoot, string? TaskDirectory, string? Error, string? Mode = null);
@@ -32,11 +34,19 @@ public static class HarnessRunnerCli
     public const string UsageText =
         "用法：\n" +
         "  同步（旧形态，等待真实终态）：CodexHelper.HarnessRunner.exe -ProjectRoot <绝对项目根目录> -TaskDirectory <绝对任务目录>\n" +
-        "  监督模式：CodexHelper.HarnessRunner.exe -Mode <start|await|status> -ProjectRoot <绝对项目根目录> -TaskDirectory <绝对任务目录>\n" +
+        "  监督模式：CodexHelper.HarnessRunner.exe -Mode <start|await|status|automate> -ProjectRoot <绝对项目根目录> -TaskDirectory <绝对任务目录>\n" +
         "    start  校验两绝对路径与合同后，后台启动一个独立受控 Runner 子进程，先写监督记录并只返回安全摘要与可重连标识；start 返回绝不代表任务完成。\n" +
+        "           成功后自动、单飞拉起独立验收守候（HARNESS_ACCEPTANCE_WATCH.json；守候期零 Codex 模型调用）；拉起失败不影响 DSH，但 start 摘要会明确标注“自动验收守候未启动”，绝不假称启用。\n" +
         "    await  按任务目录读取同一监督记录，接回等待真实终态（子 Runner 退出 + HARNESS_STATUS.json 非 running + 报告门禁），不提交新合同；\n" +
         "           可重连：受管 Runner 仍存活时任意新进程都可按同一任务目录接回等待，本地等待不消耗 Codex token，DSH 模型用量独立。\n" +
         "    status 只输出固定大小脱敏摘要（监督状态/PID/真相状态/核验时间），不读取 DSH 聊天或 session.history。\n" +
+        "    automate 本地自动验收守候 + 独立 Codex 验收驱动（阶段二）：守候只启动/接回（不重投 DSH 合同），在 Runner 已退出 +\n" +
+        "           HARNESS_STATUS.json 非 running + EXECUTION_REPORT.md 通过完成门禁后，为该任务去重排队（HARNESS_ACCEPTANCE.json：\n" +
+        "           acceptance-queued → acceptance-running → accepted/needs-repair/acceptance-failed）并默认执行一次独立 Codex 验收\n" +
+        "           （codex app-server 独立线程，只收绝对任务目录/项目根/任务 ID/指纹与固定指令；以 GPT_ACCEPTANCE.json 匹配账本判定）。\n" +
+        "           等待阶段零 Codex 模型调用：仅真实 DSH 完成后的一次独立验收会消耗 Codex 用量；accepted/needs-repair/acceptance-failed\n" +
+        "           后永不自动重试；需修复不与 DSH 并发写项目。守候只用文件变更通知 + 启动一次对账 + 低频固定大小本地复查，\n" +
+        "           不轮询 DSH/日志/session.history。automate 退出码：0=已排队/接回/独立验收通过(accepted)，1=失败/不确定/需修复，2=任务取消。\n" +
         "退出码：0=完成（awaiting-gpt 且报告门禁通过/completed），1=失败/不确定/中断，2=取消，3=参数错误。任务正文只从任务目录文件读取，绝不进入命令行。";
 
     /// <summary>
@@ -102,8 +112,8 @@ public static class HarnessRunnerCli
         if (mode is not null)
         {
             mode = mode.Trim().ToLowerInvariant();
-            if (mode is not (ModeStart or ModeAwait or ModeStatus))
-                return new(null, null, $"未知监督模式：{mode}。仅支持 start/await/status。");
+            if (mode is not (ModeStart or ModeAwait or ModeStatus or ModeAutomate))
+                return new(null, null, $"未知监督模式：{mode}。仅支持 start/await/status/automate。");
         }
         return new(projectRoot, taskDirectory, null, mode);
     }
@@ -172,6 +182,64 @@ public static class HarnessRunnerCli
            $"监督启动 UTC：{FormatUtc(snapshot.StartedUtc)}\n" +
            $"最后核验 UTC：{FormatUtc(snapshot.LastVerifiedUtc)}\n" +
            $"说明：{ReasonixIntegrationService.RedactSecrets(snapshot.Message)}";
+
+    // ---- automate（本地自动验收守候，阶段一）的摘要与退出码映射 ----
+
+    /// <summary>
+    /// automate 结论 → 退出码：0=已排队/接回既有队列记录（含已完成的验收 accepted、修复已通过 accepted、
+    /// no-repair-needed、not-applicable 与仍在运行中的接回）；2=任务取消；
+    /// 其余（任务失败/门禁不过/不确定/验收失败/需修复/需用户/修复失败/修复不定）→ 1。
+    /// 绝不表示本命令重投过 DSH 或曾调用过模型。
+    /// </summary>
+    public static int MapAcceptanceExitCode(string outcome)
+        => string.Equals(outcome, HarnessAcceptanceCoordinator.OutcomeQueued, StringComparison.OrdinalIgnoreCase)
+        || string.Equals(outcome, HarnessAcceptanceCoordinator.OutcomeAlreadyQueued, StringComparison.OrdinalIgnoreCase)
+        || string.Equals(outcome, HarnessAcceptanceCoordinator.OutcomeAccepted, StringComparison.OrdinalIgnoreCase)
+        || string.Equals(outcome, HarnessRemediationStore.AcceptedState, StringComparison.OrdinalIgnoreCase)
+        || string.Equals(outcome, HarnessRemediationStore.NoRepairNeededState, StringComparison.OrdinalIgnoreCase)
+        || string.Equals(outcome, HarnessRemediationCoordinator.OutcomeNotApplicable, StringComparison.OrdinalIgnoreCase)
+        || string.Equals(outcome, HarnessRemediationCoordinator.OutcomeAlreadyInProgress, StringComparison.OrdinalIgnoreCase) ? ExitCompleted
+         : string.Equals(outcome, HarnessAcceptanceCoordinator.OutcomeTaskCancelled, StringComparison.OrdinalIgnoreCase) ? ExitCancelled
+         : ExitFailed;
+
+    /// <summary>automate 守候摘要：任务 ID + 验收队列状态中文文案 + 脱敏说明 + 定位路径（无合同正文/凭据）。</summary>
+    public static string BuildAcceptanceAutomateSummary(HarnessAcceptanceWatchResult result)
+        => $"任务：{result.TaskId}\n" +
+           $"验收队列：{AcceptanceStateText(result.QueueState)}\n" +
+           $"说明：{ReasonixIntegrationService.RedactSecrets(result.Message)}\n" +
+           $"任务目录：{result.TaskDirectory}";
+
+    /// <summary>start 的自动守候拉起摘要：明确“已启动/已接回/未启动”，绝不假称启用。</summary>
+    public static string BuildAcceptanceWatchStartSummary(HarnessAcceptanceWatchStartResult result)
+        => $"自动验收守候：{(result.Started
+                ? "已自动启动（PID " + (result.WatchPid?.ToString() ?? "未知") + "）"
+                : result.Reused
+                    ? "已接回既有守候（PID " + (result.WatchPid?.ToString() ?? "未知") + "）"
+                    : "未启动")}\n" +
+           $"守候状态：{AcceptanceWatchStateText(result.State)}\n" +
+           $"说明：{ReasonixIntegrationService.RedactSecrets(result.Message)}";
+
+    private static string AcceptanceWatchStateText(string? state)
+        => (state ?? string.Empty).ToLowerInvariant() switch
+        {
+            HarnessAcceptanceWatchStore.RunningState => "运行中",
+            HarnessAcceptanceWatchStore.ExitedState => "已结束",
+            HarnessAcceptanceWatchStore.NotStartedState => "未启动（可诊断）",
+            _ => state ?? "无"
+        };
+
+    private static string AcceptanceStateText(string? state)
+        => (state ?? string.Empty).ToLowerInvariant() switch
+        {
+            HarnessAcceptanceQueue.AwaitingGptState => "尚未排队（awaiting-gpt）",
+            HarnessAcceptanceQueue.QueuedState => "已排队（acceptance-queued，等待独立验收驱动）",
+            HarnessAcceptanceQueue.RunningState => "验收运行中（acceptance-running）",
+            HarnessAcceptanceQueue.AcceptedState => "已验收通过（accepted）",
+            HarnessAcceptanceQueue.NeedsRepairState => "需修复（needs-repair）",
+            HarnessAcceptanceQueue.FailedState => "验收失败（acceptance-failed，可诊断）",
+            _ => state ?? "无"
+        };
+
 
     private static string SupervisorStateText(string state)
         => (state ?? string.Empty).ToLowerInvariant() switch

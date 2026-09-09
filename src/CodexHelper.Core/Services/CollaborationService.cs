@@ -134,6 +134,8 @@ For implementation tasks that change project files, GPT is the planner and judge
 - Runner 运行期间由受管进程本地等待。不得用 Codex heartbeat、重复短轮询或重复读取 `session.history` 确认存活；存活探针只读取固定大小的状态摘要、Runner PID 与 `session.list` 的 `running` 布尔值。
 - 除终态诊断外，不得把 DSH 消息正文、推理流、工具参数、全量历史、递归目录清单或全量日志带回 Codex 上下文。每个工作流只做一次计划提交和一次终态验收；续接只带 `rootCauseKey` 与压缩连续上下文，绝不复制旧合同或报告全文。
 - 不得因事件流静默、短暂无输出、WebSocket 断流或工具命令返回而新建合同、判定完成或标记受阻；仍以 Runner 退出、非运行终态和报告门禁三者共同决定。重复调用触发的防循环取消是唯一例外，必须如实报告且不得自动重提。
+- 本地等待零 Codex 模型调用：`-Mode start` 会自动、单飞拉起独立验收守候（HARNESS_ACCEPTANCE_WATCH.json，PID+启动时间防复用；拉起失败会在 start 摘要明确标注，绝不假称启用）。守候期只用文件变更通知 + 启动一次对账 + 低频固定大小本地复查，不读 DSH 聊天/推理/日志/session.history，绝不重投 DSH 合同。仅当 Runner 已退出 + HARNESS_STATUS.json 非 running + EXECUTION_REPORT.md 通过完成门禁后，automate 才执行**一次**独立 Codex 验收（codex app-server 独立线程：等待阶段零 Codex 模型调用，仅这一次验收消耗 Codex 用量；不依赖当前聊天，用户无需重复询问维持等待）。验收线程只收任务目录绝对路径/项目根/任务 ID/指纹与固定指令，结论落任务目录 GPT_ACCEPTANCE.json；accepted/needs-repair/acceptance-failed 后永不自动重试（防额度循环），需修复不与 DSH 并发写项目。任务队列记录 HARNESS_ACCEPTANCE.json 状态契约：acceptance-queued → acceptance-running → accepted/needs-repair/acceptance-failed。
+- 失败合同自动一轮修复编排：needs-repair / acceptance-failed / DSH 失败（failed/cancelled/报告门禁失败）后，automate 会自动进入一次受限 triage（codex app-server 独立线程；turn 使用最小权限 approvalPolicy=never + sandbox 仅任务目录可写，项目其它路径只读，超限审批一律失败安全、绝不自动批准）。triage 判定 product-repair 时在原项目唯一创建同 rootCauseKey 修复合同并串行启动一次 DSH，完成后独立复验一次；helper-repair 需可解析的 Helper 项目根（否则 needs-user）；no-repair-needed / remediation-indeterminate / 基础设施不可用 → 终态不启动 DSH。每任务每指纹最多一轮（记录 HARNESS_REMEDIATION.json），超限一律 needs-user，绝不循环耗额度；修复 DSH 未完成或复验未通过不再自动开新合同。
 {{HarnessVisualBoundaryRule}}
 {{HarnessGuidanceEnd}}
 """;
@@ -176,17 +178,18 @@ For implementation tasks that change project files, GPT is the planner and judge
     }
 
     /// <summary>
-    /// invoke-harness.ps1：只接收绝对 ProjectRoot 与 TaskDirectory（可选 -Mode start/await/status），
+    /// invoke-harness.ps1：只接收绝对 ProjectRoot 与 TaskDirectory（可选 -Mode start/await/status/automate），
     /// 校验后自动寻找已安装或开发输出中的 CodexHelper.HarnessRunner.exe 并调用，透传退出码
-    /// （0=完成/1=失败或不确定/2=取消/3=参数错误）。任务正文绝不进入命令行（脚本只转发路径；
+    /// （0=完成/已排队/1=失败或不确定/2=取消/3=参数错误）。任务正文绝不进入命令行（脚本只转发路径；
     /// 任务正文由 Runner 从任务目录文件读取）。持久等待监督协议：无 -Mode 为旧同步形态（前台等真实终态）；
-    /// -Mode start 后台启动受控 Runner 并立即返回可重连标识；-Mode await 按同一任务目录接回等待真实终态。
+    /// -Mode start 后台启动受控 Runner 并立即返回可重连标识；-Mode await 按同一任务目录接回等待真实终态；
+    /// -Mode automate 启动/接回本地验收守候并在真实终态后执行一次独立 Codex 验收（绝不重投 DSH）。
     /// </summary>
     private static string BuildHarnessInvokeScript() => """
 param(
     [Parameter(Mandatory=$true)][string]$ProjectRoot,
     [Parameter(Mandatory=$true)][string]$TaskDirectory,
-    [ValidateSet('start','await','status')][string]$Mode = ''
+    [ValidateSet('start','await','status','automate')][string]$Mode = ''
 )
 $ErrorActionPreference = 'Stop'
 $project = [IO.Path]::GetFullPath($ProjectRoot).TrimEnd('\')
@@ -265,6 +268,16 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File invoke-harness.ps1 -Proj
 - `status` 只输出固定大小脱敏摘要（监督状态/PID/真相状态/最后核验时间）。
 - 本地等待不消耗 Codex token；DSH 模型用量独立计费。Codex App 若无动态工具能力不会被主动唤醒——中断后由 GPT/脚本用同一任务目录重新执行 await 接回即可。
 - 退出码：await 0=完成（awaiting-gpt 且报告门禁通过）、1=失败/不确定、2=取消；start/status 的 0 只表示命令成功，不表示任务完成。
+
+### 可选：本地自动验收守候与独立验收（-Mode automate / start 自动拉起）
+
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File invoke-harness.ps1 -ProjectRoot <绝对项目根目录> -TaskDirectory <绝对任务目录> -Mode automate
+
+- `-Mode start` 成功启动受管 Runner 后会自动拉起独立验收守候（幂等：已有存活守候则接回）；`automate` 也用于手动启动/接回本地守候。两者都**绝不重投 DSH 合同**：在“子 Runner 已退出 + HARNESS_STATUS.json 非 running + EXECUTION_REPORT.md 通过完成门禁”后，为该任务去重排队一次独立验收（HARNESS_ACCEPTANCE.json；状态契约 awaiting-gpt→acceptance-queued→acceptance-running→accepted/needs-repair/acceptance-failed）。
+- 等待阶段零 Codex 模型调用：守候期只用文件变更通知 + 启动一次对账 + 低频固定大小本地复查，不轮询 DSH 聊天/事件流/日志/session.history；仅真实 DSH 完成后执行的一次独立验收会消耗 Codex 用量（codex app-server 独立线程，不依赖当前聊天）。
+- 验收线程只收绝对任务目录/项目根/任务 ID/合同指纹与短固定指令，自行读取任务目录文件并把结论原子写入 GPT_ACCEPTANCE.json；accepted/needs-repair/acceptance-failed 后**永不自动重试**（防额度循环）；需修复（needs-repair）不与 DSH 并发写项目（不自动新建修复合同或重投 DSH）。
+- `automate` 退出码：0=已排队/接回/独立验收通过（accepted）、1=失败/不确定/需修复、2=任务取消。
+- 失败自动一轮修复编排：needs-repair / acceptance-failed / DSH 失败后，automate 会自动进入一次受限 triage（App Server 独立线程，approvalPolicy=never、sandbox 仅任务目录可写，超限审批失败安全、绝不自动批准），按 verdict 串行创建修复合同（同/独立 rootCauseKey）并启动一次 DSH，修复真实完成后独立复验一次；每任务每指纹最多一轮（HARNESS_REMEDIATION.json），超限/基础设施不可用落 needs-user，绝不循环耗额度；helper-repair 需 Helper 项目根可解析。
 
 ### 旧同步形态（兼容，前台等待真实终态）
 

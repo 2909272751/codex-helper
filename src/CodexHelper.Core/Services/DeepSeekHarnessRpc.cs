@@ -64,6 +64,100 @@ internal static class HarnessTurnEnd
     }
 }
 
+/// <summary>DSH 模型目录条目（provider、Host 原始模型 ID、Host 显示名与可选思考强度；全部来自运行时 RPC，不硬编码）。</summary>
+public sealed record HarnessModelEntry(string Provider, string ModelId, string DisplayName, IReadOnlyList<string> Efforts)
+{
+    /// <summary>目录键：provider + 模型 ID（与 <see cref="HarnessSessionModels"/> 判定一致）。</summary>
+    public string Key => Provider + "\u0000" + ModelId;
+
+    /// <summary>下拉框展示文本：Host 显示名（provider 分组名）+ 原始 ID；保存的永远是原始 ID。</summary>
+    public string Label => string.IsNullOrWhiteSpace(DisplayName) ? ModelId : $"{DisplayName}（{ModelId}）";
+}
+
+/// <summary>
+/// session.models 响应的可信解析（形状取自 DSH rc.6 Host 的 sessionModelsValueSchema，已由运行时 RPC 复核）：
+/// <c>{ current:{provider,model,reasoningEffort?}, routable:boolean, groups:[{id,name,models:[{id,name}]}], failures:[{id,name,message}] }</c>。
+/// <para>
+/// 关键事实（不得凭字符串推断）：<c>routable</c> 只表示 <b>provider</b> 是否有适配器
+/// （Host 内部即 <c>routeServed(current.provider)</c>），它 <b>不</b> 表示 current.model 仍在目录中。
+/// 因此"当前模型是否仍可路由"必须同时满足：存在 <c>groups[].id == current.provider</c> 的分组，
+/// 且该分组的 <c>models[].id</c> 含 <c>current.model</c>。模型 ID 一律原样保留
+/// （DSH 返回的就是 provider-qualified ID），绝不拼接前缀、绝不硬编码别名或 UI 名称。
+/// </para>
+/// </summary>
+public sealed record HarnessSessionModels(
+    string? Provider,
+    string? Model,
+    bool ProviderRoutable,
+    IReadOnlySet<string> CatalogKeys,
+    IReadOnlySet<string> CatalogProviderIds,
+    IReadOnlyList<HarnessModelEntry> Available)
+{
+    /// <summary>解析 session.models 的 value；value 不是对象时返回 null（形状不可信）。</summary>
+    public static HarnessSessionModels? Parse(JsonNode? value)
+    {
+        if (value is not JsonObject root) return null;
+        var current = root["current"] as JsonObject;
+        var provider = HarnessJson.Text(current?["provider"]);
+        var model = HarnessJson.Text(current?["model"]);
+        var routable = root["routable"] is JsonValue routableValue
+            && routableValue.TryGetValue<bool>(out var flag) && flag;
+        var keys = new HashSet<string>(StringComparer.Ordinal);
+        var providers = new HashSet<string>(StringComparer.Ordinal);
+        var available = new List<HarnessModelEntry>();
+        if (root["groups"] is JsonArray groups)
+        {
+            foreach (var node in groups)
+            {
+                if (node is not JsonObject group) continue;
+                var groupId = HarnessJson.Text(group["id"]);
+                if (string.IsNullOrWhiteSpace(groupId)) continue;
+                providers.Add(groupId);
+                var groupName = HarnessJson.Text(group["name"]) ?? groupId;
+                if (group["models"] is not JsonArray models) continue;
+                foreach (var entry in models)
+                {
+                    if (entry is not JsonObject modelEntry) continue;
+                    var modelId = HarnessJson.Text(modelEntry["id"]);
+                    if (string.IsNullOrWhiteSpace(modelId)) continue;
+                    keys.Add(Key(groupId, modelId));
+                    var efforts = new List<string>();
+                    if ((modelEntry["reasoning"] as JsonObject)?["efforts"] is JsonArray effortList)
+                        foreach (var effort in effortList)
+                        {
+                            var effortId = HarnessJson.Text((effort as JsonObject)?["id"]);
+                            if (!string.IsNullOrWhiteSpace(effortId)) efforts.Add(effortId!);
+                        }
+                    // 显示名只用于 UI 展示；保存的选择一律使用 provider + 模型原始 ID。
+                    var display = HarnessJson.Text(modelEntry["name"]);
+                    available.Add(new HarnessModelEntry(groupId, modelId,
+                        string.IsNullOrWhiteSpace(display) ? modelId : $"{groupName} · {display}", efforts));
+                }
+            }
+        }
+        return new HarnessSessionModels(provider, model, routable, keys, providers, available);
+    }
+
+    /// <summary>目录键：provider + 模型 ID（两者都来自 DSH，原样保存）。</summary>
+    private static string Key(string provider, string model) => provider + "\u0000" + model;
+
+    /// <summary>当前 provider-qualified 模型 ID（DSH 返回值原样）；缺失时为 null。</summary>
+    public string? CurrentModelId => string.IsNullOrWhiteSpace(Model) ? null : Model;
+
+    /// <summary>当前模型是否仍在 DSH 当前可路由模型目录中（provider 有适配器 + 分组内确有该模型 ID）。</summary>
+    public bool CurrentModelInCatalog
+        => ProviderRoutable
+           && !string.IsNullOrWhiteSpace(Provider)
+           && CurrentModelId is not null
+           && CatalogKeys.Contains(Key(Provider!, CurrentModelId!));
+
+    /// <summary>可诊断的目录摘要（只含 provider 标识与条目计数，无任何凭据/正文）。</summary>
+    public string CatalogSummary
+        => CatalogKeys.Count == 0
+            ? "目录为空或缺席"
+            : "当前可路由 provider：" + string.Join("/", CatalogProviderIds) + "（共 " + CatalogKeys.Count + " 个模型）";
+}
+
 /// <summary>
 /// Harness Web Host 一元 RPC 客户端（rc.6 原生协议）：POST /api/{method}，
 /// 请求信封 { type:"client-request", rpcId, method, payload }；
@@ -143,9 +237,35 @@ public sealed class HarnessRpcClient : IDisposable
             ["maxMessages"] = 1
         }, cancellationToken);
 
-    /// <summary>session.models：读取一个会话实际已选中的可路由模型。该信息不在 session.list 投影中保证存在。</summary>
+    /// <summary>
+    /// session.models：读取一个会话已选中的模型（current，provider-qualified ID）以及 DSH 当前
+    /// 可路由模型目录（groups/failures）。该信息不在 session.list 投影中保证存在。
+    /// 形状见 <see cref="HarnessSessionModels"/>；DSH 侧唯一合法的选模方式是 session.selectModel
+    /// （payload {sessionId,provider,model,reasoningEffort?}，失败码 model-unavailable），
+    /// 本 Helper 不猜测替代模型，因此刻意不代为选模，只在目录不可达时诚实拒绝提交。
+    /// </summary>
     public Task<HarnessRpcResult> GetSessionModelsAsync(string sessionId, CancellationToken cancellationToken = default)
         => CallAsync("session.models", new JsonObject { ["sessionId"] = sessionId }, cancellationToken);
+
+    /// <summary>
+    /// session.selectModel：DSH 官方唯一的会话选模入口。请求形状取自 rc.6 Host 的
+    /// sessionSelectModelRequestSchema：<c>{ sessionId, provider, model, reasoningEffort? }</c>
+    /// （provider 与 model 都是 Host 的原样标识，不拼接、不改写）；响应 value 为
+    /// <c>{ selected:{ provider, model, reasoningEffort? } }</c>，失败码 model-unavailable（该 provider/model
+    /// 不可用）或 agent-busy（会话被占用）。调用方必须在成功后再次读 session.models 确认 current 一致。
+    /// </summary>
+    public Task<HarnessRpcResult> SelectModelAsync(string sessionId, string provider, string model, string? reasoningEffort = null, CancellationToken cancellationToken = default)
+    {
+        var payload = new JsonObject
+        {
+            ["sessionId"] = sessionId,
+            ["provider"] = provider,
+            ["model"] = model
+        };
+        // 只在保存了思考强度时携带；空值必须省略，否则 Host 会用空字符串校验 effort 并拒绝。
+        if (!string.IsNullOrWhiteSpace(reasoningEffort)) payload["reasoningEffort"] = reasoningEffort;
+        return CallAsync("session.selectModel", payload, cancellationToken);
+    }
 
     /// <summary>执行一次一元 RPC；网络/协议/业务错误均转换为可读失败，不抛出（取消除外）。</summary>
     public async Task<HarnessRpcResult> CallAsync(string method, JsonNode? payload, CancellationToken cancellationToken = default)
@@ -227,6 +347,7 @@ public sealed class HarnessRpcClient : IDisposable
             "agent-preset-not-found" => "Agent 预设不存在",
             "agent-preset-invalid" => "Agent 预设无效",
             "agent-busy" => "Agent 忙，请求被拒绝",
+            "model-unavailable" => "所选 provider/模型在该会话不可用（模型可能已下线或未配置）",
             "bad-request" => "请求参数无效",
             "cancelled" => "请求被取消",
             "internal" => "Harness Host 内部错误",

@@ -128,6 +128,8 @@ internal static class Program
         ,("Harness runner 断流后 HTTP 有进度（不误判失败/保持 running/增量回退到终态）", TestHarnessRunnerHttpProgressAfterDisconnectAsync)
         ,("Harness rootCauseKey 组键接回（同组键接回/不同组键新建）", TestHarnessRootCauseKeyResumeAsync)
         ,("Harness 已完成连续会话（显式组键复用/事件基线/上下文脱敏/负面隔离）", TestHarnessEndedContinuityAsync)
+        ,("Harness 动态模型目录与用户选择（任意 provider/原始 ID 解析、保存 provider-qualified 选择、目录失效/不可读零 prompt、Host current 可见采用）", TestHarnessModelPickerAsync)
+        ,("Harness 选模顺序与旧会话保护（session.models→selectModel→二次确认后才 prompt；旧会话模型失效零取消零迁移零 prompt）", TestHarnessModelSelectionOrderAsync)
         ,("Harness 已完成连续会话（巨大历史轻量基线：maxMessages 请求携带断言/小尾窗续接/旧 Host 不支持保守不续接）", TestHarnessHistoryBaselineContinuityAsync)
         ,("Harness 阶段进展防护（不同目标读取不停止/写入检查报告进展清重复/同阶段无进展循环停止/大量推理不改步骤/摘要分离）", TestHarnessProgressAwareGuardAsync)
         ,("Harness 跨任务目录单飞占位（无会话 starting 持租约即占位，第二合同 busy 含旧任务 ID；孤儿 starting 不阻塞）", TestHarnessCrossDirectorySingleflightOccupancyAsync)
@@ -5166,10 +5168,23 @@ internal static class Program
 
         /// <summary>RPC 响应生成器：(method, payload) → value；抛出 FakeHostError 表示业务错误。</summary>
         public Func<string, JsonNode, JsonNode?> Respond { get; init; } = (_, _) => new JsonObject();
-        /// <summary>未专门模拟时，假 Host 为新会话提供一个可路由默认模型；设为 null 可测试模型缺失分支。</summary>
+        /// <summary>
+        /// 未专门模拟时，假 Host 为新会话提供一个可路由默认模型：current（provider-qualified ID）
+        /// 必须同时出现在 groups 对应 provider 分组的 models[].id 中——只给 current 而不给目录
+        /// 不再是"可路由"，因为目录成员资格才是 DSH 判定模型仍存在的依据（routable 只表示
+        /// provider 有适配器）。设为 null 可测试模型完全缺失分支。
+        /// </summary>
         public JsonNode? DefaultSessionModel { get; init; } = new JsonObject
         {
-            ["current"] = new JsonObject { ["provider"] = "test", ["model"] = "test-model" }
+            ["current"] = new JsonObject { ["provider"] = "test", ["model"] = "test-model" },
+            ["routable"] = true,
+            ["groups"] = new JsonArray(new JsonObject
+            {
+                ["id"] = "test",
+                ["name"] = "Test Provider",
+                ["models"] = new JsonArray(new JsonObject { ["id"] = "test-model", ["name"] = "Test Model" })
+            }),
+            ["failures"] = new JsonArray()
         };
         /// <summary>故意回显错误的 rpcId，用于校验响应回显。</summary>
         public bool EchoWrongRpcId { get; init; }
@@ -7640,6 +7655,554 @@ remotePort = 58831
         }
         finally { TryDeleteDirectory(root); }
     }
+
+    /// <summary>
+    /// 动态模型目录与用户选择回归（SPEC 必须实现 2/3 与验收 1）：
+    /// ① 任意 provider（示例用 fake-a / codex-anything，不硬编码 DeepSeek/CommandGoat/V4.1）的
+    ///    session.models 目录都被原样解析，保存的选择是 provider + Host 原始模型 ID（不是显示名）；
+    /// ② 用户未选择时可见地采用 Host current/default（不硬编码、写入状态诊断）；
+    /// ③ 已保存选择不在目录中 → 零 prompt、状态提示重新选择；
+    /// ④ 目录读取失败 → 保留最近一次已验证选择但零 prompt 提交，并显示原因。
+    /// </summary>
+    private static async Task TestHarnessModelPickerAsync()
+    {
+        const string providerId = "fake-a";
+        const string rawModelId = "vendor-x/core-9-turbo";
+        const string otherProvider = "codex-anything";
+        const string otherModel = "alt/lite-1";
+        var root = Path.Combine(Path.GetTempPath(), "codex-helper-harness-model-picker-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            // ---- 目录解析本身：不做 provider 白名单，原样保留 Host 的原始 ID，显示名与原始 ID 分开保存 ----
+            var parsed = HarnessSessionModels.Parse(HarnessModelCatalogFixture(providerId, "vendor-x/core-9-turbo", rawModelId, "Core 9 Turbo"));
+            Assert(parsed is not null && parsed!.Available.Count == 1, "动态目录必须解析出模型条目。");
+            var entry = parsed!.Available[0];
+            Assert(entry.Provider == providerId && entry.ModelId == rawModelId,
+                "条目必须原样保留 Host 的 provider 与模型 ID：" + entry.Provider + " / " + entry.ModelId);
+            Assert(entry.Label.Contains("Core 9 Turbo", StringComparison.Ordinal), "显示名只用于展示：" + entry.Label);
+            Assert(parsed.CurrentModelInCatalog, "current 在目录内必须判定为仍可路由。");
+            var choice = new HarnessModelChoice(entry.Provider, entry.ModelId, null);
+            Assert(choice.HasValue && choice.Describe() == providerId + "/" + rawModelId && choice.Key == entry.Key,
+                "保存的选择必须是 provider + 原始模型 ID：" + choice.Describe());
+            Assert(!HarnessSessionModels.Parse(new JsonObject { ["current"] = new JsonObject { ["provider"] = providerId, ["model"] = rawModelId } })!.CurrentModelInCatalog,
+                "只给 current 而不给目录分组不构成可路由（routable 只表示 provider 有适配器）。");
+            var effortParsed = HarnessSessionModels.Parse(HarnessModelCatalogFixture(providerId, rawModelId, rawModelId, "Core 9 Turbo", "high"));
+            Assert(effortParsed!.Available.Count == 1 && effortParsed.Available[0].Efforts.Count == 1
+                   && effortParsed.Available[0].Efforts[0] == "high",
+                "目录声明的思考强度必须被原样解析（供 UI 展示与保存）。");
+            var altChoice = new HarnessModelChoice(otherProvider, otherModel, null);
+            Assert(!altChoice.MatchesCurrent(entry.Provider, entry.ModelId)
+                   && altChoice.MatchesCurrent(otherProvider, otherModel)
+                   && !choice.MatchesCurrent(otherProvider, otherModel),
+                "选择一致性必须同时比较 provider 与模型 ID。");
+            var settings = new AppSettings();
+            altChoice.SaveTo(settings);
+            Assert(HarnessModelChoice.FromSettings(settings).HasValue
+                   && HarnessModelChoice.FromSettings(settings).Describe() == otherProvider + "/" + otherModel,
+                "选择必须按 provider + 原始模型 ID 持久化到设置。");
+
+            var empty = new AppSettings();
+            Assert(!HarnessModelChoice.FromSettings(empty).HasValue && HarnessModelChoice.FromSettings(empty).Describe() == "未选择",
+                "未保存选择时必须诚实报告未选择，绝不代选默认模型。");
+
+            // ---- 场景 1：用户选择有效，切换后二次确认 current 一致后才提交 ----
+            var project = Path.Combine(root, "project");
+            var task = Path.Combine(project, ".codex-helper", "runs", "run-model-choice");
+            Directory.CreateDirectory(task);
+            await File.WriteAllTextAsync(Path.Combine(task, "SPEC.md"), "用户选择模型合同");
+            await File.WriteAllTextAsync(Path.Combine(task, "HANDOFF.md"), "仅允许直接依赖");
+            await File.WriteAllTextAsync(Path.Combine(task, "manifest.json"), "{}");
+            var taskId = Path.GetFileName(task);
+            WriteValidReport(task, taskId, TestFingerprint(task));
+
+            var appChoice = new AppPaths(Path.Combine(root, "app-choice"));
+            var settingsChoice = new SettingsService(appChoice).Load();
+            choice.SaveTo(settingsChoice);
+            new SettingsService(appChoice).Save(settingsChoice);
+
+            await using (var host = new FakeHarnessHost
+            {
+                DefaultSessionModel = HarnessModelCatalogFixture(providerId, rawModelId, rawModelId, "Core 9 Turbo", "high"),
+                Respond = (method, _) => method switch
+                {
+                    "session.create" => new JsonObject { ["sessionId"] = "sess-model-choice" },
+                    "session.selectModel" => new JsonObject
+                    {
+                        ["selected"] = new JsonObject { ["provider"] = providerId, ["model"] = rawModelId }
+                    },
+                    "session.prompt" => new JsonObject { ["accepted"] = true },
+                    _ => new JsonObject()
+                },
+                WsScripts =
+                [
+                    new Queue<string>([
+                        WsFrame("session/subscribed", "sess-model-choice"),
+                        WsFrame("session/event", "sess-model-choice", "turn/start", seq: 1),
+                        WsFrame("session/event", "sess-model-choice", "turn/end", "completed", seq: 2)
+                    ])
+                ]
+            })
+            {
+                await host.StartAsync();
+                var runner = new DeepSeekHarnessRunner(appChoice)
+                {
+                    WebUrl = host.BaseUrl,
+                    RelayProbe = new ConfirmedHarnessRelay(),
+                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。"))
+                };
+                var result = await runner.StartAsync(project, task);
+                Assert(result.State == "awaiting-gpt" && result.SessionId == "sess-model-choice",
+                    "用户选择有效时必须提交并到达真实终态：" + result.State + " / " + result.SessionId);
+                Assert(result.Model == rawModelId, "状态必须原样保存 Host 的 provider-qualified 模型 ID：" + result.Model);
+                var select = host.Calls.FirstOrDefault(call => call.Method == "session.selectModel");
+                Assert(select.Payload is not null, "必须调用官方 session.selectModel。");
+                Assert(HarnessJsonText(select.Payload!["sessionId"]) == "sess-model-choice"
+                       && HarnessJsonText(select.Payload["provider"]) == providerId
+                       && HarnessJsonText(select.Payload["model"]) == rawModelId,
+                    "selectModel 必须携带真实 sessionId 与 provider/模型原始 ID。");
+                Assert(select.Payload?["reasoningEffort"] is null,
+                    "未选择思考强度时不得向 selectModel 传入空 reasoningEffort。");
+                Assert(host.Calls.Count(call => call.Method == "session.prompt") == 1 && !host.Calls.Any(call => call.Method == "session.cancel"),
+                    "有效选择路径只提交一次且不取消任何会话。");
+                var packet = await File.ReadAllTextAsync(Path.Combine(task, "REVIEW_PACKET.md"));
+                Assert(packet.Contains(rawModelId, StringComparison.Ordinal), "REVIEW_PACKET.md 必须记录同一 provider-qualified 模型 ID。");
+                Assert(HarnessModelCatalogFixture(providerId, rawModelId, rawModelId, "Core 9 Turbo").ToJsonString().Contains(providerId, StringComparison.Ordinal),
+                    "回归夹具必须使用非内置 provider，以证明实现没有硬编码 DeepSeek/CommandGoat/V4.1。");
+            }
+
+            // ---- 场景 2：用户未选择 → 可见地采用 Host current/default（不硬编码），提交并把采用事实写入诊断 ----
+            var taskDefault = Path.Combine(project, ".codex-helper", "runs", "run-model-default");
+            Directory.CreateDirectory(taskDefault);
+            await File.WriteAllTextAsync(Path.Combine(taskDefault, "SPEC.md"), "Host 默认模型合同");
+            await File.WriteAllTextAsync(Path.Combine(taskDefault, "HANDOFF.md"), "仅允许直接依赖");
+            await File.WriteAllTextAsync(Path.Combine(taskDefault, "manifest.json"), "{}");
+            var taskDefaultId = Path.GetFileName(taskDefault);
+            WriteValidReport(taskDefault, taskDefaultId, TestFingerprint(taskDefault));
+            var appDefault = new AppPaths(Path.Combine(root, "app-default"));
+            await using (var host = new FakeHarnessHost
+            {
+                DefaultSessionModel = HarnessModelCatalogFixture(otherProvider, otherModel, otherModel, "Alt Lite"),
+                Respond = (method, _) => method switch
+                {
+                    "session.create" => new JsonObject { ["sessionId"] = "sess-model-default" },
+                    "session.prompt" => new JsonObject { ["accepted"] = true },
+                    _ => new JsonObject()
+                },
+                WsScripts =
+                [
+                    new Queue<string>([
+                        WsFrame("session/subscribed", "sess-model-default"),
+                        WsFrame("session/event", "sess-model-default", "turn/start", seq: 1),
+                        WsFrame("session/event", "sess-model-default", "turn/end", "completed", seq: 2)
+                    ])
+                ]
+            })
+            {
+                await host.StartAsync();
+                var runner = new DeepSeekHarnessRunner(appDefault)
+                {
+                    WebUrl = host.BaseUrl,
+                    RelayProbe = new ConfirmedHarnessRelay(),
+                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。"))
+                };
+                var result = await runner.StartAsync(project, taskDefault);
+                Assert(result.State == "awaiting-gpt" && result.Model == otherModel && result.SessionId == "sess-model-default",
+                    "未保存选择时必须可见地采用 Host current/default：" + result.State + " / " + result.Model);
+                var diagnostic = (result.Message ?? "") + " " + (result.ContinuityDiagnostic ?? "");
+                Assert(diagnostic.Contains("Host 当前/默认模型", StringComparison.Ordinal) && diagnostic.Contains(otherModel, StringComparison.Ordinal),
+                    "采用 Host 默认模型必须在状态中可见：" + diagnostic);
+                Assert(!host.Calls.Any(call => call.Method == "session.selectModel"),
+                    "未选择时不得自作主张调用 selectModel 改模型。");
+                Assert(HarnessModelChoice.FromSettings(new SettingsService(appDefault).Load()).HasValue == false,
+                    "采用 Host 默认值不得被偷偷写回为用户选择。");
+            }
+
+            // ---- 场景 2b：Host current 不在目录 → 零 prompt 提交并提示重新选择 ----
+            var taskHostStale = Path.Combine(project, ".codex-helper", "runs", "run-model-host-stale");
+            Directory.CreateDirectory(taskHostStale);
+            await File.WriteAllTextAsync(Path.Combine(taskHostStale, "SPEC.md"), "Host 当前模型失效合同");
+            await File.WriteAllTextAsync(Path.Combine(taskHostStale, "HANDOFF.md"), "仅允许直接依赖");
+            await File.WriteAllTextAsync(Path.Combine(taskHostStale, "manifest.json"), "{}");
+            WriteValidReport(taskHostStale, Path.GetFileName(taskHostStale), TestFingerprint(taskHostStale));
+            var appHostStale = new AppPaths(Path.Combine(root, "app-host-stale"));
+            await using (var host = new FakeHarnessHost
+            {
+                DefaultSessionModel = null,
+                Respond = (method, _) => method switch
+                {
+                    "session.create" => new JsonObject { ["sessionId"] = "sess-host-stale" },
+                    "session.models" => new JsonObject
+                    {
+                        ["current"] = new JsonObject { ["provider"] = providerId, ["model"] = "vendor-x/retired-8" },
+                        ["routable"] = true,
+                        ["groups"] = new JsonArray(new JsonObject
+                        {
+                            ["id"] = providerId,
+                            ["name"] = "Fake A",
+                            ["models"] = new JsonArray(new JsonObject { ["id"] = rawModelId, ["name"] = "Core 9 Turbo" })
+                        }),
+                        ["failures"] = new JsonArray()
+                    },
+                    "session.prompt" => new JsonObject { ["accepted"] = true },
+                    _ => new JsonObject()
+                },
+                WsScripts = [new Queue<string>([WsFrame("session/subscribed", "sess-host-stale")])]
+            })
+            {
+                await host.StartAsync();
+                var runner = new DeepSeekHarnessRunner(appHostStale)
+                {
+                    WebUrl = host.BaseUrl,
+                    RelayProbe = new ConfirmedHarnessRelay(),
+                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。"))
+                };
+                var result = await runner.StartAsync(project, taskHostStale);
+                Assert(result.State == "failed" && !host.Calls.Any(call => call.Method == "session.prompt"),
+                    "Host 当前模型不在目录时必须零 prompt 失败：" + result.State);
+                Assert((result.Message ?? "").Contains("重新选择", StringComparison.Ordinal)
+                       && (result.Message ?? "").Contains("不在 DSH 可路由目录", StringComparison.Ordinal),
+                    "必须明确提示重新选择模型：" + result.Message);
+            }
+
+            // ---- 场景 3：已保存选择已不在目录 → 零 prompt，状态提示重新选择，设置保留原选择 ----
+            var taskStale = Path.Combine(project, ".codex-helper", "runs", "run-model-stale");
+            Directory.CreateDirectory(taskStale);
+            await File.WriteAllTextAsync(Path.Combine(taskStale, "SPEC.md"), "选择失效合同");
+            await File.WriteAllTextAsync(Path.Combine(taskStale, "HANDOFF.md"), "仅允许直接依赖");
+            await File.WriteAllTextAsync(Path.Combine(taskStale, "manifest.json"), "{}");
+            WriteValidReport(taskStale, Path.GetFileName(taskStale), TestFingerprint(taskStale));
+            var appStale = new AppPaths(Path.Combine(root, "app-stale"));
+            var staleSettings = new SettingsService(appStale).Load();
+            new HarnessModelChoice(providerId, "vendor-x/retired-8", null).SaveTo(staleSettings);
+            new SettingsService(appStale).Save(staleSettings);
+            await using (var host = new FakeHarnessHost
+            {
+                DefaultSessionModel = HarnessModelCatalogFixture(providerId, rawModelId, rawModelId, "Core 9 Turbo"),
+                Respond = (method, _) => method switch
+                {
+                    "session.create" => new JsonObject { ["sessionId"] = "sess-model-stale" },
+                    "session.prompt" => new JsonObject { ["accepted"] = true },
+                    _ => new JsonObject()
+                },
+                WsScripts = [new Queue<string>([WsFrame("session/subscribed", "sess-model-stale")])]
+            })
+            {
+                await host.StartAsync();
+                var runner = new DeepSeekHarnessRunner(appStale)
+                {
+                    WebUrl = host.BaseUrl,
+                    RelayProbe = new ConfirmedHarnessRelay(),
+                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。"))
+                };
+                var result = await runner.StartAsync(project, taskStale);
+                Assert(result.State == "failed", "已保存选择失效时必须失败且不提交：" + result.State);
+                Assert(!host.Calls.Any(call => call.Method == "session.prompt"),
+                    "已保存选择失效时不得提交任何 prompt。");
+                Assert(!host.Calls.Any(call => call.Method == "session.selectModel"),
+                    "选择不在目录时不得猜测替代模型。");
+                var message = result.Message ?? "";
+                Assert(message.Contains("重新选择", StringComparison.Ordinal) && message.Contains("不在 DSH 当前模型目录", StringComparison.Ordinal),
+                    "状态必须明确要求重新选择模型并说明原因：" + message);
+                Assert(HarnessModelChoice.FromSettings(new SettingsService(appStale).Load()).Describe() == providerId + "/vendor-x/retired-8",
+                    "目录失效时必须保留最近一次已验证选择（不自动改写）。");
+            }
+
+            // ---- 场景 4：目录读取失败 → 保留选择但零 prompt，并显示原因 ----
+            var taskUnreadable = Path.Combine(project, ".codex-helper", "runs", "run-model-unreadable");
+            Directory.CreateDirectory(taskUnreadable);
+            await File.WriteAllTextAsync(Path.Combine(taskUnreadable, "SPEC.md"), "目录不可读合同");
+            await File.WriteAllTextAsync(Path.Combine(taskUnreadable, "HANDOFF.md"), "仅允许直接依赖");
+            await File.WriteAllTextAsync(Path.Combine(taskUnreadable, "manifest.json"), "{}");
+            WriteValidReport(taskUnreadable, Path.GetFileName(taskUnreadable), TestFingerprint(taskUnreadable));
+            var appUnreadable = new AppPaths(Path.Combine(root, "app-unreadable"));
+            var unreadableSettings = new SettingsService(appUnreadable).Load();
+            choice.SaveTo(unreadableSettings);
+            new SettingsService(appUnreadable).Save(unreadableSettings);
+            await using (var host = new FakeHarnessHost
+            {
+                DefaultSessionModel = null,
+                Respond = (method, _) => method switch
+                {
+                    "session.create" => new JsonObject { ["sessionId"] = "sess-model-unreadable" },
+                    "session.models" => new JsonObject(),
+                    "session.prompt" => new JsonObject { ["accepted"] = true },
+                    _ => new JsonObject()
+                },
+                WsScripts = [new Queue<string>([WsFrame("session/subscribed", "sess-model-unreadable")])]
+            })
+            {
+                await host.StartAsync();
+                var runner = new DeepSeekHarnessRunner(appUnreadable)
+                {
+                    WebUrl = host.BaseUrl,
+                    RelayProbe = new ConfirmedHarnessRelay(),
+                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。"))
+                };
+                var result = await runner.StartAsync(project, taskUnreadable);
+                Assert(result.State == "failed" && !host.Calls.Any(call => call.Method == "session.prompt"),
+                    "目录读取失败时必须零 prompt 失败：" + result.State);
+                Assert((result.Message ?? "").Contains("DSH 当前模型目录为空", StringComparison.Ordinal),
+                    "必须显示目录读取失败原因（空目录也是不可提交原因）：" + result.Message);
+                Assert(HarnessModelChoice.FromSettings(new SettingsService(appUnreadable).Load()).Describe() == providerId + "/" + rawModelId,
+                    "目录读取失败时必须保留最近一次已验证选择。");
+            }
+
+            // ---- 场景 5：Host 读取目录直接业务失败 → 零 prompt、保留选择并显示真实原因 ----
+            var taskReadError = Path.Combine(project, ".codex-helper", "runs", "run-model-read-error");
+            Directory.CreateDirectory(taskReadError);
+            await File.WriteAllTextAsync(Path.Combine(taskReadError, "SPEC.md"), "目录读取报错合同");
+            await File.WriteAllTextAsync(Path.Combine(taskReadError, "HANDOFF.md"), "仅允许直接依赖");
+            await File.WriteAllTextAsync(Path.Combine(taskReadError, "manifest.json"), "{}");
+            WriteValidReport(taskReadError, Path.GetFileName(taskReadError), TestFingerprint(taskReadError));
+            var appReadError = new AppPaths(Path.Combine(root, "app-read-error"));
+            var readErrorSettings = new SettingsService(appReadError).Load();
+            choice.SaveTo(readErrorSettings);
+            new SettingsService(appReadError).Save(readErrorSettings);
+            await using (var host = new FakeHarnessHost
+            {
+                DefaultSessionModel = null,
+                Respond = (method, _) => method switch
+                {
+                    "session.create" => new JsonObject { ["sessionId"] = "sess-model-read-error" },
+                    "session.models" => throw new FakeHostError("directory-unreadable", "模型目录暂时不可读"),
+                    "session.prompt" => new JsonObject { ["accepted"] = true },
+                    _ => new JsonObject()
+                },
+                WsScripts = [new Queue<string>([WsFrame("session/subscribed", "sess-model-read-error")])]
+            })
+            {
+                await host.StartAsync();
+                var runner = new DeepSeekHarnessRunner(appReadError)
+                {
+                    WebUrl = host.BaseUrl,
+                    RelayProbe = new ConfirmedHarnessRelay(),
+                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。"))
+                };
+                var result = await runner.StartAsync(project, taskReadError);
+                Assert(result.State == "failed" && !host.Calls.Any(call => call.Method == "session.prompt"),
+                    "目录业务读取失败时必须零 prompt 失败：" + result.State);
+                Assert((result.Message ?? "").Contains("无法读取 DSH 当前模型目录", StringComparison.Ordinal),
+                    "必须显示目录读取的真实失败原因：" + result.Message);
+                Assert(HarnessModelChoice.FromSettings(new SettingsService(appReadError).Load()).Describe() == providerId + "/" + rawModelId,
+                    "目录业务读取失败时必须保留最近一次已验证选择。");
+            }
+        }
+        finally { TryDeleteDirectory(root); }
+    }
+
+    /// <summary>
+    /// 选模调用顺序与旧会话保护回归（SPEC 必须实现 4/5 与验收 1）：
+    /// ① 新建会话必须先 session.models 校验目录 → session.selectModel → 再次 session.models 确认 current
+    ///    与选择一致，之后才允许 prompt（顺序断言基于真实调用序列，而非仅计数）；
+    /// ② 失败路径（selection 不在目录）零 prompt；
+    /// ③ 同组键旧会话 current 模型已不在目录时：零 session.cancel、零 session.create、零 prompt，
+    ///    失败并提示重新选择后创建新任务（绝不自动取消/迁移旧会话）。
+    /// </summary>
+    private static async Task TestHarnessModelSelectionOrderAsync()
+    {
+        const string providerId = "fake-b";
+        const string rawModelId = "vendor-y/pro-3";
+        var root = Path.Combine(Path.GetTempPath(), "codex-helper-harness-model-order-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var project = Path.Combine(root, "project");
+
+            // ---- 场景 1：新建会话的调用顺序（models → selectModel → models → prompt） ----
+            var first = Path.Combine(project, ".codex-helper", "runs", "run-order-fresh");
+            Directory.CreateDirectory(first);
+            await File.WriteAllTextAsync(Path.Combine(first, "SPEC.md"), "顺序合同");
+            await File.WriteAllTextAsync(Path.Combine(first, "HANDOFF.md"), "仅允许直接依赖");
+            await File.WriteAllTextAsync(Path.Combine(first, "manifest.json"), "{}");
+            WriteValidReport(first, Path.GetFileName(first), TestFingerprint(first));
+
+            var appOrder = new AppPaths(Path.Combine(root, "app-order"));
+            var orderSettings = new SettingsService(appOrder).Load();
+            new HarnessModelChoice(providerId, rawModelId, "high").SaveTo(orderSettings);
+            new SettingsService(appOrder).Save(orderSettings);
+            var modelsCalls = 0;
+            await using (var host = new FakeHarnessHost
+            {
+                DefaultSessionModel = HarnessModelCatalogFixture(providerId, rawModelId, rawModelId, "Pro 3"),
+                Respond = (method, _) => method switch
+                {
+                    "session.create" => new JsonObject { ["sessionId"] = "sess-order" },
+                    "session.models" => Interlocked.Increment(ref modelsCalls) == 1
+                        ? HarnessModelCatalogFixture(providerId, rawModelId, rawModelId, "Pro 3")
+                        : HarnessModelCatalogFixture(providerId, rawModelId, rawModelId, "Pro 3"),
+                    "session.selectModel" => new JsonObject
+                    {
+                        ["selected"] = new JsonObject { ["provider"] = providerId, ["model"] = rawModelId, ["reasoningEffort"] = "high" }
+                    },
+                    "session.prompt" => new JsonObject { ["accepted"] = true },
+                    _ => new JsonObject()
+                },
+                WsScripts =
+                [
+                    new Queue<string>([
+                        WsFrame("session/subscribed", "sess-order"),
+                        WsFrame("session/event", "sess-order", "turn/start", seq: 1),
+                        WsFrame("session/event", "sess-order", "turn/end", "completed", seq: 2)
+                    ])
+                ]
+            })
+            {
+                await host.StartAsync();
+                var runner = new DeepSeekHarnessRunner(appOrder)
+                {
+                    WebUrl = host.BaseUrl,
+                    RelayProbe = new ConfirmedHarnessRelay(),
+                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。"))
+                };
+                var result = await runner.StartAsync(project, first);
+                Assert(result.State == "awaiting-gpt" && result.Model == rawModelId,
+                    "顺序合同必须成功并保存原始模型 ID：" + result.State + " / " + result.Model);
+                var sequence = host.Calls
+                    .Where(call => call.Method is "session.create" or "session.models" or "session.selectModel" or "session.prompt")
+                    .Select(call => call.Method)
+                    .ToList();
+                Assert(sequence.Count >= 4 && sequence[0] == "session.create"
+                       && sequence[1] == "session.models" && sequence[2] == "session.selectModel"
+                       && sequence[3] == "session.models" && sequence[4] == "session.prompt",
+                    "必须严格按 create → models → selectModel → models（二次确认）→ prompt 顺序执行，实际：" + string.Join(" -> ", sequence));
+                var select = host.Calls.First(call => call.Method == "session.selectModel");
+                Assert(HarnessJsonText(select.Payload?["reasoningEffort"]) == "high",
+                    "保存了思考强度时必须原样传给 selectModel。");
+            }
+
+            // ---- 场景 2：旧会话模型已不在目录（同组键续接）→ 零取消零迁移零 prompt ----
+            var ended = Path.Combine(project, ".codex-helper", "runs", "run-order-ended");
+            var next = Path.Combine(project, ".codex-helper", "runs", "run-order-next");
+            Directory.CreateDirectory(ended);
+            Directory.CreateDirectory(next);
+            await File.WriteAllTextAsync(Path.Combine(ended, "SPEC.md"), "前序合同（旧模型）");
+            await File.WriteAllTextAsync(Path.Combine(ended, "manifest.json"), "{\"rootCauseKey\":\"order-key\"}");
+            await File.WriteAllTextAsync(Path.Combine(next, "SPEC.md"), "后续合同");
+            await File.WriteAllTextAsync(Path.Combine(next, "HANDOFF.md"), "仅允许直接依赖");
+            await File.WriteAllTextAsync(Path.Combine(next, "manifest.json"), "{\"rootCauseKey\":\"order-key\"}");
+            var endedId = Path.GetFileName(ended);
+            var endedFingerprint = TestFingerprint(ended);
+            WriteValidReport(ended, endedId, endedFingerprint);
+            WriteValidReport(next, Path.GetFileName(next), TestFingerprint(next));
+
+            var appOld = new AppPaths(Path.Combine(root, "app-old"));
+            var oldSettings = new SettingsService(appOld).Load();
+            new HarnessModelChoice(providerId, rawModelId, null).SaveTo(oldSettings);
+            new SettingsService(appOld).Save(oldSettings);
+            var oldModelsCalls = 0;
+            await using (var host = new FakeHarnessHost
+            {
+                DefaultSessionModel = null,
+                Respond = (method, payload) => method switch
+                {
+                    "session.list" => new JsonObject
+                    {
+                        ["items"] = new JsonArray(new JsonObject { ["sessionId"] = "sess-order-old", ["running"] = false })
+                    },
+                    "session.history" => new JsonObject
+                    {
+                        ["events"] = new JsonArray(
+                            new JsonObject { ["event"] = new JsonObject { ["seq"] = 1L } },
+                            new JsonObject { ["event"] = new JsonObject { ["seq"] = 2L } })
+                    },
+                    // 旧会话的 current 仍存在但该模型已不在目录（groups[].models[].id 里没有它）：
+                    // routable 只表示 provider 有适配器，目录成员资格才是模型仍可路由的依据 →
+                    // 必须零 prompt、绝不取消或迁移旧会话，并给出重新选择提示。
+                    "session.models" => Interlocked.Increment(ref oldModelsCalls) == 1
+                        ? new JsonObject
+                        {
+                            ["current"] = new JsonObject { ["provider"] = "fake-c", ["model"] = "vendor-z/legacy-1" },
+                            ["routable"] = true,
+                            ["groups"] = new JsonArray(new JsonObject
+                            {
+                                ["id"] = "fake-c",
+                                ["name"] = "Fake C",
+                                ["models"] = new JsonArray(new JsonObject { ["id"] = "vendor-w/other-2", ["name"] = "Other Two" })
+                            }),
+                            ["failures"] = new JsonArray()
+                        }
+                        : throw new FakeHostError("directory-unreadable", "模型目录暂时不可读"),
+                    "session.create" => new JsonObject { ["sessionId"] = "sess-order-next" },
+                    "session.cancel" => new JsonObject { ["accepted"] = true },
+                    "session.prompt" => new JsonObject { ["accepted"] = true },
+                    _ => new JsonObject()
+                },
+                WsScripts =
+                [
+                    new Queue<string>([
+                        WsFrame("session/subscribed", "sess-order-old"),
+                        WsFrame("session/event", "sess-order-old", "turn/start", seq: 1),
+                        WsFrame("session/event", "sess-order-old", "turn/end", "completed", seq: 2)
+                    ])
+                ]
+            })
+            {
+                await host.StartAsync();
+                var runner = new DeepSeekHarnessRunner(appOld)
+                {
+                    WebUrl = host.BaseUrl,
+                    RelayProbe = new ConfirmedHarnessRelay(),
+                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。"))
+                };
+                var prior = new HarnessTaskStatus(endedId, project, ended, "awaiting-gpt", "已完成。",
+                    DateTime.UtcNow.AddMinutes(-5), DateTime.UtcNow.AddMinutes(-1), 0, host.BaseUrl, "sess-order-old",
+                    RootCauseKey: "order-key", ContractFingerprint: endedFingerprint);
+                File.WriteAllText(runner.TaskDirectoryFor(endedId), JsonSerializer.Serialize(prior,
+                    new JsonSerializerOptions { WriteIndented = true, Converters = { new HarnessUtcConverter() } }));
+
+                var result = await runner.StartAsync(project, next);
+                Assert(result.State == "failed", "旧会话模型不可路由时必须失败而不是迁移：" + result.State);
+                Assert(!host.Calls.Any(call => call.Method == "session.prompt"),
+                    "旧会话模型不可路由时必须零 prompt。");
+                Assert(!host.Calls.Any(call => call.Method == "session.cancel"),
+                    "旧会话模型不可路由时绝不自动取消旧会话。");
+                Assert(!host.Calls.Any(call => call.Method == "session.create"),
+                    "旧会话模型不可路由时绝不新建/迁移会话。");
+                Assert(!host.Calls.Any(call => call.Method == "session.selectModel"),
+                    "旧会话模型不可路由时不得替用户改写该会话的模型。");
+                Assert(result.SessionId == "sess-order-old",
+                    "失败时不得丢弃旧会话标识（只诊断，不改会话）：" + result.SessionId);
+                var message = (result.Message ?? "") + " " + (result.ContinuityDiagnostic ?? "");
+                Assert(message.Contains("重新选择模型后", StringComparison.Ordinal)
+                       && message.Contains("vendor-z/legacy-1", StringComparison.Ordinal)
+                       && message.Contains("不会自动取消", StringComparison.Ordinal),
+                    "必须给出明确诊断与重新选择提示：" + message);
+                Assert(HarnessModelChoice.FromSettings(new SettingsService(appOld).Load()).Describe() == providerId + "/" + rawModelId,
+                    "旧会话失效不得改动用户保存的选择。");
+            }
+        }
+        finally { TryDeleteDirectory(root); }
+    }
+
+    /// <summary>构造 session.models 响应夹具（任意 provider/模型 ID，绝不硬编码真实厂商或版本名）。</summary>
+    private static JsonObject HarnessModelCatalogFixture(string provider, string currentModel, string catalogModelId, string displayName,
+        string? reasoningEffort = null)
+        => new()
+        {
+            ["current"] = new JsonObject { ["provider"] = provider, ["model"] = currentModel },
+            ["routable"] = true,
+            ["groups"] = new JsonArray(new JsonObject
+            {
+                ["id"] = provider,
+                ["name"] = provider,
+                ["models"] = new JsonArray(new JsonObject
+                {
+                    ["id"] = catalogModelId,
+                    ["name"] = displayName,
+                    ["reasoning"] = reasoningEffort is null
+                        ? null
+                        : new JsonObject
+                        {
+                            ["efforts"] = new JsonArray(new JsonObject { ["id"] = reasoningEffort, ["name"] = reasoningEffort }),
+                            ["defaultEffort"] = reasoningEffort
+                        }
+                })
+            }),
+            ["failures"] = new JsonArray()
+        };
+
+    /// <summary>读取 JSON 文本值（测试夹具用，等价于 Core 内部的 HarnessJson.Text）。</summary>
+    private static string? HarnessJsonText(JsonNode? node)
+        => node is JsonValue value && value.TryGetValue<string>(out var text) ? text : null;
 
     /// <summary>
     /// 巨大历史场景的轻量基线回归（SPEC：修复超大历史阻断同组键连续会话）。

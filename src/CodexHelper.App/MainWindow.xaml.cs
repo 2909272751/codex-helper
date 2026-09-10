@@ -58,6 +58,10 @@ public partial class MainWindow : Window
     private bool suppressHarnessSelection;
     private bool harnessTaskRefreshInFlight;
     private bool harnessTaskRefreshQueued;
+    /// <summary>当前下拉框里展示的 DSH 模型目录项（provider、Host 原始模型 ID、显示名、思考强度）。</summary>
+    private IReadOnlyList<HarnessModelEntry> harnessModelEntries = Array.Empty<HarnessModelEntry>();
+    /// <summary>模型目录最近一次读取失败原因（非空时禁止应用未验证选择）。</summary>
+    private string? harnessModelCatalogError;
     private string? harnessTaskRenderedFingerprint;
     private IReadOnlyList<DshComponentInfo> dshComponents = Array.Empty<DshComponentInfo>();
     private CancellationTokenSource? dshScanCts;
@@ -139,6 +143,7 @@ public partial class MainWindow : Window
         HarnessReuseSessionCheck.IsChecked = settings.HarnessReuseSession;
         HarnessAutoStartHostCheck.IsChecked = settings.HarnessAutoStartHost;
         HarnessReturnToGptCheck.IsChecked = settings.HarnessReturnToGptOnFailure;
+        InitializeHarnessModelPicker(settings);
         suppressCollaborationModeSelection = true;
         SelectCollaborationMode(settings.CollaborationMode);
         suppressCollaborationModeSelection = false;
@@ -514,6 +519,11 @@ public partial class MainWindow : Window
             settings.HarnessReuseSession = HarnessReuseSessionCheck.IsChecked == true;
             settings.HarnessAutoStartHost = HarnessAutoStartHostCheck.IsChecked == true;
             settings.HarnessReturnToGptOnFailure = HarnessReturnToGptCheck.IsChecked == true;
+            // 模型选择必须与"应用并测试"一起落盘：UI 里选中的模型若未应用就走诊断/启动流程，
+            // Runner 仍会使用旧选择，用户会以为新选择已生效。这里用与"应用所选模型"完全相同的校验，
+            // 校验不通过就拒绝保存任何东西（绝不写入不可验证的 provider/模型）。
+            if (!TryCaptureSelectedHarnessModel(out var modelError))
+                throw new InvalidOperationException(modelError);
             settingsService.Save(settings);
 
             harnessService ??= new DeepSeekHarnessService(appPaths);
@@ -558,6 +568,218 @@ public partial class MainWindow : Window
         ApplySettingsToUi();
         MessageBox.Show("已恢复推荐设置：Codex 合同模式、完全控制、标准执行强度、会话复用和自动启动。请点“应用并测试”使 Host 权限生效。", "已恢复", MessageBoxButton.OK, MessageBoxImage.Information);
     }
+
+    /// <summary>下拉框条目：只承载 DSH 原样的 provider、模型 ID 与显示名/思考强度，绝不保存显示名。</summary>
+    private sealed record HarnessModelItem(string Key, string Provider, string ModelId, string DisplayName, IReadOnlyList<string> Efforts, bool IsCurrentHint);
+    /// <summary>
+    /// 初始化模型选择 UI：只回显已保存的选择（provider + Host 原始模型 ID）。没有保存选择时，
+    /// 明确提示必须刷新并确认，Helper 绝不代用户选一个默认模型就当作用户选择。
+    /// </summary>
+    private void InitializeHarnessModelPicker(AppSettings current)
+    {
+        if (HarnessModelBox is null || HarnessModelStatusText is null) return;
+        harnessModelEntries = Array.Empty<HarnessModelEntry>();
+        harnessModelCatalogError = null;
+        HarnessModelBox.Items.Clear();
+        var choice = HarnessModelChoice.FromSettings(current);
+        if (choice.HasValue)
+        {
+            HarnessModelBox.Items.Add(new HarnessModelItem(choice.Key, choice.Provider!, choice.Model!,
+                "已保存选择（待刷新确认）：" + BuildModelItemText(choice.Provider!, choice.Model!, choice.ReasoningEffort),
+                Array.Empty<string>(), false));
+            HarnessModelBox.SelectedIndex = 0;
+            HarnessModelStatusText.Text = "已保存选择：" + choice.Describe() + "。点“刷新模型列表”确认它仍在 DSH 当前目录中；列表读取失败会保留该选择但不提交新任务。";
+        }
+        else
+        {
+            HarnessModelStatusText.Text = "尚未选择执行模型：Helper 不会代你选择，也不会用 Host 默认模型静默提交。点“刷新模型列表”读取 DSH 的 session.models 目录，选中后点“应用所选模型”。";
+        }
+    }
+
+    /// <summary>模型下拉框的展示文本（显示名 + Host 原始 provider/模型 ID，便于用户识别真正保存的值）。</summary>
+    private static string BuildModelItemText(string provider, string modelId, string? effort)
+        => $"{provider}/{modelId}" + (string.IsNullOrWhiteSpace(effort) ? string.Empty : $"（思考强度 {effort}）");
+
+    /// <summary>从所选条目解析思考强度：仅在 Host 目录声明了 efforts 且展示文本带标签时保留，否则为空。</summary>
+    private static string? SelectedEffortFromText(string? text)
+    {
+        const string marker = "（思考强度 ";
+        if (string.IsNullOrEmpty(text)) return null;
+        var start = text.LastIndexOf(marker, StringComparison.Ordinal);
+        if (start < 0) return null;
+        var end = text.IndexOf('）', start + marker.Length);
+        return end > start ? text.Substring(start + marker.Length, end - start - marker.Length) : null;
+    }
+
+    /// <summary>
+    /// 刷新模型列表：读取 DSH Host 的运行时 session.models 目录（provider、模型原始 ID、显示名）。
+    /// 有会话时优先复用（含最近任务的会话），没有时创建一个临时会话只为读目录、读完立即取消，
+    /// 绝不提交任何合同提示。读取失败时保留最近一次已验证选择并显示原因。
+    /// </summary>
+    private async void RefreshHarnessModels_Click(object sender, RoutedEventArgs e)
+    {
+        var runner = GetHarnessRunner();
+        var selectedKey = (HarnessModelBox.SelectedItem as HarnessModelItem)?.Key;
+        HarnessModelCatalog? loaded = null;
+        var success = await RunOperationAsync("读取 DSH 模型目录", async cancellationToken =>
+        {
+            var candidates = await Task.Run(GetHarnessModelSessionCandidates, cancellationToken);
+            loaded = await Task.Run(() => LoadHarnessModelCatalogAsync(runner, candidates, cancellationToken), cancellationToken);
+        }, showProgress: false);
+        if (!success || loaded is null) return;
+        ApplyHarnessModelCatalog(loaded, selectedKey);
+    }
+
+    /// <summary>把目录快照渲染到下拉框：目录为空时显式给出"请到 Harness Web 配置模型提供商"，不猜模型。</summary>
+    private void ApplyHarnessModelCatalog(HarnessModelCatalog catalog, string? selectedKey)
+    {
+        if (HarnessModelBox is null || HarnessModelStatusText is null) return;
+        harnessModelCatalogError = catalog.Succeeded ? null : catalog.Error ?? "模型目录不可读。";
+        harnessModelEntries = catalog.Succeeded ? catalog.Models : Array.Empty<HarnessModelEntry>();
+        HarnessModelBox.Items.Clear();
+        if (!catalog.Succeeded)
+        {
+            var saved = HarnessModelChoice.FromSettings(settings);
+            if (saved.HasValue)
+            {
+                HarnessModelBox.Items.Add(new HarnessModelItem(saved.Key, saved.Provider!, saved.Model!, BuildModelItemText(saved.Provider!, saved.Model!, saved.ReasoningEffort), Array.Empty<string>(), false));
+                HarnessModelBox.SelectedIndex = 0;
+            }
+            HarnessModelStatusText.Text = "读取 DSH 模型目录失败：" + harnessModelCatalogError
+                + (saved.HasValue ? "。已保留最近一次已验证选择 " + saved.Describe() + "，但本轮不会提交新任务。" : "。尚未保存任何选择，因此不会提交任务。");
+            return;
+        }
+        foreach (var model in catalog.Models)
+        {
+            var item = new HarnessModelItem(model.Key, model.Provider, model.ModelId, model.Label, model.Efforts, false);
+            HarnessModelBox.Items.Add(item);
+            // 保存的选择在目录中 → 默认选中它；否则保留 Host current 提示项的选择权给用户。
+            if (string.Equals(model.Key, selectedKey, StringComparison.Ordinal)) HarnessModelBox.SelectedIndex = HarnessModelBox.Items.Count - 1;
+        }
+        // 未保存选择时显示 Host current/default：只作为可见提示，必须由用户显式选中并点"应用"才生效。
+        if (!HarnessModelChoice.FromSettings(settings).HasValue && !string.IsNullOrWhiteSpace(catalog.CurrentModel))
+        {
+            HarnessModelBox.Items.Insert(0, new HarnessModelItem("\u0001current-hint", catalog.CurrentProvider ?? "未知", catalog.CurrentModel!,
+                "Host 当前/默认：" + catalog.CurrentText + "（点“应用所选模型”确认采用）", Array.Empty<string>(), true));
+            if (HarnessModelBox.SelectedIndex < 0) HarnessModelBox.SelectedIndex = 0;
+        }
+        if (HarnessModelBox.SelectedIndex < 0 && HarnessModelBox.Items.Count > 0) HarnessModelBox.SelectedIndex = 0;
+        HarnessModelStatusText.Text = catalog.Models.Count == 0
+            ? "DSH 当前模型目录为空（没有可路由 provider/模型）。请到 Harness Web 的模型设置里配置 provider/模型后再刷新；Helper 不会硬编码或猜测模型。"
+            : $"已读取 {catalog.Models.Count} 个可用模型；Host 当前/默认：{catalog.CurrentText}。保存的是 Host 原始 provider 与模型 ID（不是显示名）。";
+    }
+
+    /// <summary>
+    /// 应用所选模型：只允许保存本次已从 DSH 目录读到的 provider + 模型 ID；目录未读到或读取失败时拒绝保存，
+    /// 避免把不可验证的字符串写成"已验证选择"。Host current 提示项必须先"刷新模型列表"变成真实目录项。
+    /// </summary>
+    private void ApplyHarnessModel_Click(object sender, RoutedEventArgs e)
+    {
+        if (!TryCaptureSelectedHarnessModel(out var error))
+        {
+            MessageBox.Show(error, "无法保存模型选择", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        var savedChoice = HarnessModelChoice.FromSettings(settings);
+        HarnessModelStatusText.Text = "已保存执行模型：" + savedChoice.Describe() + "（provider 与模型 ID 均来自 DSH 目录原样值）。新建会话会先用 session.selectModel 切到它并确认 current 一致后才提交合同。";
+        MessageBox.Show("执行模型已保存：" + savedChoice.Describe() + "。", "已保存", MessageBoxButton.OK, MessageBoxImage.Information);
+    }
+
+    /// <summary>
+    /// 把下拉框当前选择写入 settings（不落盘）：只接受本次已从 DSH 目录读到的 provider + 模型 ID，
+    /// 目录未读到或读取失败时返回 false 与可读原因，绝不把不可验证的字符串写成"已验证选择"。
+    /// Host current 提示项必须先"刷新模型列表"变成真实目录项。
+    /// </summary>
+    private bool TryCaptureSelectedHarnessModel(out string error)
+    {
+        error = string.Empty;
+        if (HarnessModelBox?.SelectedItem is not HarnessModelItem item)
+        {
+            error = "请先点“刷新模型列表”，再从下拉框中选择要使用的执行模型。";
+            return false;
+        }
+        if (item.IsCurrentHint)
+        {
+            error = "这是 Host 当前/默认模型提示，还没有经过目录校验。请先点“刷新模型列表”，在下拉框中选中该模型（真实目录项），再应用。";
+            return false;
+        }
+        if (!string.IsNullOrWhiteSpace(harnessModelCatalogError)
+            || !harnessModelEntries.Any(model => string.Equals(model.Key, item.Key, StringComparison.Ordinal)))
+        {
+            error = "无法把该选择写为已验证选择：最近一次模型目录读取失败或该模型不在本次目录内。请先点“刷新模型列表”重新读取。";
+            return false;
+        }
+        // 保存的永远是 DSH 原样的 provider 与模型 ID，不是 UI 显示名。
+        new HarnessModelChoice(item.Provider, item.ModelId, SelectedEffortFromText(item.DisplayName)).SaveTo(settings);
+        return true;
+    }
+
+    /// <summary>
+    /// 读取 DSH 运行时模型目录：优先复用最近任务的会话（只读 session.models，绝不提交）；
+    /// 一个会话都没有时创建一个临时会话只为读目录，读完立即取消（绝不提交任何合同提示）。
+    /// </summary>
+    private async Task<HarnessModelCatalog> LoadHarnessModelCatalogAsync(
+        DeepSeekHarnessRunner runner, IReadOnlyList<string> candidates, CancellationToken cancellationToken)
+    {
+        using var rpc = new HarnessRpcClient(runner.WebUrl);
+        foreach (var sessionId in candidates)
+        {
+            if (string.IsNullOrWhiteSpace(sessionId)) continue;
+            var catalog = await HarnessModelPicker.LoadCatalogAsync(rpc, sessionId, cancellationToken);
+            if (catalog.Succeeded) return catalog;
+        }
+        var created = await rpc.CreateSessionAsync(appPaths.BaseDirectory, HarnessExecutionOptions.AgentPreset(settings.HarnessExecutionMode), cancellationToken);
+        if (!created.Success)
+            return HarnessModelCatalog.Failed(created.ErrorMessage ?? "无法创建用于读取模型目录的临时会话。");
+        var scratchId = ModelJsonText(created.Value?["sessionId"]);
+        if (string.IsNullOrWhiteSpace(scratchId))
+            return HarnessModelCatalog.Failed("Harness 未返回临时会话 ID，无法读取模型目录。");
+        try
+        {
+            return await HarnessModelPicker.LoadCatalogAsync(rpc, scratchId!, cancellationToken, attempts: 2);
+        }
+        finally
+        {
+            // 只读目录用完即释放：取消不删除会话，也不会向它提交任何内容。
+            await rpc.CancelAsync(scratchId!, CancellationToken.None);
+        }
+    }
+
+    /// <summary>
+    /// 可读模型目录的会话候选：最近任务的会话优先，其次 Host 会话列表。
+    /// 只用 sessionId 发只读 session.models，绝不向任何候选会话提交内容。
+    /// </summary>
+    private IReadOnlyList<string> GetHarnessModelSessionCandidates()
+    {
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var ordered = new List<string>();
+        void Add(string? sessionId)
+        {
+            if (string.IsNullOrWhiteSpace(sessionId) || !seen.Add(sessionId!)) return;
+            ordered.Add(sessionId!);
+        }
+
+        try
+        {
+            foreach (var task in GetHarnessRunner().GetRecentTasks(20).OrderByDescending(task => task.UpdatedUtc)) Add(task.SessionId);
+        }
+        catch { /* 任务注册表不可读时退回 Host 会话列表 */ }
+
+        try
+        {
+            using var rpc = new HarnessRpcClient(GetHarnessRunner().WebUrl);
+            var sessions = rpc.ListSessionsAsync().GetAwaiter().GetResult();
+            if (sessions.Success && sessions.Value?["items"] is System.Text.Json.Nodes.JsonArray items)
+                foreach (var node in items)
+                    Add(ModelJsonText((node as System.Text.Json.Nodes.JsonObject)?["sessionId"]));
+        }
+        catch { /* Host 未运行时由调用方创建临时会话读目录 */ }
+        return ordered.Take(12).ToList();
+    }
+
+    /// <summary>读取 JSON 文本值（UI 侧只做会话 ID 等纯文本提取，不解析业务结构）。</summary>
+    private static string? ModelJsonText(System.Text.Json.Nodes.JsonNode? node)
+        => node is System.Text.Json.Nodes.JsonValue value && value.TryGetValue<string>(out var text) ? text : null;
 
     /// <summary>
     /// Harness 主协作卡动作：开启时先验证 Node/dsh/Web Host/中继能力，Host 未运行自动启动，

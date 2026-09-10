@@ -8,11 +8,11 @@ Codex Helper 是面向 Windows 10/11 的 Codex 专属工作台，统一管理官
 
 ## 下载安装
 
-**Codex Helper v4.4.4**（GitHub Release，当前稳定版）：
+**Codex Helper v4.4.9**（GitHub Release，当前稳定版）：
 
-- 精简安装包：`codex-helper-v4.4.4-setup.exe`（依赖 Windows x64 的 **.NET 8 Desktop Runtime**，安装 .NET 8 SDK 也可满足）
-- [打开 v4.4.4 Release 页面](https://github.com/2909272751/codex-helper/releases/tag/v4.4.4)
-- [直接下载精简安装包](https://github.com/2909272751/codex-helper/releases/download/v4.4.4/codex-helper-v4.4.4-setup.exe)
+- 精简安装包：`codex-helper-v4.4.9-setup.exe`（依赖 Windows x64 的 **.NET 8 Desktop Runtime**，安装 .NET 8 SDK 也可满足）
+- [打开 v4.4.9 Release 页面](https://github.com/2909272751/codex-helper/releases/tag/v4.4.9)
+- [直接下载精简安装包](https://github.com/2909272751/codex-helper/releases/download/v4.4.9/codex-helper-v4.4.9-setup.exe)
 - [微软官方 .NET 8 下载页](https://dotnet.microsoft.com/zh-cn/download/dotnet/8.0)
 
 > 若安装器提示缺少运行库，请先安装 **.NET 8 Desktop Runtime（Windows x64）**，再重新打开并运行本安装包。自 `v3.3.3` 起项目只发布精简安装包与对应的 SHA-256 校验文件，不再提供完整离线安装包或便携 ZIP。

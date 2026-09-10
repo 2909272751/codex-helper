@@ -249,6 +249,7 @@ public sealed class DeepSeekHarnessRunner
         var continuityRound = 1;
         long continuityBaseline = -1;
         var resumeSameTask = false;
+        var modelChoice = HarnessModelChoice.FromSettings(settings);
         if (settings.HarnessReuseSession && sameContract
             && string.Equals(previous!.State, "running", StringComparison.OrdinalIgnoreCase)
             && !string.IsNullOrWhiteSpace(previous.SessionId))
@@ -440,6 +441,10 @@ public sealed class DeepSeekHarnessRunner
             if (continuityDiagnostic is not null && status.ContinuityDiagnostic is null)
                 status = status with { ContinuityDiagnostic = continuityDiagnostic };
         }
+        // ---- 旧会话模型不可用：只诊断 + 提示重新选择，绝不自动取消/迁移（SPEC 必须实现 1/5）----
+        // 上一轮实现会在旧会话模型已移除时取消该会话并改用默认模型的新会话；本实现删除该行为：
+        // 旧会话的模型是否仍可路由统一在会话就绪后由 HarnessModelPicker.EnsureSessionModelRoutableAsync
+        // 只读核验，不可路由即以 failed + "请在设置中重新选择模型并创建新任务" 结束，绝不迁移、绝不改写。
         // 统一接回核验：resumeSessionId 非空表示接回运行中会话（同 taskId+同合同指纹，或同项目+同显式组键）。
         if (resumeSessionId is not null && resumeKind != ResumeKind.EndedContinuity)
         {
@@ -509,27 +514,57 @@ public sealed class DeepSeekHarnessRunner
         status = status with { State = "starting", Message = "会话已创建，正在提交合同提示。", SessionId = sessionId, UpdatedUtc = DateTime.UtcNow, SessionState = "starting" };
         Write(status);
 
-        // session.list 的 projections 并不承诺包含 model，旧实现因此把所有新会话写成
-        // Model=null，并可能把未初始化会话送进 prompt/read 循环。必须从 session.models
-        // 读取当前选择；短暂的 Host 初始化竞争只允许再探测一次，不重复创建或提交会话。
-        var selectedModel = await ConfirmSessionModelAsync(rpc, sessionId, cancellationToken);
-        if (selectedModel is null)
+        // session.list 的 projections 并不承诺包含 model，旧实现因此把所有新会话写成 Model=null。
+        // 现在模型不再"由 DSH 默认决定"，而是用户在 Helper 的 Harness 设置中显式选择：
+        // 新建会话/已完成会话续接 → 读 session.models 目录 → 校验保存选择在目录内 → session.selectModel
+        // → 再次 session.models 确认 current 与选择一致，任一步失败都零 prompt 结束；
+        // 已存在会话（同 taskId 同合同接回、同组键接回）→ 只读核验其 current 仍可路由，不可路由即失败并
+        // 提示重新选择后创建新任务，绝不自动取消、迁移或改写该会话。
+        // 已存在会话（同 taskId 同合同接回、同组键接回、已完成会话续接）一律只读核验其当前模型仍可路由：
+        // 已完成续接沿用该会话自身已确认的模型，绝不替用户改写它的模型，也绝不取消/迁移它；
+        // 只有真正新建的会话才应用用户保存的选择（session.models → 校验 → session.selectModel → 二次确认）。
+        var willSubmitPrompt = resumeSessionId is null || resumeKind == ResumeKind.EndedContinuity;
+        var reuseExistingSession = resumeSessionId is not null;
+        HarnessModelPicker.ApplyResult modelApply = reuseExistingSession
+            ? await HarnessModelPicker.EnsureSessionModelRoutableAsync(rpc, sessionId, modelChoice, cancellationToken)
+            : await HarnessModelPicker.ApplyToNewSessionAsync(rpc, sessionId, modelChoice, cancellationToken);
+        if (!modelApply.Success)
         {
-            await TryCancelSessionAsync(rpc, sessionId);
+            // 新建会话在选模失败后不留半配置会话：只停止本任务刚创建的会话；接回路径绝不取消别人的会话。
+            var cancelledOwnSession = willSubmitPrompt && resumeSessionId is null;
+            if (cancelledOwnSession) await TryCancelSessionAsync(rpc, sessionId);
+            var failureMessage = modelApply.Error + (cancelledOwnSession ? " 已停止刚创建且未提交合同的会话。" : string.Empty);
             status = status with
             {
                 State = "failed",
-                Message = "Harness 会话未能确认可路由模型，已停止且未提交合同（仅探测两次）。",
+                Message = failureMessage,
                 UpdatedUtc = DateTime.UtcNow,
-                SessionState = "model-unavailable"
+                SessionState = modelChoice.HasValue ? "model-select-failed" : "model-default-unusable",
+                ContinuityDiagnostic = failureMessage
             };
             Write(status);
             return status;
         }
+        var selectedModel = modelApply.ModelId;
+        var modelNote = modelApply.Error;
+        if (!string.IsNullOrWhiteSpace(modelNote))
+        {
+            // 已存在会话的模型与用户当前选择不一致（只诊断，不改会话）：落到持久化诊断字段，
+            // 终态文案由监听器写入时会覆盖 Message，因此两者都写。
+            var priorDiagnostic = status.ContinuityDiagnostic;
+            status = status with
+            {
+                ContinuityDiagnostic = string.IsNullOrWhiteSpace(priorDiagnostic)
+                    ? modelNote
+                    : priorDiagnostic + " " + modelNote
+            };
+        }
         status = status with
         {
             Model = selectedModel,
-            Message = "已确认 Harness 会话模型，正在提交合同提示。",
+            Message = string.IsNullOrWhiteSpace(status.ContinuityDiagnostic)
+                ? "已确认 Harness 会话模型，正在提交合同提示。"
+                : status.ContinuityDiagnostic!,
             UpdatedUtc = DateTime.UtcNow
         };
         Write(status);
@@ -596,7 +631,13 @@ public sealed class DeepSeekHarnessRunner
             status = status with
             {
                 State = resumeSessionId is not null || eventPreconnected ? "running" : "starting",
-                Message = resumeKind == ResumeKind.EndedContinuity
+                // 同组键续接沿用会话自身已确认模型时会带差异诊断：先在状态里写明事实，
+                // 再附上正常提交文案，任务中心必须能区分"续接沿用会话模型"与普通提交。
+                Message = modelNote is not null
+                    ? modelNote + (resumeSessionId is null
+                        ? "新会话模型已按用户选择确认（" + selectedModel + "），合同提示已提交。"
+                        : "合同提示已提交。")
+                    : resumeKind == ResumeKind.EndedContinuity
                     ? $"已复用连续会话（来源任务 {continuitySourceTaskId}），已提交增量合同新回合。"
                     : resumeSessionId is not null
                     ? (resumeSameTask ? "已接回同一合同的运行中会话，未重复提交。" : "已接回同组键（rootCauseKey）的运行中会话，未重复提交。")
@@ -647,6 +688,10 @@ public sealed class DeepSeekHarnessRunner
                 EventTransport = observed.EventTransport,
                 EventTransportError = observed.EventTransportError
             };
+            // 续接沿用会话自身模型等模型相关诊断必须在终态消息中保留：终态文案由监听器写入，
+            // 会覆盖提交阶段文案，任务中心因此仍能看到该事实。
+            if (modelNote is not null && !string.IsNullOrWhiteSpace(status.ContinuityDiagnostic))
+                status = status with { Message = status.Message + " " + status.ContinuityDiagnostic };
             status = await EnrichFromSessionAsync(rpc, status, cancellationToken);
             if (terminal.Summary is { } summary)
                 status = status with
@@ -672,27 +717,6 @@ public sealed class DeepSeekHarnessRunner
             catch (OperationCanceledException) { throw; }
             catch (Exception ex) { return HarnessRpcResult.Fail("RPC 异常：" + HarnessJson.Truncate(ex.Message, 200)); }
         }
-    }
-
-    /// <summary>
-    /// 读取新会话的当前模型。DSH 在 session.create 后可能需要极短时间完成默认模型解析，
-    /// 因此只重试一次同一只读 RPC；不会创建第二个 session，也不会提交第二次合同。
-    /// </summary>
-    private static async Task<string?> ConfirmSessionModelAsync(HarnessRpcClient rpc, string sessionId, CancellationToken cancellationToken)
-    {
-        for (var attempt = 0; attempt < 2; attempt++)
-        {
-            var models = await rpc.GetSessionModelsAsync(sessionId, cancellationToken);
-            var current = models.Success ? models.Value?["current"] : null;
-            var model = HarnessJson.Text(current?["model"]);
-            if (!string.IsNullOrWhiteSpace(model))
-                // DSH returns the provider-qualified model id already.  Preserve it so
-                // task status matches the model picker rather than showing a duplicate
-                // provider prefix.
-                return model;
-            if (attempt == 0) await Task.Delay(TimeSpan.FromMilliseconds(300), cancellationToken);
-        }
-        return null;
     }
 
     private static async Task<FileStream> AcquireTaskLeaseAsync(string taskDirectory, CancellationToken cancellationToken)
@@ -1914,7 +1938,9 @@ public sealed class DeepSeekHarnessRunner
             var reportState = validation.Valid
                 ? "通过（归属/时效/结构已校验）"
                 : "未通过（" + validation.Reason + "），GPT 不得直接判定通过";
-            var text = $"# GPT 验收包\n\n- 执行器：{status.Executor}\n- 会话 ID：{status.SessionId}\n- 终态：{status.State}\n- 步骤：{status.Steps}\n- 未缓存输入：{status.UncachedInputTokens}\n- 缓存命中：{status.CacheReadTokens}\n- 输出：{status.OutputTokens}\n- 报告校验：{reportState}\n\nGPT 必须检查实际 diff，并独立执行 ACCEPTANCE.md 中的聚焦验收；视觉项只由 GPT 验收。\n";
+            // 模型必须是 DSH 为本次会话确认并原样返回的 provider-qualified ID（不得写旧别名/UI 名称）。
+            var modelText = string.IsNullOrWhiteSpace(status.Model) ? "未确认" : status.Model;
+            var text = $"# GPT 验收包\n\n- 执行器：{status.Executor}\n- 会话 ID：{status.SessionId}\n- 模型：{modelText}\n- 终态：{status.State}\n- 步骤：{status.Steps}\n- 未缓存输入：{status.UncachedInputTokens}\n- 缓存命中：{status.CacheReadTokens}\n- 输出：{status.OutputTokens}\n- 报告校验：{reportState}\n\nGPT 必须检查实际 diff，并独立执行 ACCEPTANCE.md 中的聚焦验收；视觉项只由 GPT 验收。\n";
             AtomicFile.WriteAllText(Path.Combine(status.TaskDirectory, "REVIEW_PACKET.md"), text);
         }
         catch { }

@@ -44,6 +44,12 @@ public sealed class AppSettings
     /// <summary>Helper 合同执行强度：quick / standard / deep；不是模型 reasoning_effort。</summary>
     public string HarnessExecutionStrength { get; set; } = "standard";
     public bool HarnessReuseSession { get; set; } = true;
+    /// <summary>用户选择的执行模型 provider（DSH 原样标识；空表示尚未选择，Helper 绝不代选默认模型）。</summary>
+    public string HarnessSelectedModelProvider { get; set; } = string.Empty;
+    /// <summary>用户选择的执行模型 ID（DSH session.models 返回的原样 provider-qualified ID，不是 UI 显示名）。</summary>
+    public string HarnessSelectedModel { get; set; } = string.Empty;
+    /// <summary>用户选择的思考强度（可空；只在 DSH 目录声明了 efforts 时保存，空表示由模型决定）。</summary>
+    public string HarnessSelectedModelReasoningEffort { get; set; } = string.Empty;
     public bool HarnessAutoStartHost { get; set; } = true;
     public bool HarnessReturnToGptOnFailure { get; set; } = true;
 }

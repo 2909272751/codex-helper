@@ -77,6 +77,17 @@ public sealed class SettingsService
         settings.HarnessExecutionMode = HarnessExecutionOptions.NormalizeMode(settings.HarnessExecutionMode);
         settings.HarnessPermissionMode = HarnessExecutionOptions.NormalizePermission(settings.HarnessPermissionMode);
         settings.HarnessExecutionStrength = HarnessExecutionOptions.NormalizeStrength(settings.HarnessExecutionStrength);
+        // 模型选择：provider 与模型 ID 都是 DSH 原样标识，只做首尾空白清理；缺任一即视为"尚未选择"
+        // （Helper 绝不代用户猜测或保留半截选择），思考强度只在选择完整时保留。
+        settings.HarnessSelectedModelProvider = (settings.HarnessSelectedModelProvider ?? string.Empty).Trim();
+        settings.HarnessSelectedModel = (settings.HarnessSelectedModel ?? string.Empty).Trim();
+        settings.HarnessSelectedModelReasoningEffort = (settings.HarnessSelectedModelReasoningEffort ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(settings.HarnessSelectedModelProvider) || string.IsNullOrWhiteSpace(settings.HarnessSelectedModel))
+        {
+            settings.HarnessSelectedModelProvider = string.Empty;
+            settings.HarnessSelectedModel = string.Empty;
+            settings.HarnessSelectedModelReasoningEffort = string.Empty;
+        }
         if (!string.IsNullOrWhiteSpace(settings.HarnessNodePath))
             settings.HarnessNodePath = Path.GetFullPath(settings.HarnessNodePath);
         store.Save(paths.SettingsPath, settings);

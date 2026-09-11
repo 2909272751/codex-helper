@@ -1,0 +1,31 @@
+{
+  "name": "dsh-catalog-fastpath",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Starts the DSH session catalogue before optional conversation history so the sidebar is usable immediately after a Web reload.",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-connection"
+      ],
+      "platform": "web"
+    },
+    "plugin": {
+      "displayNameZh": "会话目录快启",
+      "descriptionZh": "优先加载可点选的会话目录；可选的历史正文请求会在目录就绪后再发出，不读取、不保存会话内容。",
+      "category": "性能与会话"
+    }
+  }
+}

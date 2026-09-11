@@ -1,0 +1,23 @@
+{
+  "name": "dsh-browser-compat",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Restores crypto.randomUUID on insecure origins (plain-HTTP remote access) with a getRandomValues-based UUIDv4 shim injected at the front of index.html <head>.",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json"
+  },
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "plugin": {
+      "displayNameZh": "非安全上下文兼容",
+      "descriptionZh": "当浏览器因非安全上下文（明文 HTTP 外网地址）缺少 crypto.randomUUID 时，仅用 getRandomValues 生成 UUIDv4；不改变授权、不绕过任何安全校验。",
+      "category": "兼容性"
+    }
+  }
+}

@@ -2,22 +2,28 @@
 
 Codex Helper 是面向 Windows 10/11 的 Codex 专属工作台，统一管理官方账号、第三方 Responses API、重要项目、个人 Skills、Codex 配置、加密增量备份与批量迁移。
 
-当前版本：`4.4.4`
+当前版本：`4.4.13`
 
 ![Codex Helper Logo](assets/CodexHelper-256.png)
 
 ## 下载安装
 
-**Codex Helper v4.4.9**（GitHub Release，当前稳定版）：
+**Codex Helper v4.4.13**（GitHub Release，当前稳定版）：
 
-- 精简安装包：`codex-helper-v4.4.9-setup.exe`（依赖 Windows x64 的 **.NET 8 Desktop Runtime**，安装 .NET 8 SDK 也可满足）
-- [打开 v4.4.9 Release 页面](https://github.com/2909272751/codex-helper/releases/tag/v4.4.9)
-- [直接下载精简安装包](https://github.com/2909272751/codex-helper/releases/download/v4.4.9/codex-helper-v4.4.9-setup.exe)
+- 精简安装包：`codex-helper-v4.4.13-setup.exe`（依赖 Windows x64 的 **.NET 8 Desktop Runtime**，安装 .NET 8 SDK 也可满足）
+- [打开 v4.4.13 Release 页面](https://github.com/2909272751/codex-helper/releases/tag/v4.4.13)
+- [直接下载精简安装包](https://github.com/2909272751/codex-helper/releases/download/v4.4.13/codex-helper-v4.4.13-setup.exe)
 - [微软官方 .NET 8 下载页](https://dotnet.microsoft.com/zh-cn/download/dotnet/8.0)
 
 > 若安装器提示缺少运行库，请先安装 **.NET 8 Desktop Runtime（Windows x64）**，再重新打开并运行本安装包。自 `v3.3.3` 起项目只发布精简安装包与对应的 SHA-256 校验文件，不再提供完整离线安装包或便携 ZIP。
 
 ## 连接中心与协作开发
+
+### v4.4.13：新设备与新版 DSH 兼容
+
+同一开发目录可在原 DSH 会话继续不同合同；前序运行时本地排队，停止后只提交一次新合同。合同指纹、组键、报告与验收独立，前轮报告失败不再伪装成功。新版 Gateway 使用原生事件订阅、官方快照水位与真实会话模型投影，并正确识别用户停止。任务中心刷新与 Runner 共用租约，提交状态不会覆盖抢先到达的真实事件或重试记录。
+
+88FRP 优先读取实际运行的实例配置，支持用户目录与系统服务目录，避免旧配置把新公网入口覆盖回去。基础兼容插件随 Helper 内置并安全补齐；已安装插件、禁用状态及认证设置保留。新版 DSH 合同预设与模型下拉显示一并修复。恢复方法见 [基础插件说明](docs/BASE_PLUGINS_v4.4.13_zh-CN.md)。
 
 连接中心统一管理官方账号、原生 Responses API 与 Sub2API。Base URL 支持填写服务根地址、`/v1` 或完整的 `/responses` 地址；Helper 会去重后缀，并让 Codex 统一调用 `/responses`。第三方 Responses API 是普通主模型连接，不冒充 Codex 原生子智能体。
 

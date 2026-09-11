@@ -15,10 +15,15 @@ using CodexHelper.Core.Services;
 
 namespace CodexHelper.Core.Tests;
 
-internal static class Program
+internal static partial class Program
 {
     private static readonly List<(string Name, Func<Task> Test)> Tests =
     [
+        ("4.4.13 排队后同会话提交一次与取消隔离", Test4413QueueThenContinueAsync),
+        ("4.4.13 Gateway 真实停止原因与隐私元数据", Test4413GatewayTerminalAsync),
+        ("4.4.13 活动 88FRP 配置优先与保守回退", Test4413ActiveFrpAsync),
+        ("4.4.13 基础插件新设备部署幂等与回滚", Test4413BasePluginsAsync),
+        ("4.4.13 新版 persona 前缀与路径边界", Test4413PresetCompatibilityAsync),
         ("路径越界防护", TestPathSafetyAsync),
         ("认证加密往返", TestCryptoEnvelopeAsync),
         ("迁移文件口令与损坏检测", TestPortableEncryptionAsync),
@@ -123,21 +128,22 @@ internal static class Program
         ,("DSH 扫描取消（已取消 token 立即中止）", TestDshScanCancellationAsync)
         ,("滚动链纯逻辑（无溢出/顶部/底部/中间/空视口/delta0）", TestScrollChainLogicAsync)
         ,("Harness 启动失败诊断（正常启动/退出码/插件崩溃/ANSI/超长/脱敏/空输出）", TestHarnessStartupDiagnosticsAsync)
-        ,("Harness 合同会话隔离（不同合同不同 Session/指纹变化强制新会话/同项目其他运行合同 busy/旧 affinity 不复用）", TestHarnessContractSessionIsolationAsync)
+        ,("Harness 合同会话隔离（不同合同不同 Session/同 taskId 运行中接回不重复提交/指纹变化旧会话已结束时诚实失败/同项目其他运行合同本地等待不接管/旧 affinity 不复用）", TestHarnessContractSessionIsolationAsync)
         ,("Harness 报告完成门禁（有效报告通过/固定键单行通过/带括号失败/缺失/陈旧/错 ID/错指纹/缺字段失败/REVIEW_PACKET 记录校验）", TestHarnessReportGateAsync)
         ,("Harness step 重置与工具分片聚合（turn/start 重置/分片不误计数/参数超限不误判/HTTP 轮询一致）", TestHarnessStepResetAndToolAggregationAsync)
         ,("Harness runner 零证据（会话已建/无事件/无步骤/无 token 最终 failed，不长期运行中）", TestHarnessRunnerZeroEvidenceFailsAsync)
         ,("Harness runner 断流后 HTTP 有进度（不误判失败/保持 running/增量回退到终态）", TestHarnessRunnerHttpProgressAfterDisconnectAsync)
-        ,("Harness rootCauseKey 组键接回（同组键接回/不同组键新建）", TestHarnessRootCauseKeyResumeAsync)
+        ,("Harness Gateway 基线（remote.mux session/follow 首 snapshot 水位：分段/中文跨片增量解码/错 stream/超时/大包/缺 cursor/小数水位/序号超 cursor/对端不回应 close 有界清理/并发读取各自独立/错误帧/断开取消/归一化只返水位于元数据/旧版走 session.history）", TestHarnessGatewaySnapshotBaselineAsync)
+        ,("Harness rootCauseKey 组键接回（同目录不同组键仍续用同一已停止会话/运行中他人会话本地等待不接管/不同目录隔离）", TestHarnessRootCauseKeyResumeAsync)
         ,("Harness 已完成连续会话（显式组键复用/事件基线/上下文脱敏/负面隔离）", TestHarnessEndedContinuityAsync)
         ,("Harness 动态模型目录与用户选择（任意 provider/原始 ID 解析、保存 provider-qualified 选择、目录失效/不可读零 prompt、Host current 可见采用）", TestHarnessModelPickerAsync)
         ,("Harness 选模顺序与旧会话保护（session.models→selectModel→二次确认后才 prompt；旧会话模型失效零取消零迁移零 prompt）", TestHarnessModelSelectionOrderAsync)
-        ,("Harness 已完成连续会话（巨大历史轻量基线：maxMessages 请求携带断言/小尾窗续接/旧 Host 不支持保守不续接）", TestHarnessHistoryBaselineContinuityAsync)
+        ,("Harness 已完成连续会话（巨大历史轻量基线：maxMessages 请求携带断言/小尾窗续接/基线不可读时本地等待并如实失败，绝不伪续接）", TestHarnessHistoryBaselineContinuityAsync)
         ,("Harness 阶段进展防护（不同目标读取不停止/写入检查报告进展清重复/同阶段无进展循环停止/大量推理不改步骤/摘要分离）", TestHarnessProgressAwareGuardAsync)
-        ,("Harness 跨任务目录单飞占位（无会话 starting 持租约即占位，第二合同 busy 含旧任务 ID；孤儿 starting 不阻塞）", TestHarnessCrossDirectorySingleflightOccupancyAsync)
+        ,("Harness 跨任务目录单飞占位（无会话 starting 持租约即占位，第二合同本地等待并如实失败含旧任务 ID；孤儿 starting 不阻塞）", TestHarnessCrossDirectorySingleflightOccupancyAsync)
         ,("Harness 会话创建前停止持久化取消意图（停止后 StartAsync 兑现取消，不建会话不提交）", TestHarnessPersistedCancelIntentStartAsync)
         ,("Harness 报告缩进列表解析（多行修改文件/workerChecks/风险通过，行内与结构校验保持）", TestHarnessReportMultilineListAsync)
-        ,("Harness 原子项目互斥（项目级跨进程租约占位：同项目第二任务 busy 含占用方，不创建会话不提交）", TestHarnessProjectLeaseAtomicMutexAsync)
+        ,("Harness 原子项目互斥（项目级跨进程租约占位：同项目第二任务本地等待占用方，等待上限后如实失败，不创建会话不提交）", TestHarnessProjectLeaseAtomicMutexAsync)
         ,("Harness 项目租约崩溃遗留与机械并行例外（残留锁文件不阻塞重新获取；manifest 显式 parallelWriteSets 放行绕过分互斥）", TestHarnessProjectLeaseCrashAndParallelAsync)
         ,("Harness 事件流长时间无帧回退 HTTP（无帧超时放弃连接计入重连，耗尽降级 HTTP 增量轮询到达终态并写明降级事实）", TestHarnessEventStreamFrameTimeoutFallbackAsync)
         ,("Harness 目录真相源与旧状态迁移（双写/真源优先/损坏回退/自动迁移）", TestHarnessTaskStateStoreAsync)
@@ -156,7 +162,7 @@ internal static class Program
         ,("Harness 监督器终态可重连读取与旧同步回归（terminal await/status 重读/Parse 旧形态与 -Mode 解析/结论退出码映射）", TestHarnessSupervisorTerminalReconnectAndLegacyAsync)
         ,("Harness 监督器真实受控进程接管（真实 spawn PID/attach 存活不终态/身份不符不接管/杀后按真相门禁收尾）", TestHarnessSupervisorRealProcessTakeoverAsync)
         ,("Harness 监督器终态重连门禁收紧（旧 completed+当前真相缺失/running/报告失效→uncertain/failed 退出码非0；当前 cancelled/failed 覆盖旧记录；成功重连保留）", TestHarnessSupervisorTerminalReconnectGateAsync)
-        ,("Harness 组键续接诊断（无组键默认/不同组键隔离/报告未过门禁/续接成功原因可读）", TestHarnessContinuityDiagnosticAsync)
+        ,("Harness 组键续接诊断（无组键且无候选显式新建/同目录不同组键仍续用/报告未过门禁仍续用并标注未验收/续接成功原因可读）", TestHarnessContinuityDiagnosticAsync)
         ,("Harness max-tokens 自动恢复（length/max-tokens 识别/同一会话短恢复一次/上限 1/再次截断真实失败/不建第二会话）", TestHarnessMaxTokenRecoveryAsync)
         ,("Harness max-tokens 恢复门禁与失败诊断（恢复后无报告 failed/提交失败/Host 不可核验/HTTP 轮询恢复）", TestHarnessMaxTokenRecoveryGateAndFallbacksAsync)
         ,("88frp 入口解析与去抖（回环隧道/非回环排除/多实例歧义/缺失保留既有信任/稳定后才切换）", TestFrpAuthorityResolutionAndDebounceAsync)
@@ -180,7 +186,15 @@ internal static class Program
             if (filters.Length > 0 && !filters.Any(filter => name.Contains(filter, StringComparison.OrdinalIgnoreCase))) continue;
             if (excludes.Any(exclude => name.Contains(exclude, StringComparison.OrdinalIgnoreCase))) continue;
             ran++;
-            try { await test(); Console.WriteLine("PASS  " + name); }
+            try
+            {
+                // 每个测试自带看门狗：任何实现缺陷导致的悬挂都变成可读失败，而不是无限等待整个套件。
+                var worker = test();
+                var completed = await Task.WhenAny(worker, Task.Delay(TimeSpan.FromSeconds(120)));
+                if (!ReferenceEquals(completed, worker)) throw new InvalidOperationException("测试超时（120 秒未返回）");
+                await worker;
+                Console.WriteLine("PASS  " + name);
+            }
             catch (Exception ex) { failed++; Console.Error.WriteLine("FAIL  " + name + "\n      " + ex); }
         }
         Console.WriteLine($"\n结果：{ran - failed}/{ran} 通过");
@@ -1190,7 +1204,8 @@ internal static class Program
         // 版本源必须与当前发布版本一致。
         var props = await File.ReadAllTextAsync(Path.Combine(root, "Directory.Build.props"));
         var match = System.Text.RegularExpressions.Regex.Match(props, @"<Version>([^<]+)</Version>");
-        Assert(match.Success && match.Groups[1].Value == "4.4.0", "版本源必须为 4.4.0，实际：" + (match.Success ? match.Groups[1].Value : "未找到"));
+        var version = typeof(AppPaths).Assembly.GetName().Version!.ToString(3);
+        Assert(match.Success && match.Groups[1].Value == version, "版本源必须与当前构建程序集一致。");
 
         // 安装器：含微软官方链接、无 full/portable 旧引导、运行库检测不依赖单一目录。
         var iss = await File.ReadAllTextAsync(Path.Combine(root, "installer", "CodexHelperRuntimeRequired.iss"));
@@ -1201,14 +1216,16 @@ internal static class Program
 
         // 精简发布脚本：引用精简 iss、不生成 full/portable。
         var release = await File.ReadAllTextAsync(Path.Combine(root, "scripts", "build-release.ps1"));
+        release = string.Join("\n", release.Split('\n').Where(line => !line.TrimStart().StartsWith("#")));
         Assert(release.Contains("CodexHelperRuntimeRequired.iss", StringComparison.Ordinal), "精简发布必须使用精简安装器脚本。");
         Assert(!release.Contains("CodexHelper.iss", StringComparison.Ordinal) && !release.Contains("portable", StringComparison.OrdinalIgnoreCase) && !release.Contains("self-contained true", StringComparison.OrdinalIgnoreCase), "精简发布入口不得生成或选入 full/portable 资产。");
         Assert(release.Contains("codex-helper-v$version-setup.exe", StringComparison.Ordinal) && release.Contains("sha256", StringComparison.Ordinal), "精简发布必须产出版本化 setup 与 SHA-256。");
 
         // README：开发版本与当前正式 Release 保持一致，首页只提供版本化精简安装包。
         var readme = await File.ReadAllTextAsync(Path.Combine(root, "README.md"));
-        Assert(readme.Contains("当前开发版本：`4.4.0`", StringComparison.Ordinal), "README 当前开发版本应为 4.4.0。");
-        Assert(readme.Contains("releases/download/v4.4.0/codex-helper-v4.4.0-setup.exe", StringComparison.Ordinal) && readme.Contains("releases/tag/v4.4.0", StringComparison.Ordinal), "README 首页应指向 v4.4.0 正式 Release 与版本化安装包。");
+        Assert(readme.Contains("当前版本：`" + version + "`", StringComparison.Ordinal), "README 版本与构建一致。");
+        Assert(readme.Contains($"releases/download/v{version}/codex-helper-v{version}-setup.exe", StringComparison.Ordinal)
+            && readme.Contains($"releases/tag/v{version}", StringComparison.Ordinal), "README 下载链接必须指向当前版本。");
         Assert(readme.Contains("https://dotnet.microsoft.com/zh-cn/download/dotnet/8.0", StringComparison.Ordinal), "README 下载区应提供微软官方 .NET 8 下载页。");
         Assert(!readme.Contains("setup-full", StringComparison.OrdinalIgnoreCase) && !readme.Contains("portable.zip", StringComparison.OrdinalIgnoreCase), "README 不得再推荐 full/portable 下载。");
     }
@@ -5169,6 +5186,10 @@ internal static class Program
         public string BaseUrl { get; private set; } = "";
         public List<(string Method, string RpcId, JsonNode Payload)> Calls { get; } = [];
         public int WsConnections;
+        /// <summary>本假 Host 实例上的 /api/remote.mux 连接数：用于给每次 Gateway 读取分配独立帧脚本。</summary>
+        public int MuxConnections;
+        /// <summary>最近一次 mux 客户端帧的 streamId（真实 Gateway 回显请求 streamId，测试桩据此回填帧）。</summary>
+        public string? LastMuxStreamId;
         public Exception? Fatal { get; private set; }
 
         /// <summary>RPC 响应生成器：(method, payload) → value；抛出 FakeHostError 表示业务错误。</summary>
@@ -5198,15 +5219,42 @@ internal static class Program
 
         public async Task StartAsync()
         {
-            var port = FreePort();
             // HttpListener.Start 失败后实例在部分 Windows 版本会进入 disposed 状态，
-            // 不能再 Clear Prefixes 后复用；测试统一绑定无需 URL ACL 的 IPv4 loopback。
-            listener.Prefixes.Add($"http://127.0.0.1:{port}/");
-            listener.Start();
-            BaseUrl = $"http://127.0.0.1:{port}";
-            if (!listener.IsListening) throw new InvalidOperationException("无法启动测试 Host（URL ACL 拒绝）");
+            // 不能再 Clear Prefixes 后复用；测试统一绑定无需 URL ACL 的 IPv4 loopback（不重试/不放宽前缀）。
+            BaseUrl = ListenOn(out _);
+            if (!listener.IsListening) throw new InvalidOperationException("无法启动测试 Host（URL ACL 拒绝）；" + hostDetail);
             acceptLoop = Task.Run(AcceptLoopAsync);
             await Task.CompletedTask;
+        }
+
+        private string? hostDetail;
+
+        /// <summary>重试获取 HTTP 前缀：极端环境下严格绑定 loopback 可能被瞬时拒绝，测试本身不得因此假失败。</summary>
+        private string ListenOn(out int boundPort)
+        {
+            Exception? last = null;
+            for (var attempt = 0; attempt < 6; attempt++)
+            {
+                var port = FreePort();
+                // 严格绑定 127.0.0.1（而非 +/*）以避免需要 URL ACL 的通配前缀。
+                listener.Prefixes.Add($"http://127.0.0.1:{port}/");
+                try
+                {
+                    listener.Start();
+                    hostDetail = $"prefix=http://127.0.0.1:{port}/；attempt={attempt}";
+                    boundPort = port;
+                    return $"http://127.0.0.1:{port}";
+                }
+                catch (Exception ex)
+                {
+                    // HttpListener 在 Windows 上是严格绑定；localhost 通配前缀可能因 ACL/占用失败，
+                    // 这里只重试同一严格 loopback 前缀（换端口重试），绝不放宽到通配符前缀。
+                    last = ex;
+                    listener.Prefixes.Clear();
+                    Thread.Sleep(40);
+                }
+            }
+            throw new InvalidOperationException("无法启动测试 Host（严格 loopback 前缀重试耗尽）：" + last);
         }
 
         private static int FreePort()
@@ -5234,6 +5282,16 @@ internal static class Program
             try
             {
                 var path = ctx.Request.Url?.AbsolutePath ?? "/";
+                if (ctx.Request.IsWebSocketRequest && path == "/api/remote.mux")
+                {
+                    // 新版 Gateway 的 Remote 流多路复用端点：只按脚本回帧（snapshot/error/end），
+                    // 忽略客户端 open/cancel 的具体内容，用于验证水位读取的协议处理与有界性。
+                    var muxCtx = await ctx.AcceptWebSocketAsync(null);
+                    var muxIndex = Interlocked.Increment(ref MuxConnections) - 1;
+                    var muxScript = muxIndex < WsScripts.Length ? new Queue<string>(WsScripts[muxIndex]) : new Queue<string>();
+                    await RunWsScriptAsync(muxCtx.WebSocket, muxScript);
+                    return;
+                }
                 if (ctx.Request.IsWebSocketRequest && (path == "/api/events.mux" || path == "/api/events.host"))
                 {
                     var wsCtx = await ctx.AcceptWebSocketAsync(null);
@@ -5324,6 +5382,9 @@ internal static class Program
         {
             try
             {
+                // 每个连接独立：streamId 只回填本连接客户端 open 帧里的值（绝不沿用其他连接的）。
+                string? connectionStreamId = null;
+                var streamIdRead = false;
                 while (script.Count > 0)
                 {
                     var step = script.Dequeue();
@@ -5350,21 +5411,103 @@ internal static class Program
                         continue;
                     }
                     var bytes = Encoding.UTF8.GetBytes(step);
+                    // 帧里的 streamId 占位符：真实 Gateway 回显请求 streamId，测试桩先把客户端 open 帧的
+                    // streamId 记下来（每连接只读一次），再把待发帧里的占位符替换成它
+                    // （读取器只接受与自己 streamId 匹配的帧，绝不误用别人的水位）。
+                    if (!streamIdRead && ReadIdMarker.Equals(step, StringComparison.Ordinal))
+                    {
+                        streamIdRead = true;
+                        connectionStreamId = await TryReadMuxStreamIdAsync(ws);
+                        LastMuxStreamId = connectionStreamId;
+                        continue;
+                    }
+                    if (!streamIdRead && step.Contains(StreamIdMarker, StringComparison.Ordinal))
+                    {
+                        streamIdRead = true;
+                        connectionStreamId = await TryReadMuxStreamIdAsync(ws);
+                        LastMuxStreamId = connectionStreamId;
+                    }
+                    if (connectionStreamId is not null && step.Contains(StreamIdMarker, StringComparison.Ordinal))
+                    {
+                        step = step.Replace(StreamIdMarker, connectionStreamId, StringComparison.Ordinal);
+                        bytes = Encoding.UTF8.GetBytes(step);
+                    }
+                    // "@split:" 前缀表示把这条 JSON 拆成多个 WebSocket 文本帧发送（验证分段拼装）。
+                    if (step.StartsWith(SplitMarker, StringComparison.Ordinal))
+                    {
+                        var payload = Encoding.UTF8.GetBytes(step[SplitMarker.Length..]);
+                        var third = Math.Max(1, payload.Length / 3);
+                        for (var offset = 0; offset < payload.Length; offset += third)
+                        {
+                            var count = Math.Min(third, payload.Length - offset);
+                            var endOfMessage = offset + count >= payload.Length;
+                            await ws.SendAsync(new ArraySegment<byte>(payload, offset, count), WebSocketMessageType.Text, endOfMessage, CancellationToken.None);
+                        }
+                        continue;
+                    }
+                    // "@split2:" / "@split2:N:"：把 JSON 在正中间（或 JSON 字符偏移 N 处）切成两个文本帧，
+                    // 用于验证多字节字符跨片时增量解码不损坏（N 落在该字符首字节上时跨片必被切断）。
+                    if (step.StartsWith(Split2Marker, StringComparison.Ordinal))
+                    {
+                        var rest = step[Split2Marker.Length..];
+                        var colon = rest.IndexOf(':');
+                        var offsetChars = colon >= 0 && int.TryParse(rest[..colon], out var parsedOffset) ? parsedOffset : -1;
+                        var json = colon >= 0 ? rest[(colon + 1)..] : rest;
+                        var payload = Encoding.UTF8.GetBytes(json);
+                        var cut = offsetChars >= 0
+                            ? Math.Min(payload.Length - 1, Math.Max(1, Encoding.UTF8.GetByteCount(json[..offsetChars])))
+                            : Math.Max(1, payload.Length / 2);
+                        await ws.SendAsync(new ArraySegment<byte>(payload, 0, cut), WebSocketMessageType.Text, false, CancellationToken.None);
+                        await ws.SendAsync(new ArraySegment<byte>(payload, cut, payload.Length - cut), WebSocketMessageType.Text, true, CancellationToken.None);
+                        continue;
+                    }
+                    // "@idle"："黑洞"对端：只保持连接、不再读取客户端帧、也不回应 close。
+                    // 用于验证读取器的清理必须自己有界（绝不等待服务端 close 回应）。
+                    if (step == IdleMarker)
+                    {
+                        await Task.Delay(Timeout.InfiniteTimeSpan, cts.Token);
+                        return;
+                    }
                     await ws.SendAsync(bytes, WebSocketMessageType.Text, true, CancellationToken.None);
                 }
-                // 脚本耗尽：保持连接直到客户端关闭。
+                // 脚本耗尽：保持连接直到客户端关闭；Host 释放时必须能取消读取，绝不永久悬挂。
                 var buffer = new byte[1024];
-                while (ws.State == WebSocketState.Open)
+                while (ws.State == WebSocketState.Open && !cts.IsCancellationRequested)
                 {
-                    var result = await ws.ReceiveAsync(buffer, CancellationToken.None);
+                    var result = await ws.ReceiveAsync(buffer, cts.Token);
                     if (result.MessageType == WebSocketMessageType.Close) break;
                 }
             }
             catch { try { ws.Abort(); } catch { } }
         }
 
-        private async Task KeepHostChannelOpenAsync(WebSocket ws)
+        /// <summary>读取客户端 mux 帧并取出其中的 streamId（读取器只接受与自己 streamId 匹配的帧）。</summary>
+        private static async Task<string?> ReadMuxStreamIdAsync(WebSocket ws, CancellationToken cancellationToken)
         {
+            var buffer = new byte[16 * 1024];
+            var received = await ws.ReceiveAsync(new ArraySegment<byte>(buffer), cancellationToken);
+            if (received.MessageType != WebSocketMessageType.Text) return null;
+            var text = Encoding.UTF8.GetString(buffer, 0, received.Count);
+            return JsonNode.Parse(text) is JsonObject frame ? frame["streamId"]?.GetValue<string>() : null;
+        }
+
+        /// <summary>有界读取客户端 open 帧的 streamId；客户端尚未发送时返回 null（不阻塞脚本）。</summary>
+        private async Task<string?> TryReadMuxStreamIdAsync(WebSocket ws)
+        {
+            try
+            {
+                using var probeWindow = CancellationTokenSource.CreateLinkedTokenSource(cts.Token);
+                probeWindow.CancelAfter(TimeSpan.FromMilliseconds(750));
+                return await ReadMuxStreamIdAsync(ws, probeWindow.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                // 客户端尚未发出 open 帧（如裸探针连接）：不回填 streamId，保持脚本原样发送。
+                return null;
+            }
+        }
+
+        private async Task KeepHostChannelOpenAsync(WebSocket ws)        {
             try
             {
                 await Task.Delay(Timeout.InfiniteTimeSpan, cts.Token);
@@ -5504,6 +5647,20 @@ internal static class Program
     private static HarnessHostReadyResult ReadyResult(string message, bool ready = true)
         => new(ready, false, 0, message, new DeepSeekHarnessStatus(false, "", "", "", false, "", "", ready,
             DeepSeekHarnessVersions.WebHostDefaultUrl, message, false, false, "", DeepSeekHarnessVersions.NodeDownloadUrl, false));
+
+    /// <summary>
+    /// 测试用 Runner：生产默认是"持续本地等待"（不人为判失败），测试必须注入一个很短的等待上限，
+    /// 才能在有限时间内观测到"等待他人终态/项目锁"的真实行为而不挂起测试进程。
+    /// </summary>
+    private static DeepSeekHarnessRunner QuickRunner(AppPaths paths, string webUrl, IDeepSeekHarnessRelay relay,
+        Func<CancellationToken, Task<HarnessHostReadyResult>> ready)
+        => new(paths)
+        {
+            WebUrl = webUrl,
+            RelayProbe = relay,
+            HostReadyEnsurer = ready,
+            ProjectLeaseWaitLimitSeconds = 2
+        };
 
     /// <summary>测试内复刻 Runner 的合同指纹算法（SPEC/HANDOFF/manifest 内容哈希），用于预写有效报告。</summary>
     private static string TestFingerprint(string taskDirectory)
@@ -5666,6 +5823,7 @@ internal static class Program
                 "session/cancel" => new JsonObject { ["accepted"] = true },
                 _ => throw new FakeHostError("bad-request", "unexpected endpoint")
             }
+            ,WsScripts = [new Queue<string>(["""{"type":"item","streamId":"__STREAM_ID__","value":{"type":"snapshot","cursor":7,"records":[],"projections":{"asOfSeq":7,"values":{"modelSelection":{"next":{"provider":"other","model":"real-session-model"}}}}}}"""])]
         };
         await host.StartAsync();
         using var rpc = new HarnessRpcClient(host.BaseUrl);
@@ -5674,7 +5832,8 @@ internal static class Program
         Assert(rpc.ProtocolName == "gateway-slash-rpc", "应以只读 session/list 识别 Gateway，不按版本号猜测。");
         var models = await rpc.GetSessionModelsAsync("sess-gateway-1");
         var catalog = HarnessModelCatalog.FromValue(models.Value);
-        Assert(models.Success && catalog.Succeeded && catalog.CurrentModel == "flash", "Gateway modelCatalog 应归一为模型目录。");
+        Assert(models.Success && catalog.Succeeded && catalog.CurrentModel == "real-session-model"
+            && catalog.CurrentProvider == "other", "Gateway 必须读取真实会话模型，不能冒用 catalog.default。");
         var prompt = await rpc.PromptAsync("sess-gateway-1", "只读合同定位", "Asia/Shanghai");
         Assert(prompt.Success, "Gateway prompt 应成功：" + prompt.ErrorMessage);
         var cancel = await rpc.CancelAsync("sess-gateway-1");
@@ -6257,6 +6416,11 @@ internal static class Program
             Assert(!missing.Requested && missing.Message.Contains("未找到该任务", StringComparison.Ordinal), "缺失状态文件应诚实失败：" + missing.Message);
 
             // ---- 4) 既有 live 停止语义保持：StopTask 仍能取消本进程启动的任务并让 Host 收到 session.cancel。 ----
+            // 不复用上个场景已被用户取消的合同（真实规则禁止自动重提）。
+            var liveTask = Path.Combine(project, ".codex-helper", "runs", "run-live-stop");
+            Directory.CreateDirectory(liveTask);
+            await File.WriteAllTextAsync(Path.Combine(liveTask, "SPEC.md"), "独立停止测试");
+            var liveTaskId = Path.GetFileName(liveTask);
             await using (var host = new FakeHarnessHost
             {
                 Respond = (method, _) => method switch
@@ -6283,9 +6447,9 @@ internal static class Program
                     RelayProbe = new ConfirmedHarnessRelay(),
                     HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。"))
                 };
-                var startTask = runner.StartAsync(project, task);
-                await WaitUntilAsync(() => runner.TryRead(taskId) is { } mid && mid.State == "running", message: "任务应进入 running");
-                var liveResult = await runner.StopTaskAsync(taskId);
+                var startTask = runner.StartAsync(project, liveTask);
+                await WaitUntilAsync(() => runner.TryRead(liveTaskId) is { } mid && mid.State == "running", message: "任务应进入 running");
+                var liveResult = await runner.StopTaskAsync(liveTaskId);
                 Assert(liveResult.Requested, "live 任务停止应返回请求成功：" + liveResult.Message);
                 var status = await startTask;
                 Assert(status.State == "cancelled" && status.SessionId == "sess-live-1", "live 停止终态应为 cancelled：" + status.State);
@@ -6407,7 +6571,7 @@ internal static class Program
                 Assert(f is not null && !f.IsRunning && g is not null && !g.IsRunning && h is not null && !h.IsRunning, "新终态不得再归类为运行中");
                 Assert(f is not null && f.State != "completed" && g is not null && g.State != "completed" && h is not null && h.State != "completed", "缺少可信终态绝不伪造 completed");
                 // 一次列表对账：session.list 只调用一次。
-                Assert(host.Calls.Count(call => call.Method == "session.list") == 1, "对账应只调用一次 session.list");
+                Assert(host.Calls.Count(call => call.Method == "session.list") == 2, "一次协议探测加一次列表对账，不得逐会话重复列表");
                 // history 只对已结束会话调用（b/c/d/f/g/h）。
                 Assert(host.Calls.Count(call => call.Method == "session.history") == 6, "history 应只对已结束会话调用");
             }
@@ -7148,7 +7312,7 @@ internal static class Program
                     DebounceConfirmedAuthority = service.Snapshot().VerifiedAuthority,
                     VerifyOriginAsync = (_, _) => Task.FromResult(accepted
                         ? FrpOriginVerification.Ok(activeSessions)
-                        : FrpOriginVerification.Reject("HTTP 403（origin 未被接受）", activeSessions)),
+                        : FrpOriginVerification.Reject("HTTP 403（origin 未被接受）", activeSessions, activeSessionsKnown: true)),
                     RestartHostAsync = (_, _) => { restarts++; return Task.CompletedTask; }
                 };
 
@@ -7282,7 +7446,7 @@ remotePort = 58831
             {
                 verificationAttempts++;
                 return Task.FromResult(restarts == 0
-                    ? FrpOriginVerification.Reject("HTTP 403（origin 未被接受）", 0)
+                    ? FrpOriginVerification.Reject("HTTP 403（origin 未被接受）", 0, activeSessionsKnown: true)
                     : FrpOriginVerification.Ok(0));
             };
             DeepSeekHarnessHiddenHost.SyncStateStore = store;
@@ -7445,7 +7609,7 @@ remotePort = 58831
             Assert(first.Contains("只运行 workerChecks", StringComparison.Ordinal), "preset 必须限定只运行 workerChecks。");
             Assert(first.Contains("Release build", StringComparison.Ordinal) && first.Contains("完整测试套件", StringComparison.Ordinal), "preset 必须声明默认检查只做 Release build 且不跑完整测试套件。");
             Assert(first.Contains("EXECUTION_REPORT.md", StringComparison.Ordinal) && first.Contains("等待 GPT 验收", StringComparison.Ordinal), "preset 必须声明结束即报告并等待 GPT 验收。");
-            Assert(HarnessExecutionOptions.DescribeMode("codex-contract").Contains("快速连续", StringComparison.Ordinal),
+            Assert(HarnessExecutionOptions.DescribeMode("codex-contract").Contains("同一开发目录", StringComparison.Ordinal),
                 "合同模式描述必须说明快速连续能力：" + HarnessExecutionOptions.DescribeMode("codex-contract"));
             Assert(first.Contains("快速连续", StringComparison.Ordinal) && first.Contains("PROJECT_CONTEXT.md", StringComparison.Ordinal),
                 "preset persona 必须声明快速连续续接与有界 PROJECT_CONTEXT.md：");
@@ -7463,8 +7627,8 @@ remotePort = 58831
             // DescribeMode 的快速连续说明同样包含连续“禁止递归扫描”，保持“同时保持原有语义”。
             Assert(HarnessExecutionOptions.DescribeMode("codex-contract").Contains("禁止递归扫描", StringComparison.Ordinal),
                 "合同模式描述必须包含连续字串“禁止递归扫描”：" + HarnessExecutionOptions.DescribeMode("codex-contract"));
-            Assert(HarnessExecutionOptions.DescribeMode("codex-contract").Contains("rootCauseKey", StringComparison.Ordinal)
-                && HarnessExecutionOptions.DescribeMode("codex-contract").Contains("报告门禁", StringComparison.Ordinal),
+            Assert(HarnessExecutionOptions.DescribeMode("codex-contract").Contains("独立审计", StringComparison.Ordinal)
+                && HarnessExecutionOptions.DescribeMode("codex-contract").Contains("PROJECT_CONTEXT.md", StringComparison.Ordinal),
                 "合同模式描述的快速连续语义必须保持（rootCauseKey 门禁与有界 PROJECT_CONTEXT.md）：" + HarnessExecutionOptions.DescribeMode("codex-contract"));
         }
         finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
@@ -7623,6 +7787,7 @@ remotePort = 58831
                 Respond = (method, _) => method switch
                 {
                     "session.create" => new JsonObject { ["sessionId"] = "sess-iso-a" },
+                    "session.list" => new JsonObject { ["items"] = new JsonArray() },
                     "session.prompt" => new JsonObject { ["accepted"] = true },
                     _ => new JsonObject()
                 },
@@ -7653,6 +7818,7 @@ remotePort = 58831
                 Respond = (method, _) => method switch
                 {
                     "session.create" => new JsonObject { ["sessionId"] = "sess-iso-b" },
+                    "session.list" => new JsonObject { ["items"] = new JsonArray() },
                     "session.prompt" => new JsonObject { ["accepted"] = true },
                     _ => new JsonObject()
                 },
@@ -7678,7 +7844,7 @@ remotePort = 58831
                 Assert(host.Calls.Count(call => call.Method == "session.create") == 1, "合同 B 应恰好创建一次会话");
             }
 
-            // ---- 2) SPEC 变化（指纹变化）且旧会话已结束 → 强制新 Session，不复用旧会话。 ----
+            // ---- 2) SPEC 变化（指纹变化）且旧会话已结束但终态不可核验 → 诚实失败，绝不重提交/伪造完成。 ----
             var taskC = Path.Combine(project, ".codex-helper", "runs", "run-iso-c");
             Directory.CreateDirectory(taskC);
             await File.WriteAllTextAsync(Path.Combine(taskC, "SPEC.md"), "合同 C 版本 1");
@@ -7722,11 +7888,18 @@ remotePort = 58831
                 HarnessTaskStateStore.WriteStatus(Path.GetDirectoryName(runner.TaskDirectoryFor(taskIdC))!, oldStatus);
 
                 var c = await runner.StartAsync(project, taskC);
-                Assert(c.State == "awaiting-gpt" && c.SessionId == "sess-iso-new", "指纹变化且旧会话已结束应强制新 Session：" + c.State + " / " + c.SessionId);
-                Assert(host.Calls.Count(call => call.Method == "session.create") == 1, "指纹变化应创建新会话");
+                // 同 taskId 旧会话已被 Host 判定为已结束且读不到可信终态：绝不接回、绝不重复提交；
+                // 目录级续用随后发现该候选已明确不在 Host，因此按"原会话不存在"显式新建本合同会话。
+                Assert(c.State == "awaiting-gpt" && c.SessionId == "sess-iso-new"
+                    && c.ContinuityDiagnostic is not null && c.ContinuityDiagnostic.Contains("明确不存在", StringComparison.Ordinal),
+                    "旧会话已结束且终态不可核验时不得接回/重提交，必须显式写明原会话不存在后新建：" + c.State + " / " + c.SessionId + " / " + c.ContinuityDiagnostic);
+                Assert(!host.Calls.Any(call => call.Method == "session.prompt"
+                        && string.Equals(call.Payload["sessionId"]?.GetValue<string>(), "sess-iso-old", StringComparison.Ordinal)),
+                    "不得对不可核验的旧会话重复提交提示");
+                Assert(host.Calls.Count(call => call.Method == "session.create") == 1, "原会话不存在时应恰好新建一次会话");
             }
 
-            // ---- 3) SPEC 变化（指纹变化）且旧会话仍在运行 → busy（防并发覆盖，不复用）。 ----
+            // ---- 3) 同 taskId 的指纹已变化且旧会话仍在运行 → busy 等它结束，绝不并发新建、绝不重复提交。 ----
             await using (var host = new FakeHarnessHost
             {
                 Respond = (method, _) => method switch
@@ -7743,20 +7916,20 @@ remotePort = 58831
                     RelayProbe = new ConfirmedHarnessRelay(),
                     HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。"))
                 };
+                // 同 taskId 的旧指纹记录（与当前指纹不同：合同正文已变化）。
                 var oldStatus = new HarnessTaskStatus(taskIdC, project, taskC, "running", "旧合同运行中。",
                     DateTime.UtcNow.AddMinutes(-10), DateTime.UtcNow.AddMinutes(-9), 0, host.BaseUrl, "sess-iso-old",
                     ContractFingerprint: oldFingerprint);
                 HarnessTaskStateStore.WriteStatus(Path.GetDirectoryName(runner.TaskDirectoryFor(taskIdC))!, oldStatus);
 
-                var busy = await runner.StartAsync(project, taskC);
-                Assert(busy.State == "busy" && busy.Message.Contains("正在运行", StringComparison.Ordinal),
-                    "旧合同仍运行时新指纹合同应返回 busy：" + busy.State + " / " + busy.Message
-                    + "；calls=" + string.Join(",", host.Calls.Select(call => call.Method))
-                    + "；persisted=" + runner.TryRead(taskIdC)?.State + "/" + runner.TryRead(taskIdC)?.SessionId);
-                Assert(!host.Calls.Any(call => call.Method == "session.create"), "busy 时不得创建新会话");
+                var changed = await runner.StartAsync(project, taskC);
+                Assert(changed.State == "busy" && changed.Message.Contains("旧合同正在运行", StringComparison.Ordinal),
+                    "同 taskId 指纹变化且旧会话仍在运行时应返回 busy 等它结束：" + changed.State + " / " + changed.Message);
+                Assert(!host.Calls.Any(call => call.Method == "session.create"), "指纹变化时不得并发创建新会话");
+                Assert(!host.Calls.Any(call => call.Method == "session.prompt"), "指纹变化时不得重复提交提示");
             }
 
-            // ---- 4) 同项目其他 taskId 的合同正在运行 → busy（判断忙碌不以复用旧会话实现）。 ----
+            // ---- 4) 同项目其他 taskId 的合同正在运行 → 本地等待其真实终态（绝不接管别人的输出与报告）。 ----
             var taskD = Path.Combine(project, ".codex-helper", "runs", "run-iso-d");
             Directory.CreateDirectory(taskD);
             await File.WriteAllTextAsync(Path.Combine(taskD, "SPEC.md"), "合同 D");
@@ -7775,7 +7948,9 @@ remotePort = 58831
                 {
                     WebUrl = host.BaseUrl,
                     RelayProbe = new ConfirmedHarnessRelay(),
-                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。"))
+                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。")),
+                    // 测试注入有限等待：到上限后如实失败（生产默认是持续本地等待，可随时取消）。
+                    ProjectLeaseWaitLimitSeconds = 2
                 };
                 // 同项目另一个任务（run-iso-b 状态文件已被写为 awaiting-gpt，需再造一个 running 的 run-iso-e）。
                 var taskE = Path.Combine(project, ".codex-helper", "runs", "run-iso-e");
@@ -7788,8 +7963,11 @@ remotePort = 58831
                     JsonSerializer.Serialize(otherStatus, new JsonSerializerOptions { WriteIndented = true, Converters = { new HarnessUtcConverter() } }));
 
                 var d = await runner.StartAsync(project, taskD);
-                Assert(d.State == "busy" && d.Message.Contains("正在运行", StringComparison.Ordinal), "同项目其他运行合同应返回 busy：" + d.State + " / " + d.Message);
-                Assert(!host.Calls.Any(call => call.Method == "session.create"), "busy 时不得创建新会话");
+                Assert(d.State == "failed" && d.Message.Contains("正在运行", StringComparison.Ordinal)
+                    && d.Message.Contains("未创建新会话", StringComparison.Ordinal),
+                    "同项目其他运行合同必须本地等待并在等待上限后如实失败（绝不接管他人输出）：" + d.State + " / " + d.Message);
+                Assert(!host.Calls.Any(call => call.Method == "session.create"), "等待期间不得创建新会话");
+                Assert(!host.Calls.Any(call => call.Method == "session.prompt"), "等待期间不得提交提示");
             }
 
             // ---- 5) 旧 affinity 文件不得导致新合同复用旧 Session：存在旧亲和记录仍创建新会话。 ----
@@ -7812,14 +7990,14 @@ remotePort = 58831
             })
             {
                 await host.StartAsync();
-                var runner = new DeepSeekHarnessRunner(new AppPaths(Path.Combine(root, "app-iso")))
+                // 独立 AppPaths（干净 registry）：避免前面场景留下的 running 记录触发"等待他人终态"。
+                var runner = new DeepSeekHarnessRunner(new AppPaths(Path.Combine(root, "app-iso-affinity")))
                 {
                     WebUrl = host.BaseUrl,
                     RelayProbe = new ConfirmedHarnessRelay(),
                     HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。"))
                 };
-                var registry = Path.GetDirectoryName(runner.TaskDirectoryFor(taskIdD))!;
-                var affinityDir = Path.Combine(registry, "project-affinity");
+                var affinityDir = Path.Combine(Path.GetDirectoryName(runner.TaskDirectoryFor(taskIdD))!, "project-affinity");
                 Directory.CreateDirectory(affinityDir);
                 var normalized = Path.GetFullPath(project).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar).ToUpperInvariant();
                 var key = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(normalized)));
@@ -7835,8 +8013,9 @@ remotePort = 58831
     }
 
     /// <summary>
-    /// rootCauseKey 组键接回：相同项目且同显式组键已有运行任务时，后续合同必须接回该运行任务
-    /// （不新建会话、不重复提交提示）；未声明/不同组键时保持保守隔离（绝不基于自然语言猜测合并）。
+    /// 组键与目录级续用边界：组键只用于报告审计隔离，不再是能否续用的门槛。
+    /// 同一规范化开发目录默认持续同一 Helper 归属 DSH 会话（不同 rootCauseKey 也一样）；
+    /// 别的 taskId 的运行中会话绝不接管，只本地等待其真实终态；不同项目目录一律隔离。
     /// </summary>
     private static async Task TestHarnessRootCauseKeyResumeAsync()
     {
@@ -7848,30 +8027,23 @@ remotePort = 58831
             var taskB = Path.Combine(project, ".codex-helper", "runs", "run-rck-b");
             Directory.CreateDirectory(taskA);
             Directory.CreateDirectory(taskB);
-            await File.WriteAllTextAsync(Path.Combine(taskA, "SPEC.md"), "合同 A（同组键碎片）");
+            await File.WriteAllTextAsync(Path.Combine(taskA, "SPEC.md"), "合同 A（组键 group-x）");
             await File.WriteAllTextAsync(Path.Combine(taskA, "manifest.json"), """{"rootCauseKey":"group-x"}""", new System.Text.UTF8Encoding(false));
-            await File.WriteAllTextAsync(Path.Combine(taskB, "SPEC.md"), "合同 B（同组键碎片）");
-            await File.WriteAllTextAsync(Path.Combine(taskB, "manifest.json"), """{"rootCauseKey":"group-x"}""", new System.Text.UTF8Encoding(false));
+            await File.WriteAllTextAsync(Path.Combine(taskB, "SPEC.md"), "合同 B（组键 group-y）");
+            await File.WriteAllTextAsync(Path.Combine(taskB, "manifest.json"), """{"rootCauseKey":"group-y"}""", new System.Text.UTF8Encoding(false));
             var taskIdA = Path.GetFileName(taskA);
             var taskIdB = Path.GetFileName(taskB);
             WriteValidReport(taskB, taskIdB, TestFingerprint(taskB));
+            WriteValidReport(taskA, taskIdA, TestFingerprint(taskA));
 
-            // 场景 A：taskB 与运行中的 taskA 同项目且同组键 → 必须接回 taskA 的会话，不新建、不重复提交提示。
+            // 场景 A：taskB 与同目录中运行中的 taskA 组键不同 → 绝不接管他人运行会话，本地等待其真实终态。
             await using (var host = new FakeHarnessHost
             {
                 Respond = (method, _) => method switch
                 {
                     "session.list" => new JsonObject { ["items"] = new JsonArray(new JsonObject { ["sessionId"] = "sess-rck-a", ["running"] = true }) },
                     _ => new JsonObject()
-                },
-                WsScripts =
-                [
-                    new Queue<string>([
-                        WsFrame("session/subscribed", "sess-rck-a"),
-                        WsFrame("session/event", "sess-rck-a", "turn/start", seq: 1),
-                        WsFrame("session/event", "sess-rck-a", "turn/end", "completed", seq: 2)
-                    ])
-                ]
+                }
             })
             {
                 await host.StartAsync();
@@ -7879,46 +8051,50 @@ remotePort = 58831
                 {
                     WebUrl = host.BaseUrl,
                     RelayProbe = new ConfirmedHarnessRelay(),
-                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。"))
+                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。")),
+                    ProjectLeaseWaitLimitSeconds = 2
                 };
-                // 预写 taskA 的运行中状态文件（同项目、同组键、带真实会话 ID）。
-                var runningA = new HarnessTaskStatus(taskIdA, project, taskA, "running", "同组键任务运行中。",
+                // 预写 taskA 的运行中状态文件（同项目、不同组键、带真实会话 ID）。
+                var runningA = new HarnessTaskStatus(taskIdA, project, taskA, "running", "其他合同运行中。",
                     DateTime.UtcNow.AddMinutes(-10), DateTime.UtcNow.AddMinutes(-9), 0, host.BaseUrl, "sess-rck-a",
                     RootCauseKey: "group-x", ContractFingerprint: TestFingerprint(taskA));
                 File.WriteAllText(runner.TaskDirectoryFor(taskIdA),
                     JsonSerializer.Serialize(runningA, new JsonSerializerOptions { WriteIndented = true, Converters = { new HarnessUtcConverter() } }));
 
                 var b = await runner.StartAsync(project, taskB);
-                Assert(b.State == "awaiting-gpt" && b.SessionId == "sess-rck-a", "同组键合同应接回运行任务会话而非新建：" + b.State + " / " + b.SessionId);
-                Assert(!host.Calls.Any(call => call.Method == "session.create"), "组键接回不得创建新会话");
-                Assert(!host.Calls.Any(call => call.Method == "session.prompt"), "组键接回不得重复提交提示");
+                Assert(b.State == "failed" && b.Message.Contains("正在运行", StringComparison.Ordinal),
+                    "别的 taskId 的运行中会话绝不接管，必须本地等待其真实终态并在上限后如实失败：" + b.State + " / " + b.Message);
+                Assert(!host.Calls.Any(call => call.Method == "session.create"), "等待他人会话期间不得创建新会话");
+                Assert(!host.Calls.Any(call => call.Method == "session.prompt"), "等待他人会话期间不得提交本合同的提示");
             }
 
-            // 场景 A2（澄清边界）：同组键接回（GroupRunning）仅是观察他人运行会话。若该会话以
-            // 单回合 max-tokens（length）截断结束，本合同不得向他人会话提交恢复提示、不得干预，
-            // 只能如实返回失败——跨合同自动恢复仅限"已完成并通过报告门禁的正常连续会话"续接回合。
+            // 场景 A2：同目录已停止会话（组键不同）→ 续用同一会话提交本合同增量回合（组键不再是门槛）。
             var ownerDir = Path.Combine(project, ".codex-helper", "runs", "run-rck-g-owner");
             var taskG = Path.Combine(project, ".codex-helper", "runs", "run-rck-g");
             Directory.CreateDirectory(ownerDir);
             Directory.CreateDirectory(taskG);
-            await File.WriteAllTextAsync(Path.Combine(ownerDir, "SPEC.md"), "同组键 owner（他人合同）");
+            await File.WriteAllTextAsync(Path.Combine(ownerDir, "SPEC.md"), "已停止的 owner 合同（组键 group-g）");
             await File.WriteAllTextAsync(Path.Combine(ownerDir, "manifest.json"), """{"rootCauseKey":"group-g"}""", new System.Text.UTF8Encoding(false));
-            await File.WriteAllTextAsync(Path.Combine(taskG, "SPEC.md"), "合同 G（同组键观察截断）");
-            await File.WriteAllTextAsync(Path.Combine(taskG, "manifest.json"), """{"rootCauseKey":"group-g"}""", new System.Text.UTF8Encoding(false));
+            await File.WriteAllTextAsync(Path.Combine(taskG, "SPEC.md"), "合同 G（组键 group-h）");
+            await File.WriteAllTextAsync(Path.Combine(taskG, "manifest.json"), """{"rootCauseKey":"group-h"}""", new System.Text.UTF8Encoding(false));
             var taskIdG = Path.GetFileName(taskG);
+            WriteValidReport(ownerDir, "run-rck-g-owner", TestFingerprint(ownerDir));
+            WriteValidReport(taskG, taskIdG, TestFingerprint(taskG));
             await using (var hostG = new FakeHarnessHost
             {
                 Respond = (method, _) => method switch
                 {
-                    "session.list" => new JsonObject { ["items"] = new JsonArray(new JsonObject { ["sessionId"] = "sess-rck-g", ["running"] = true }) },
+                    "session.list" => new JsonObject { ["items"] = new JsonArray(new JsonObject { ["sessionId"] = "sess-rck-g", ["running"] = false }) },
+                    "session.history" => new JsonObject { ["projections"] = new JsonObject { ["asOfSeq"] = 12L } },
+                    "session.prompt" => new JsonObject { ["accepted"] = true },
                     _ => new JsonObject()
                 },
                 WsScripts =
                 [
                     new Queue<string>([
                         WsFrame("session/subscribed", "sess-rck-g"),
-                        WsFrame("session/event", "sess-rck-g", "turn/start", seq: 1),
-                        WsFrame("session/event", "sess-rck-g", "turn/end", "length", seq: 2)
+                        WsFrame("session/event", "sess-rck-g", "turn/start", seq: 13),
+                        WsFrame("session/event", "sess-rck-g", "turn/end", "completed", seq: 14)
                     ])
                 ]
             })
@@ -7930,24 +8106,27 @@ remotePort = 58831
                     RelayProbe = new ConfirmedHarnessRelay(),
                     HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。"))
                 };
-                var runningG = new HarnessTaskStatus("run-rck-g-owner", project, ownerDir, "running", "同组键任务运行中。",
-                    DateTime.UtcNow.AddMinutes(-10), DateTime.UtcNow.AddMinutes(-9), 0, hostG.BaseUrl, "sess-rck-g",
+                var stoppedOwner = new HarnessTaskStatus("run-rck-g-owner", project, ownerDir, "awaiting-gpt", "同目录前序已完成。",
+                    DateTime.UtcNow.AddMinutes(-10), DateTime.UtcNow.AddMinutes(-1), 0, hostG.BaseUrl, "sess-rck-g",
                     RootCauseKey: "group-g", ContractFingerprint: TestFingerprint(ownerDir));
                 File.WriteAllText(runnerG.TaskDirectoryFor("run-rck-g-owner"),
-                    JsonSerializer.Serialize(runningG, new JsonSerializerOptions { WriteIndented = true, Converters = { new HarnessUtcConverter() } }));
+                    JsonSerializer.Serialize(stoppedOwner, new JsonSerializerOptions { WriteIndented = true, Converters = { new HarnessUtcConverter() } }));
 
                 var g = await runnerG.StartAsync(project, taskG);
-                Assert(g.State == "failed" && g.Message.Contains("仅观察", StringComparison.Ordinal),
-                    "同组键观察期间对方会话截断，本合同应如实失败且不干预他人会话：" + g.State + " / " + g.Message);
-                Assert(!hostG.Calls.Any(call => call.Method == "session.create"), "观察截断不得创建新会话");
-                Assert(!hostG.Calls.Any(call => call.Method == "session.prompt"), "观察截断不得向他人会话提交恢复/初始提示");
+                Assert(g.State == "awaiting-gpt" && g.SessionId == "sess-rck-g"
+                    && g.ContinuitySourceTaskId == "run-rck-g-owner" && g.ContinuityRound == 2,
+                    "同目录已停止会话（组键不同）必须续用同一会话提交本合同增量回合：" + g.State + " / " + g.SessionId + " / " + g.ContinuitySourceTaskId);
+                Assert(!hostG.Calls.Any(call => call.Method == "session.create"), "续用同一会话不得创建新会话");
+                Assert(hostG.Calls.Count(call => call.Method == "session.prompt") == 1, "增量回合只提交一次本合同的提示");
             }
 
-            // 场景 B：同项目但不同显式组键，且无任何运行任务 → 保守隔离，创建新会话（绝不合并）。
-            var taskC = Path.Combine(project, ".codex-helper", "runs", "run-rck-c");
+            // 场景 B：不同项目目录（即使组键相同）→ 严格隔离，各自新建会话。
+            var otherProject = Path.Combine(root, "other-project");
+            var otherRuns = Path.Combine(otherProject, ".codex-helper", "runs");
+            var taskC = Path.Combine(otherRuns, "run-rck-c");
             Directory.CreateDirectory(taskC);
-            await File.WriteAllTextAsync(Path.Combine(taskC, "SPEC.md"), "合同 C（不同组键）");
-            await File.WriteAllTextAsync(Path.Combine(taskC, "manifest.json"), """{"rootCauseKey":"group-y"}""", new System.Text.UTF8Encoding(false));
+            await File.WriteAllTextAsync(Path.Combine(taskC, "SPEC.md"), "合同 C（不同项目同组键）");
+            await File.WriteAllTextAsync(Path.Combine(taskC, "manifest.json"), """{"rootCauseKey":"group-x"}""", new System.Text.UTF8Encoding(false));
             var taskIdC = Path.GetFileName(taskC);
             WriteValidReport(taskC, taskIdC, TestFingerprint(taskC));
             await using (var host = new FakeHarnessHost
@@ -7976,9 +8155,9 @@ remotePort = 58831
                     RelayProbe = new ConfirmedHarnessRelay(),
                     HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。"))
                 };
-                var c = await runner.StartAsync(project, taskC);
-                Assert(c.State == "awaiting-gpt" && c.SessionId == "sess-rck-c", "不同组键且无运行任务应创建新会话：" + c.State + " / " + c.SessionId);
-                Assert(host.Calls.Count(call => call.Method == "session.create") == 1, "不同组键应恰好创建一次新会话");
+                var c = await runner.StartAsync(otherProject, taskC);
+                Assert(c.State == "awaiting-gpt" && c.SessionId == "sess-rck-c", "跨项目目录必须隔离并创建新会话：" + c.State + " / " + c.SessionId);
+                Assert(host.Calls.Count(call => call.Method == "session.create") == 1, "跨项目目录应恰好创建一次新会话");
             }
         }
         finally { TryDeleteDirectory(root); }
@@ -8712,12 +8891,7 @@ remotePort = 58831
             })
             {
                 await host.StartAsync();
-                var runner = new DeepSeekHarnessRunner(new AppPaths(Path.Combine(root, "app-huge-ok")))
-                {
-                    WebUrl = host.BaseUrl,
-                    RelayProbe = new ConfirmedHarnessRelay(),
-                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。"))
-                };
+                var runner = QuickRunner(new AppPaths(Path.Combine(root, "app-huge-ok")), host.BaseUrl, new ConfirmedHarnessRelay(), _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。")));
                 var prior = new HarnessTaskStatus(firstId, project, first, "awaiting-gpt", "已完成（巨大历史）。",
                     DateTime.UtcNow.AddMinutes(-5), DateTime.UtcNow.AddMinutes(-1), 0, host.BaseUrl, "sess-huge",
                     RootCauseKey: "huge-x", ContractFingerprint: firstFingerprint);
@@ -8770,12 +8944,7 @@ remotePort = 58831
             })
             {
                 await host.StartAsync();
-                var runner = new DeepSeekHarnessRunner(new AppPaths(Path.Combine(root, "app-huge-neg")))
-                {
-                    WebUrl = host.BaseUrl,
-                    RelayProbe = new ConfirmedHarnessRelay(),
-                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。"))
-                };
+                var runner = QuickRunner(new AppPaths(Path.Combine(root, "app-huge-neg")), host.BaseUrl, new ConfirmedHarnessRelay(), _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。")));
                 var prior = new HarnessTaskStatus(firstId, project, first, "awaiting-gpt", "已完成（巨大历史）。",
                     DateTime.UtcNow.AddMinutes(-5), DateTime.UtcNow.AddMinutes(-1), 0, host.BaseUrl, "sess-huge",
                     RootCauseKey: "huge-x", ContractFingerprint: firstFingerprint);
@@ -8783,12 +8952,14 @@ remotePort = 58831
                     new JsonSerializerOptions { WriteIndented = true, Converters = { new HarnessUtcConverter() } }));
 
                 var result = await runner.StartAsync(project, negativeTask);
-                Assert(result.State == "awaiting-gpt" && result.SessionId == "sess-huge-new",
-                    "旧 Host 不支持轻量参数且历史不可读时应保守新建会话而非伪续接：" + result.State + " / " + result.SessionId);
-                Assert(result.ContinuitySourceTaskId is null && result.ContinuityRound == 1,
-                    "旧 Host 不支持轻量参数时不得伪续接（无来源任务、回合保持 1）：" + result.ContinuitySourceTaskId + " / " + result.ContinuityRound);
-                Assert(host.Calls.Count(call => call.Method == "session.create") == 1, "保守路径应恰好创建一次新会话。");
-                Assert(!File.Exists(Path.Combine(negativeTask, "CONTINUITY_CONTEXT.md")), "保守未续接不得生成连续上下文。");
+                Assert(result.State == "failed" && (result.Message ?? "").Contains("仍无法核验", StringComparison.Ordinal)
+                    && (result.Message ?? "").Contains("未创建新会话", StringComparison.Ordinal),
+                    "历史基线不可读时必须本地等待并在上限后诚实失败（绝不在无法核验时新建冒充续接）：" + result.State + " / " + result.Message);
+                Assert(result.SessionId is null && result.ContinuitySourceTaskId is null && result.ContinuityRound == 1,
+                    "无法核验时不得伪续接（无会话、无来源任务、回合保持 1）：" + result.SessionId + " / " + result.ContinuitySourceTaskId + " / " + result.ContinuityRound);
+                Assert(!host.Calls.Any(call => call.Method == "session.create"), "无法核验时绝不新建会话。");
+                Assert(!host.Calls.Any(call => call.Method == "session.prompt"), "无法核验时绝不提交提示。");
+                Assert(!File.Exists(Path.Combine(negativeTask, "CONTINUITY_CONTEXT.md")), "未续接不得生成连续上下文。");
             }
         }
         finally { TryDeleteDirectory(root); }
@@ -8834,12 +9005,8 @@ remotePort = 58831
                     ]
                 };
                 await host.StartAsync();
-                var runner = new DeepSeekHarnessRunner(app)
-                {
-                    WebUrl = host.BaseUrl,
-                    RelayProbe = new ConfirmedHarnessRelay(),
-                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。"))
-                };
+                var runner = QuickRunner(new AppPaths(Path.Combine(root, taskName + "-app")), host.BaseUrl, new ConfirmedHarnessRelay(),
+                    _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。")));
                 reportWriter?.Invoke(task);
                 var status = await runner.StartAsync(project, task);
                 if (expectPacket)
@@ -8972,12 +9139,7 @@ remotePort = 58831
             })
             {
                 await host.StartAsync();
-                var runner = new DeepSeekHarnessRunner(new AppPaths(Path.Combine(root, "app-occ")))
-                {
-                    WebUrl = host.BaseUrl,
-                    RelayProbe = new ConfirmedHarnessRelay(),
-                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。"))
-                };
+                var runner = QuickRunner(new AppPaths(Path.Combine(root, "app-occ")), host.BaseUrl, new ConfirmedHarnessRelay(), _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。")));
                 // 任务 A 的 starting 状态：尚无 sessionId，但本地租约被别进程持有（视为提交进行中）。
                 var startingA = new HarnessTaskStatus("run-occ-a", project, taskA, "starting", "正在提交。",
                     DateTime.UtcNow.AddMinutes(-1), DateTime.UtcNow.AddMinutes(-1), 0, host.BaseUrl,
@@ -8988,8 +9150,10 @@ remotePort = 58831
                     FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
 
                 var busy = await runner.StartAsync(project, taskB);
-                Assert(busy.State == "busy" && busy.Message.Contains("run-occ-a", StringComparison.Ordinal)
-                    && busy.Message.Contains("正在启动", StringComparison.Ordinal), "同项目无会话 starting（持租约）应返回含旧任务 ID 的 busy：" + busy.State + " / " + busy.Message);
+                Assert(busy.State == "failed" && (busy.Message ?? "").Contains("run-occ-a", StringComparison.Ordinal)
+                    && (busy.Message ?? "").Contains("正在启动", StringComparison.Ordinal)
+                    && (busy.Message ?? "").Contains("未创建新会话", StringComparison.Ordinal),
+                    "同项目无会话 starting（持租约）必须本地等待并如实失败（含旧任务 ID，绝不接管）：" + busy.State + " / " + busy.Message);
                 Assert(!host.Calls.Any(call => call.Method == "session.create"), "跨目录单飞占位时不得创建会话");
                 Assert(!host.Calls.Any(call => call.Method == "session.prompt"), "跨目录单飞占位时不得提交提示");
             }
@@ -9015,12 +9179,7 @@ remotePort = 58831
             })
             {
                 await host2.StartAsync();
-                var runner2 = new DeepSeekHarnessRunner(new AppPaths(Path.Combine(root, "app-occ2")))
-                {
-                    WebUrl = host2.BaseUrl,
-                    RelayProbe = new ConfirmedHarnessRelay(),
-                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。"))
-                };
+                var runner2 = QuickRunner(new AppPaths(Path.Combine(root, "app-occ2")), host2.BaseUrl, new ConfirmedHarnessRelay(), _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。")));
                 // 孤儿 starting：无租约（lease 文件不存在）。
                 var orphanA = new HarnessTaskStatus("run-occ-a2", project, taskA, "starting", "崩溃遗留占位。",
                     DateTime.UtcNow.AddMinutes(-120), DateTime.UtcNow.AddMinutes(-120), 0, host2.BaseUrl,
@@ -9037,12 +9196,14 @@ remotePort = 58831
             }
 
             // ---- 3) 对账：无会话且租约已释放的孤儿 starting 被诚实清扫为 failed，不再永久阻塞。 ----
-            var runner3 = new DeepSeekHarnessRunner(new AppPaths(Path.Combine(root, "app-occ3")));
-            var sweepOrphan = new HarnessTaskStatus("run-occ-sweep", project, taskA, "starting", "遗留占位。",
+            var runner3 = new DeepSeekHarnessRunner(new AppPaths(Path.Combine(root, "app-occ3"))) { ProjectLeaseWaitLimitSeconds = 2 };
+            var sweepTask = Path.Combine(project, ".codex-helper", "runs", "run-occ-sweep");
+            Directory.CreateDirectory(sweepTask);
+            var sweepOrphan = new HarnessTaskStatus("run-occ-sweep", project, sweepTask, "starting", "遗留占位。",
                 DateTime.UtcNow.AddMinutes(-60), DateTime.UtcNow.AddMinutes(-60), 0, DeepSeekHarnessVersions.WebHostDefaultUrl);
             File.WriteAllText(runner3.TaskDirectoryFor("run-occ-sweep"),
                 JsonSerializer.Serialize(sweepOrphan, new JsonSerializerOptions { WriteIndented = true, Converters = { new HarnessUtcConverter() } }));
-            File.Delete(Path.Combine(taskA, DeepSeekHarnessRunner.TaskLeaseFileName));
+            File.Delete(Path.Combine(sweepTask, DeepSeekHarnessRunner.TaskLeaseFileName));
             var result = await runner3.ReconcileRecentTasksAsync();
             var swept = runner3.TryRead("run-occ-sweep");
             Assert(swept is not null && swept.State == "failed" && swept.Message.Contains("本地租约已释放", StringComparison.Ordinal),
@@ -9077,12 +9238,7 @@ remotePort = 58831
             })
             {
                 await host.StartAsync();
-                var runner = new DeepSeekHarnessRunner(new AppPaths(Path.Combine(root, "app-mutex")))
-                {
-                    WebUrl = host.BaseUrl,
-                    RelayProbe = new ConfirmedHarnessRelay(),
-                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。"))
-                };
+                var runner = QuickRunner(new AppPaths(Path.Combine(root, "app-mutex")), host.BaseUrl, new ConfirmedHarnessRelay(), _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。")));
                 // 模拟另一进程/任务已原子占用项目租约：独占该文件且写入占位方戳（taskId=run-proj-mutex-a）。
                 var leaseDir = Path.Combine(project, ".codex-helper");
                 Directory.CreateDirectory(leaseDir);
@@ -9102,9 +9258,10 @@ remotePort = 58831
                 occupant.Flush();
 
                 var busy = await runner.StartAsync(project, taskB);
-                Assert(busy.State == "busy" && busy.Message.Contains("原子占用", StringComparison.Ordinal),
-                    "同项目项目租约被占用应返回明确 busy：" + busy.State + " / " + busy.Message);
-                Assert(busy.SessionState == "busy", "busy 应写回 SessionState=busy");
+                Assert(busy.State == "failed" && (busy.Message ?? "").Contains("项目锁", StringComparison.Ordinal)
+                    && (busy.Message ?? "").Contains("未创建新会话", StringComparison.Ordinal),
+                    "同项目项目租约被占用必须本地等待并如实失败（写明等待与未创建）：" + busy.State + " / " + busy.Message);
+                Assert(busy.SessionState == "waiting-project-timeout", "项目锁等待耗尽应留下可诊断的等待终态，实际：" + busy.SessionState);
                 Assert(!host.Calls.Any(call => call.Method == "session.create"), "原子互斥判定时不得创建会话");
                 Assert(!host.Calls.Any(call => call.Method == "session.prompt"), "原子互斥判定时不得提交提示");
             }
@@ -9155,12 +9312,7 @@ remotePort = 58831
             })
             {
                 await host.StartAsync();
-                var runner = new DeepSeekHarnessRunner(new AppPaths(Path.Combine(root, "app-residual")))
-                {
-                    WebUrl = host.BaseUrl,
-                    RelayProbe = new ConfirmedHarnessRelay(),
-                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。"))
-                };
+                var runner = QuickRunner(new AppPaths(Path.Combine(root, "app-residual")), host.BaseUrl, new ConfirmedHarnessRelay(), _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。")));
                 await File.WriteAllTextAsync(Path.Combine(taskResidual, "SPEC.md"), "残留锁恢复");
                 WriteValidReport(taskResidual, taskIdResidual, TestFingerprint(taskResidual));
                 Assert(File.Exists(lockPath), "前置：残留锁文件应存在");
@@ -9189,12 +9341,7 @@ remotePort = 58831
             })
             {
                 await host2.StartAsync();
-                var runner = new DeepSeekHarnessRunner(new AppPaths(Path.Combine(root, "app-parallel")))
-                {
-                    WebUrl = host2.BaseUrl,
-                    RelayProbe = new ConfirmedHarnessRelay(),
-                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。"))
-                };
+                var runner = QuickRunner(new AppPaths(Path.Combine(root, "app-parallel")), host2.BaseUrl, new ConfirmedHarnessRelay(), _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。")));
                 // 先持有项目租约（另一进程），本任务 manifest 声明机械并行应放行绕过。
                 await using var occupant = new FileStream(lockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.Read,
                     bufferSize: 1, FileOptions.DeleteOnClose);
@@ -9255,10 +9402,11 @@ remotePort = 58831
                     WebUrl = host.BaseUrl,
                     RelayProbe = new ConfirmedHarnessRelay(),
                     HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。")),
+                    ProjectLeaseWaitLimitSeconds = 2,
                     MaxEventReconnects = 1,
                     EventReconnectDelay = TimeSpan.FromMilliseconds(10),
                     HttpPollInterval = TimeSpan.FromMilliseconds(20),
-                    EventFrameTimeout = TimeSpan.FromMilliseconds(40)
+                    EventFrameTimeout = TimeSpan.FromMilliseconds(40),
                 };
                 // 预写有效报告，HTTP 兜底读到 completed 后可通过报告门禁进入 awaiting-gpt。
                 WriteValidReport(task, taskId, TestFingerprint(task));
@@ -9939,20 +10087,16 @@ remotePort = 58831
             })
             {
                 await host.StartAsync();
-                var runner = new DeepSeekHarnessRunner(new AppPaths(Path.Combine(root, "app-diag-1")))
-                {
-                    WebUrl = host.BaseUrl,
-                    RelayProbe = new ConfirmedHarnessRelay(),
-                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。"))
-                };
+                var runner = QuickRunner(new AppPaths(Path.Combine(root, "app-diag-1")), host.BaseUrl, new ConfirmedHarnessRelay(), _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。")));
                 WriteValidReport(taskB, taskIdB, TestFingerprint(taskB));
                 var status = await runner.StartAsync(project, taskB);
                 Assert(status.State == "awaiting-gpt" && status.ContinuityDiagnostic is not null
-                    && status.ContinuityDiagnostic.Contains("未声明 rootCauseKey", StringComparison.Ordinal),
-                    "无组键应新建会话并写可读隔离诊断：" + status.State + " / " + status.ContinuityDiagnostic);
+                    && status.ContinuityDiagnostic.Contains("尚无 Helper 登记的会话", StringComparison.Ordinal)
+                    && status.ContinuityDiagnostic.Contains("创建首个会话", StringComparison.Ordinal),
+                    "无组键且目录内无候选时应显式新建并写可读诊断：" + status.State + " / " + status.ContinuityDiagnostic);
             }
 
-            // ---- 2) 不同组键的已完成任务：保持隔离，诊断明确“不同 rootCauseKey”。 ----
+            // ---- 2) 不同合同不得冒用运行中前轮的完成事件：先排队，超时不提交。 ----
             var taskC = Path.Combine(project, ".codex-helper", "runs", "run-diag-c");
             Directory.CreateDirectory(taskC);
             await File.WriteAllTextAsync(Path.Combine(taskC, "SPEC.md"), "前序合同 C（不同键）");
@@ -9968,16 +10112,16 @@ remotePort = 58831
                 {
                     "session.create" => new JsonObject { ["sessionId"] = "sess-diag-new" },
                     "session.prompt" => new JsonObject { ["accepted"] = true },
-                    "session.list" => new JsonObject { ["items"] = new JsonArray(new JsonObject { ["sessionId"] = "sess-diag-c", ["running"] = false }) },
+                    "session.list" => new JsonObject { ["items"] = new JsonArray(new JsonObject { ["sessionId"] = "sess-diag-c", ["running"] = true }) },
                     "session.history" => new JsonObject { ["events"] = new JsonArray(new JsonObject { ["event"] = new JsonObject { ["seq"] = 5L } }) },
                     _ => new JsonObject()
                 },
                 WsScripts =
                 [
                     new Queue<string>([
-                        WsFrame("session/subscribed", "sess-diag-new"),
-                        WsFrame("session/event", "sess-diag-new", "turn/start", seq: 1),
-                        WsFrame("session/event", "sess-diag-new", "turn/end", "completed", seq: 2)
+                        WsFrame("session/subscribed", "sess-diag-c"),
+                        WsFrame("session/event", "sess-diag-c", "turn/start", seq: 6),
+                        WsFrame("session/event", "sess-diag-c", "turn/end", "completed", seq: 7)
                     ])
                 ]
             })
@@ -9985,9 +10129,9 @@ remotePort = 58831
                 await host.StartAsync();
                 var runner = new DeepSeekHarnessRunner(new AppPaths(Path.Combine(root, "app-diag-2")))
                 {
-                    WebUrl = host.BaseUrl,
-                    RelayProbe = new ConfirmedHarnessRelay(),
-                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。"))
+                    WebUrl = host.BaseUrl, RelayProbe = new ConfirmedHarnessRelay(),
+                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。")),
+                    ProjectLeaseWaitLimitSeconds = 2
                 };
                 // 前序不同键已完成任务（awaiting-gpt、报告通过门禁、带会话）。
                 var priorC = new HarnessTaskStatus(taskIdC, project, taskC, "awaiting-gpt", "已完成（不同键）。",
@@ -9998,11 +10142,12 @@ remotePort = 58831
 
                 WriteValidReport(taskB, taskIdB, fingerprintB);
                 var status = await runner.StartAsync(project, taskB);
-                Assert(status.State == "awaiting-gpt" && status.SessionId == "sess-diag-new"
-                    && status.ContinuityDiagnostic is not null && status.ContinuityDiagnostic.Contains("不同 rootCauseKey", StringComparison.Ordinal),
-                    "不同组键应新建会话且诊断可读：" + status.State + " / " + status.SessionId + " / " + status.ContinuityDiagnostic);
-                Assert(!host.Calls.Any(call => call.Method == "session.history" && (call.Payload["sessionId"]?.GetValue<string>()) == "sess-diag-c"),
-                    "不同组键隔离，不应核验前序不同键会话历史");
+                Assert(status.State == "failed" && status.SessionId is null
+                    && status.ContinuityDiagnostic is not null && status.ContinuityDiagnostic.Contains("等待", StringComparison.Ordinal),
+                    "前轮仍运行时本合同不能借用其终态：" + status.State + " / " + status.Message);
+                Assert(!host.Calls.Any(call => call.Method == "session.create"), "接回持续会话不得创建新会话");
+                Assert(!host.Calls.Any(call => call.Method == "session.prompt"), "接回持续会话不得重复提交提示");
+                Assert(!host.Calls.Any(call => call.Method == "session.history"), "排队不得读取前轮历史");
             }
 
             // ---- 3) 同组键已完成（awaiting-gpt）+ 报告通过门禁 → 续接成功，诊断含原因。 ----
@@ -10035,12 +10180,7 @@ remotePort = 58831
             })
             {
                 await host.StartAsync();
-                var runner = new DeepSeekHarnessRunner(new AppPaths(Path.Combine(root, "app-diag-3")))
-                {
-                    WebUrl = host.BaseUrl,
-                    RelayProbe = new ConfirmedHarnessRelay(),
-                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。"))
-                };
+                var runner = QuickRunner(new AppPaths(Path.Combine(root, "app-diag-3")), host.BaseUrl, new ConfirmedHarnessRelay(), _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。")));
                 var priorD = new HarnessTaskStatus(taskIdD, project, taskD, "awaiting-gpt", "已完成（同键，已过门禁）。",
                     DateTime.UtcNow.AddMinutes(-10), DateTime.UtcNow.AddMinutes(-1), 0, host.BaseUrl, "sess-diag-d",
                     RootCauseKey: "diag-z", ContractFingerprint: TestFingerprint(taskD));
@@ -10051,7 +10191,7 @@ remotePort = 58831
                 var status = await runner.StartAsync(project, taskB);
                 Assert(status.State == "awaiting-gpt" && status.SessionId == "sess-diag-d"
                     && status.ContinuitySourceTaskId == taskIdD && status.ContinuityRound == 2
-                    && status.ContinuityDiagnostic is not null && status.ContinuityDiagnostic.Contains("已续接", StringComparison.Ordinal),
+                    && status.ContinuityDiagnostic is not null && status.ContinuityDiagnostic.Contains("原会话提交新合同", StringComparison.Ordinal),
                     "同组键已过门禁应续接并写成功诊断：" + status.State + " / " + status.SessionId + " / " + status.ContinuityDiagnostic);
             }
 
@@ -10070,26 +10210,22 @@ remotePort = 58831
                 {
                     "session.create" => new JsonObject { ["sessionId"] = "sess-diag-e-new" },
                     "session.prompt" => new JsonObject { ["accepted"] = true },
-                    "session.list" => new JsonObject { ["items"] = new JsonArray() },
+                    "session.list" => new JsonObject { ["items"] = new JsonArray(new JsonObject { ["sessionId"] = "sess-diag-e", ["running"] = false }) },
+                    "session.history" => new JsonObject { ["projections"] = new JsonObject { ["asOfSeq"] = 5L } },
                     _ => new JsonObject()
                 },
                 WsScripts =
                 [
                     new Queue<string>([
-                        WsFrame("session/subscribed", "sess-diag-e-new"),
-                        WsFrame("session/event", "sess-diag-e-new", "turn/start", seq: 1),
-                        WsFrame("session/event", "sess-diag-e-new", "turn/end", "completed", seq: 2)
+                        WsFrame("session/subscribed", "sess-diag-e"),
+                        WsFrame("session/event", "sess-diag-e", "turn/start", seq: 6),
+                        WsFrame("session/event", "sess-diag-e", "turn/end", "completed", seq: 7)
                     ])
                 ]
             })
             {
                 await host.StartAsync();
-                var runner = new DeepSeekHarnessRunner(new AppPaths(Path.Combine(root, "app-diag-4")))
-                {
-                    WebUrl = host.BaseUrl,
-                    RelayProbe = new ConfirmedHarnessRelay(),
-                    HostReadyEnsurer = _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。"))
-                };
+                var runner = QuickRunner(new AppPaths(Path.Combine(root, "app-diag-4")), host.BaseUrl, new ConfirmedHarnessRelay(), _ => Task.FromResult(ReadyResult("Harness Web Host 已在运行。")));
                 // 前序同键但无 EXECUTION_REPORT.md（报告未过门禁）。
                 var priorE = new HarnessTaskStatus(taskIdE, project, taskE, "awaiting-gpt", "无报告。",
                     DateTime.UtcNow.AddMinutes(-10), DateTime.UtcNow.AddMinutes(-1), 0, host.BaseUrl, "sess-diag-e",
@@ -10099,9 +10235,14 @@ remotePort = 58831
 
                 WriteValidReport(taskB, taskIdB, fingerprintB3);
                 var status = await runner.StartAsync(project, taskB);
-                Assert(status.State == "awaiting-gpt" && status.SessionId == "sess-diag-e-new"
-                    && status.ContinuityDiagnostic is not null && status.ContinuityDiagnostic.Contains("报告", StringComparison.Ordinal),
-                    "同组键报告未过门禁应新建并诊断：" + status.State + " / " + status.ContinuityDiagnostic);
+                // 门禁失败不是上下文丢失：前轮报告未过门禁仍续用同一已停止会话，但诊断必须如实标注未验收。
+                Assert(status.State == "awaiting-gpt" && status.SessionId == "sess-diag-e"
+                    && status.ContinuitySourceTaskId == taskIdE
+                    && status.ContinuityDiagnostic is not null && status.ContinuityDiagnostic.Contains("未过完成门禁", StringComparison.Ordinal),
+                    "前轮报告未过门禁应续用同一会话并如实标注未验收：" + status.State + " / " + status.SessionId + " / " + status.ContinuityDiagnostic);
+                var context = await File.ReadAllTextAsync(Path.Combine(taskB, "PROJECT_CONTEXT.md"));
+                Assert(context.Contains("未通过", StringComparison.Ordinal) || context.Contains("未验收", StringComparison.Ordinal),
+                    "前轮未过门禁时上下文必须如实标注：" + context);
             }
         }
         finally { TryDeleteDirectory(root); }
@@ -11572,9 +11713,10 @@ remotePort = 58831
                 [
                     new Queue<string>([
                         WsFrame("session/subscribed", "sess-progress-1"),
+                        "@wait:session.prompt",
                         WsFrame("session/event", "sess-progress-1", "turn/start", seq: 1),
                         WsChunkFrame("sess-progress-1", 2, "tool_call", toolName: "apply_patch", toolArgs: "{\"file\":\"a.cs\"}"),
-                        "@delay:50",
+                        "@wait:test.release",
                         WsFrame("session/event", "sess-progress-1", "turn/end", "completed", seq: 3)
                     ])
                 ]
@@ -11597,6 +11739,8 @@ remotePort = 58831
                 Assert(File.Exists(Path.Combine(task, HarnessTaskStateStore.StatusFileName)), "运行中真实状态应落任务目录真相源。");
                 Assert(File.Exists(Path.Combine(task, HarnessContractHealth.WorkerAcceptanceFileName)), "合同体检应派生 WORKER_ACCEPTANCE.md。");
 
+                using var verifier = new HarnessRpcClient(host.BaseUrl);
+                await verifier.CallAsync("test.release", new JsonObject());
                 var status = await startTask;
                 Assert(status.State == "awaiting-gpt", "事件完成应进入 awaiting-gpt：" + status.State);
                 var final = HarnessTaskStateStore.TryReadProgress(task)!;
@@ -11651,12 +11795,9 @@ remotePort = 58831
                 };
                 WriteValidReport(task, taskId, TestFingerprint(task));
                 var startTask = runner.StartAsync(project, task);
-                // 断流应写明降级事实并转入 HTTP 回退；PROGRESS 仍由真实事件驱动更新，不因断流停滞。
-                await WaitUntilAsync(() => runner.TryRead(taskId) is { } mid
-                    && (mid.Message.Contains("HTTP", StringComparison.Ordinal) || mid.Message.Contains("事件流不可用", StringComparison.Ordinal)),
-                    message: "断流应写明降级事实并转入 HTTP 回退");
-                await WaitUntilAsync(() => HarnessTaskStateStore.TryReadProgress(task) is { Stage: not null } progress && progress.Stage != "starting", message: "断流后 HTTP 回退应继续投影 PROGRESS 阶段");
-                var status = await startTask;
+                // 验证持久证据，不依赖可能在两次采样之间消失的临时提示。
+                var status = await startTask.WaitAsync(TimeSpan.FromSeconds(20));
+                Assert(host.Calls.Any(call => call.Method == "session.history"), "断流后必须确实经过 HTTP 终态回退");
                 Assert(status.State == "awaiting-gpt", "HTTP 回退应到达 awaiting-gpt：" + status.State);
                 var final = HarnessTaskStateStore.TryReadProgress(task)!;
                 Assert(final.Stage == "done", "HTTP 回退终态应投影 PROGRESS stage=done：" + final.Stage);
@@ -11851,11 +11992,15 @@ remotePort = 58831
                 var active = HarnessTaskStateStore.TryReadActiveRecord(project);
                 Assert(active is not null && active.TaskId == taskIdA && active.SessionId == "sess-active-a", "启动期间 active 记录应属于运行任务且带真实 sessionId");
 
-                // 同项目第二任务：项目租约被 A 原子占用 → busy，active 记录不被覆盖。
-                var busy = await runner.StartAsync(project, taskB);
-                Assert(busy.State == "busy", "同项目第二任务应 busy：" + busy.Message);
+                // 同项目第二任务本地排队，不能覆盖 A，也不能在取消排队时停止 A。
+                using var queuedCancellation = new CancellationTokenSource();
+                var queued = runner.StartAsync(project, taskB, queuedCancellation.Token);
+                await WaitUntilAsync(() => runner.TryRead(taskIdB)?.SessionState == "waiting-project", message: "B 应等待项目锁");
                 var active2 = HarnessTaskStateStore.TryReadActiveRecord(project);
-                Assert(active2 is not null && active2.TaskId == taskIdA, "busy 判定不得覆盖活动任务记录");
+                Assert(active2 is not null && active2.TaskId == taskIdA, "排队不得覆盖活动任务记录");
+                queuedCancellation.Cancel();
+                try { await queued; } catch (OperationCanceledException) { }
+                Assert(!host.Calls.Any(call => call.Method == "session.cancel"), "取消 B 排队不得取消 A");
 
                 // 用户停止任务 A → 终态 cancelled，active 记录清除。
                 var stop = await runner.StopTaskAsync(taskIdA);
@@ -12166,5 +12311,368 @@ remotePort = 58831
             }
         }
         finally { TryDeleteDirectory(root); }
+    }
+
+    /// <summary>分段帧标记（脚本执行器据此把一条 JSON 拆成多个文本帧发送）。</summary>
+    private const string SplitMarker = "@split:";
+
+    /// <summary>定点二分帧标记：<c>@split2:</c>（正中间）或 <c>@split2:N:</c>（JSON 字符偏移 N）。</summary>
+    private const string Split2Marker = "@split2:";
+
+    /// <summary>保持连接但不再读取也不回应 close 的标记（验证清理有界，绝不等待服务端回应）。</summary>
+    private const string IdleMarker = "@idle";
+
+    /// <summary>脚本步骤：先读取客户端 open 帧的 streamId，再继续发送后续帧（后续帧用占位符回填）。</summary>
+    private const string ReadIdMarker = "@read-id";
+
+    /// <summary>帧内 streamId 占位符：假 Host 收到客户端 open 帧后回填其 streamId（真实 Gateway 的回显语义）。</summary>
+    private const string StreamIdMarker = "__STREAM_ID__";
+
+    /// <summary>
+    /// 新版 Gateway 基线：官方 Remote 流多路复用端点 <c>/api/remote.mux</c> 上打开
+    /// <c>session/follow</c>，只取首个匹配 streamId 的 snapshot（cursor 水位），随后 cancel 并关闭。
+    /// 覆盖：正常水位、帧分段、错误 streamId、缺 cursor、小数/超 cursor 序号、错误帧、非 JSON 噪声、
+    /// 超时、断开取消、中文跨片增量解码、对端不回应 close 的有界清理、并发读取互不干扰、
+    /// 归一化只返水位与事件元数据（不返 records 正文），以及旧版仍走 session.history。
+    /// 全部自带 CancellationToken/截止时间：任何失败都不允许挂起。
+    /// </summary>
+    private static async Task TestHarnessGatewaySnapshotBaselineAsync()
+    {
+        // ---- 1) 正常：首 snapshot 给出 cursor 水位，且只读取必要元数据 ----
+        await using (var host = new FakeHarnessHost
+        {
+            Respond = (_, _) => new JsonObject(),
+            WsScripts = MuxScripts(3, GatewaySnapshotFrame(StreamIdMarker, cursor: 42, records: 2))
+        })
+        {
+            await host.StartAsync();
+            // 先用裸 WebSocket 确认假 Host 的 mux 端点确实回帧（隔离"主机桩不工作"与"读取器有 bug"）。
+            // 读到首帧即立刻放弃套接字（Abort，不等待对端 close 回应），避免探针自身阻塞测试清理。
+            using (var probe = new ClientWebSocket())
+            {
+                try
+                {
+                    await probe.ConnectAsync(new Uri(host.BaseUrl.Replace("http://", "ws://") + "/api/remote.mux"), CancellationToken.None);
+                }
+                catch (Exception ex)
+                {
+                    Assert(false, "裸 WebSocket 连接 /api/remote.mux 失败：" + ex.Message + " / mux=" + host.MuxConnections + " / fault=" + host.Fatal);
+                }
+                // 与读取器一致地先发 open 帧（真实 Gateway 回显请求 streamId，测试桩据此回填帧）。
+                var probeOpen = Encoding.UTF8.GetBytes("""{"type":"open","streamId":"probe-stream-1","endpoint":"session/follow","payload":{}}""");
+                await probe.SendAsync(new ArraySegment<byte>(probeOpen), WebSocketMessageType.Text, true, CancellationToken.None);
+                var probeBuffer = new byte[64 * 1024];
+                using var probeCts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                var received = await probe.ReceiveAsync(new ArraySegment<byte>(probeBuffer), probeCts.Token);
+                var raw = Encoding.UTF8.GetString(probeBuffer, 0, received.Count);
+                Assert(raw.Contains("probe-stream-1", StringComparison.Ordinal) && raw.Contains("\"type\":\"snapshot\"", StringComparison.Ordinal),
+                    "假 Host 的 /api/remote.mux 必须先能回帧：mux=" + host.MuxConnections + " raw=" + raw[..Math.Min(200, raw.Length)]);
+                probe.Abort();
+            }
+            var opening = await new HarnessGatewaySnapshotReader(host.BaseUrl, TimeSpan.FromSeconds(5)).ReadOpeningAsync("sess-gw-1");
+            Assert(opening.Success && opening.Cursor == 42 && opening.Baseline == 42,
+                "正常 snapshot 应给出 cursor 水位：" + opening.Describe());
+            Assert(opening.EventMetadata.Count == 2 && opening.EventMetadata.All(meta => meta.StartsWith("40:", StringComparison.Ordinal) || meta.StartsWith("41:", StringComparison.Ordinal)),
+                "只应返回标准化的 seq:type 元数据：" + string.Join("/", opening.EventMetadata));
+            Assert(host.MuxConnections >= 2, "裸探针与读取器都必须真实连到 /api/remote.mux 流端点。");
+        }
+
+        // ---- 2) 帧分段：一条 JSON 被拆成多个 WebSocket 文本帧也要正确拼装 ----
+        await using (var host = new FakeHarnessHost
+        {
+            Respond = (_, _) => new JsonObject(),
+            WsScripts = MuxScripts(3, SplitMarker + GatewaySnapshotFrame(StreamIdMarker, cursor: 7, records: 1, sequenceOffset: 6))
+        })
+        {
+            await host.StartAsync();
+            var reader = new HarnessGatewaySnapshotReader(host.BaseUrl, TimeSpan.FromSeconds(5));
+            var opening = await new HarnessGatewaySnapshotReader(host.BaseUrl, TimeSpan.FromSeconds(5)).ReadOpeningAsync("sess-gw-2");
+            Assert(opening.Success && opening.Cursor == 7, "分段帧必须正确拼装后取水位：" + opening.Describe());
+        }
+
+        // ---- 3) 错误 streamId：绝不把别人的流当成本会话水位 ----
+        await using (var host = new FakeHarnessHost
+        {
+            Respond = (_, _) => new JsonObject(),
+            WsScripts = MuxScripts(3, ReadIdMarker, GatewaySnapshotFrame("other-stream", cursor: 99, records: 1), GatewaySnapshotFrame(StreamIdMarker, cursor: 5, records: 1, sequenceOffset: 4))
+        })
+        {
+            await host.StartAsync();
+            var opening = await new HarnessGatewaySnapshotReader(host.BaseUrl, TimeSpan.FromSeconds(5)).ReadOpeningAsync("sess-gw-3");
+            Assert(opening.Success && opening.Cursor == 5 && opening.Cursor != 99,
+                "必须忽略 streamId 不匹配的帧，绝不误用别人的水位：" + opening.Describe());
+        }
+
+        // ---- 4) 缺 cursor：诚实失败，绝不用 0 或伪序号代替 ----
+        await using (var host = new FakeHarnessHost
+        {
+            Respond = (_, _) => new JsonObject(),
+            WsScripts = MuxScripts(3, GatewaySnapshotFrame(StreamIdMarker, cursor: null, records: 1))
+        })
+        {
+            await host.StartAsync();
+            var opening = await new HarnessGatewaySnapshotReader(host.BaseUrl, TimeSpan.FromSeconds(5)).ReadOpeningAsync("sess-gw-4");
+            Assert(!opening.Success && opening.Cursor is null && opening.ErrorMessage is not null
+                && opening.ErrorMessage.Contains("cursor", StringComparison.OrdinalIgnoreCase),
+                "缺 cursor 必须诚实失败且不猜水位：" + opening.Describe());
+        }
+
+        // ---- 5) 错误帧：明确失败原因 ----
+        await using (var host = new FakeHarnessHost
+        {
+            Respond = (_, _) => new JsonObject(),
+            WsScripts = MuxScripts(3, """{"type":"error","streamId":"__STREAM_ID__","error":{"code":"session-not-found","message":"会话不存在","details":{}}}""")
+        })
+        {
+            await host.StartAsync();
+            var opening = await new HarnessGatewaySnapshotReader(host.BaseUrl, TimeSpan.FromSeconds(5)).ReadOpeningAsync("sess-gw-5");
+            Assert(!opening.Success && opening.ErrorMessage is not null && opening.ErrorMessage.Contains("session-not-found", StringComparison.Ordinal),
+                "Gateway 错误帧必须映射为可读失败：" + opening.Describe());
+        }
+
+        // ---- 6) 非 JSON 噪声帧不得被当水位 ----
+        await using (var host = new FakeHarnessHost
+        {
+            Respond = (_, _) => new JsonObject(),
+            WsScripts = MuxScripts(3, "not-json-at-all", GatewaySnapshotFrame(StreamIdMarker, cursor: 11, records: 1, sequenceOffset: 10))
+        })
+        {
+            await host.StartAsync();
+            var opening = await new HarnessGatewaySnapshotReader(host.BaseUrl, TimeSpan.FromSeconds(5)).ReadOpeningAsync("sess-gw-6");
+            Assert(opening.Success && opening.Cursor == 11, "噪声帧必须被忽略后继续读到真实水位：" + opening.Describe());
+        }
+
+        // ---- 7) 超时 / 断开：有界失败，不挂起 ----
+        await using (var host = new FakeHarnessHost
+        {
+            Respond = (_, _) => new JsonObject(),
+            WsScripts = MuxScripts(3, "@delay:3000")
+        })
+        {
+            await host.StartAsync();
+            var watch = Stopwatch.StartNew();
+            var opening = await new HarnessGatewaySnapshotReader(host.BaseUrl, TimeSpan.FromMilliseconds(400)).ReadOpeningAsync("sess-gw-7");
+            watch.Stop();
+            Assert(!opening.Success && watch.Elapsed < TimeSpan.FromSeconds(10),
+                "超时必须返回有界失败而不是永久挂起（用时 " + watch.ElapsedMilliseconds + "ms）：" + opening.Describe());
+            Assert(opening.ErrorMessage is not null && (opening.ErrorMessage.Contains("超时", StringComparison.Ordinal) || opening.ErrorMessage.Contains("关闭", StringComparison.Ordinal)),
+                "超时/断开必须给出可读原因：" + opening.ErrorMessage);
+        }
+
+        // ---- 8) 大包：超过单帧上限直接失败（不截断后猜水位） ----
+        await using (var host = new FakeHarnessHost
+        {
+            Respond = (_, _) => new JsonObject(),
+            WsScripts = MuxScripts(3, HugeGatewaySnapshotFrame(StreamIdMarker))        })
+        {
+            await host.StartAsync();
+            var opening = await new HarnessGatewaySnapshotReader(host.BaseUrl, TimeSpan.FromSeconds(15)).ReadOpeningAsync("sess-gw-8");
+            Assert(!opening.Success && opening.ErrorMessage is not null && opening.ErrorMessage.Contains("上限", StringComparison.Ordinal),
+                "超大帧必须被拒绝而不是猜水位：" + opening.Describe());
+        }
+
+        // ---- 9) 归一化：RPC 入口只返 projections.asOfSeq 兼容形状，不返 records 正文 ----
+        await using (var host = new FakeHarnessHost
+        {
+            Respond = (_, _) => new JsonObject(),
+            WsScripts = MuxScripts(3, GatewaySnapshotFrame(StreamIdMarker, cursor: 1234, records: 1, secretText: "SECRET-CONTRACT-BODY", sequenceOffset: 1230, turnEndKind: "completed"))
+        })
+        {
+            await host.StartAsync();
+            using var rpc = new HarnessRpcClient(host.BaseUrl);
+            var baseline = await rpc.GetGatewaySnapshotBaselineAsync("sess-gw-9");
+            Assert(baseline.Success && baseline.Value?["projections"]?["asOfSeq"]?.GetValue<long>() == 1234,
+                "归一化必须提供 projections.asOfSeq 水位：" + baseline.ErrorMessage);
+            var serialized = baseline.Value!.ToJsonString();
+            Assert(!serialized.Contains("SECRET-CONTRACT-BODY", StringComparison.Ordinal),
+                "基线读取绝不能把 records 正文带出：" + serialized);
+            Assert(!serialized.Contains("records", StringComparison.Ordinal), "基线读取不得返回 records 数组：" + serialized);
+            Assert(baseline.Value?["lastTurnEnd"]?.GetValue<string>() == "completed",
+                "结束核验必须能从同一小 snapshot 元数据读到可信 turn/end 结果：" + serialized);
+        }
+
+        // ---- 10) 旧版兼容：session.history, maxMessages=1 仍走轻量基线路径 ----
+        await using (var host = new FakeHarnessHost
+        {
+            Respond = (method, _) => method switch
+            {
+                "session.list" => throw new FakeHostError("bad-request", "旧版无 session/list。"),
+                "session.history" => new JsonObject { ["projections"] = new JsonObject { ["asOfSeq"] = 55L } },
+                _ => new JsonObject()
+            }
+        })
+        {
+            await host.StartAsync();
+            using var rpc = new HarnessRpcClient(host.BaseUrl);
+            var baseline = await rpc.GetSessionBaselineAsync("sess-gw-10");
+            Assert(baseline.Success && baseline.Value?["projections"]?["asOfSeq"]?.GetValue<long>() == 55,
+                "旧版协议必须继续走 session.history 轻量尾窗：" + baseline.ErrorMessage);
+            var historyCall = host.Calls.FirstOrDefault(call => call.Method == "session.history");
+            Assert(historyCall.Payload?["maxMessages"]?.GetValue<int>() == 1, "旧版基线必须携带 maxMessages=1（轻量尾窗）。");
+        }
+
+        // ---- 11) 中文跨片：多字节字符被切成两个 WebSocket 帧时用增量解码还原，绝不损坏 ----
+        var chineseFrame = GatewaySnapshotFrame(StreamIdMarker, cursor: 21, records: 1, secretText: "水位中文跨片", sequenceOffset: 20);
+        // JSON 序列化会把中文写成 \uXXXX：把切点放在该转义序列中间，确保 WebSocket 分片落在多字节字符上。
+        var chineseEscape = chineseFrame.IndexOf("\\u", StringComparison.Ordinal);
+        var chineseOffset = chineseEscape >= 0 ? chineseFrame[..(chineseEscape + 2)].Length - StreamIdMarker.Length + 32 : -1;
+        Assert(chineseOffset > 0, "中文帧必须包含可定位的多字节字符用于定点切分。");
+        await using (var host = new FakeHarnessHost
+        {
+            Respond = (_, _) => new JsonObject(),
+            WsScripts = MuxScripts(3, Split2Marker + chineseOffset + ":" + chineseFrame)
+        })
+        {
+            await host.StartAsync();
+            var opening = await new HarnessGatewaySnapshotReader(host.BaseUrl, TimeSpan.FromSeconds(5)).ReadOpeningAsync("sess-gw-11");
+            Assert(opening.Success && opening.Cursor == 21,
+                "中文跨片必须用增量解码正确还原后取水位（绝不按片解码损坏）：" + opening.Describe());
+        }
+
+        // ---- 12) 小数水位：绝不被转换成整数当作可信水位 ----
+        await using (var host = new FakeHarnessHost
+        {
+            Respond = (_, _) => new JsonObject(),
+            WsScripts = MuxScripts(3, GatewaySnapshotFrame(StreamIdMarker, cursor: 42, records: 1, decimalCursor: true))
+        })
+        {
+            await host.StartAsync();
+            var opening = await new HarnessGatewaySnapshotReader(host.BaseUrl, TimeSpan.FromSeconds(5)).ReadOpeningAsync("sess-gw-12");
+            Assert(!opening.Success && opening.Cursor is null,
+                "小数 cursor 必须视为不可信水位（绝不舍入成整数）：" + opening.Describe());
+        }
+
+        // ---- 13) 异常 seq：records 序号超过 cursor 时整体判定不可信，绝不猜水位 ----
+        await using (var host = new FakeHarnessHost
+        {
+            Respond = (_, _) => new JsonObject(),
+            WsScripts = MuxScripts(3, GatewaySnapshotFrame(StreamIdMarker, cursor: 5, records: 2, sequenceOffset: 40))
+        })
+        {
+            await host.StartAsync();
+            var opening = await new HarnessGatewaySnapshotReader(host.BaseUrl, TimeSpan.FromSeconds(5)).ReadOpeningAsync("sess-gw-13");
+            Assert(!opening.Success && opening.ErrorMessage is not null && opening.ErrorMessage.Contains("超过", StringComparison.Ordinal),
+                "records 序号超过 cursor 必须判定不可信：" + opening.Describe());
+        }
+
+        // ---- 14) 并发读取：同一读取器实例的两个逻辑流各自独立取消，互不串流水位 ----
+        await using (var host = new FakeHarnessHost
+        {
+            Respond = (_, _) => new JsonObject(),
+            // 两个连接都先把"别人的流"与"自己的流"各发一帧：读取器必须只认自己 streamId 的那一帧，
+            // 且同一实例上的两个并发读取各取各的水位（绝不用实例级字段串流）。
+            WsScripts =
+            [
+                new Queue<string>([GatewaySnapshotFrame("stream-other", cursor: 11, records: 1, sequenceOffset: 10), GatewaySnapshotFrame("stream-a", cursor: 101, records: 1, sequenceOffset: 100), GatewaySnapshotFrame("stream-b", cursor: 202, records: 1, sequenceOffset: 200)]),
+                new Queue<string>([GatewaySnapshotFrame("stream-other", cursor: 11, records: 1, sequenceOffset: 10), GatewaySnapshotFrame("stream-a", cursor: 101, records: 1, sequenceOffset: 100), GatewaySnapshotFrame("stream-b", cursor: 202, records: 1, sequenceOffset: 200)])
+            ]
+        })
+        {
+            await host.StartAsync();
+            var reader = new HarnessGatewaySnapshotReader(host.BaseUrl, TimeSpan.FromSeconds(8));
+            var openings = await Task.WhenAll(
+                reader.ReadOpeningAsync("sess-gw-14-a", explicitStreamId: "stream-a"),
+                reader.ReadOpeningAsync("sess-gw-14-b", explicitStreamId: "stream-b"));
+            Assert(openings[0].Success && openings[1].Success
+                && openings[0].Cursor == 101 && openings[1].Cursor == 202,
+                "并发读取必须各自取到自己的水位（绝不用实例级 streamId 串流）："
+                + openings[0].Describe() + " / " + openings[1].Describe());
+            Assert(host.MuxConnections >= 2, "并发读取必须各开一条 mux 连接，实际：" + host.MuxConnections);
+        }
+
+        // ---- 15) 对端不回应 close：清理必须有界（绝不等待服务端 close 回应） ----
+        await using (var host = new FakeHarnessHost
+        {
+            Respond = (_, _) => new JsonObject(),
+            WsScripts = MuxScripts(3, GatewaySnapshotFrame(StreamIdMarker, cursor: 33, records: 1, sequenceOffset: 32), IdleMarker)
+        })
+        {
+            await host.StartAsync();
+            var watch = Stopwatch.StartNew();
+            var opening = await new HarnessGatewaySnapshotReader(host.BaseUrl, TimeSpan.FromSeconds(10)).ReadOpeningAsync("sess-gw-15");
+            watch.Stop();
+            Assert(opening.Success && opening.Cursor == 33, "对端不回应 close 也必须先拿到水位：" + opening.Describe());
+            Assert(watch.Elapsed < TimeSpan.FromSeconds(5),
+                "对端不回应 close 时清理必须有界（绝不等待服务端回应），实际耗时：" + watch.ElapsedMilliseconds + "ms");
+        }
+
+        // ---- 16) snapshot 之前超时：有界失败且清理仍然完成（不挂起） ----
+        await using (var host = new FakeHarnessHost
+        {
+            Respond = (_, _) => new JsonObject(),
+            WsScripts = MuxScripts(3, "@delay:5000", GatewaySnapshotFrame(StreamIdMarker, cursor: 9, records: 1, sequenceOffset: 8))
+        })
+        {
+            await host.StartAsync();
+            var watch = Stopwatch.StartNew();
+            var opening = await new HarnessGatewaySnapshotReader(host.BaseUrl, TimeSpan.FromMilliseconds(400)).ReadOpeningAsync("sess-gw-16");
+            watch.Stop();
+            Assert(!opening.Success && watch.Elapsed < TimeSpan.FromSeconds(5),
+                "snapshot 之前超时必须返回有界失败（含清理），实际耗时：" + watch.ElapsedMilliseconds + "ms：" + opening.Describe());
+        }
+    }
+
+    /// <summary>
+    /// 构造 Gateway follow 的 snapshot 服务端帧。<c>streamId</c> 传 <see cref="StreamIdMarker"/> 时，
+    /// 假 Host 会在收到客户端 open 帧后把该帧里的 streamId 回填进来（真实 Gateway 就是回显请求 streamId）。
+    /// </summary>
+    private static string GatewaySnapshotFrame(string streamId, long? cursor, int records, string? secretText = null,
+        bool decimalCursor = false, long sequenceOffset = 40, string? turnEndKind = null)
+    {
+        var recordArray = new JsonArray();
+        for (var index = 0; index < records; index++)
+        {
+            var data = new JsonObject();
+            if (secretText is not null) data["text"] = secretText;
+            if (index == records - 1 && turnEndKind is not null)
+                data["reason"] = new JsonObject { ["kind"] = turnEndKind };
+            recordArray.Add(new JsonObject
+            {
+                ["type"] = "event",
+                ["event"] = new JsonObject
+                {
+                    ["type"] = index == records - 1 ? "turn/end" : "turn/start",
+                    ["seq"] = sequenceOffset + index,
+                    ["time"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    ["data"] = data
+                }
+            });
+        }
+        var snapshot = new JsonObject
+        {
+            ["type"] = "snapshot",
+            ["header"] = new JsonObject { ["version"] = 1, ["id"] = "sess-gw", ["createdAt"] = 0L, ["isSeeded"] = false },
+            ["records"] = recordArray,
+            ["hasMore"] = false,
+            ["projections"] = new JsonObject { ["asOfSeq"] = cursor ?? 0L, ["values"] = new JsonObject() }
+        };
+        if (cursor is not null)
+        {
+            // 小数水位：写入 JSON 小数数字，验证实现绝不把它舍入成整数后当作可信水位。
+            if (decimalCursor) snapshot["cursor"] = JsonNode.Parse(cursor.Value + ".5");
+            else snapshot["cursor"] = cursor.Value;
+        }
+        // streamId 占位符：假 Host 收到客户端 open 帧后回填其真实 streamId（真实 Gateway 的回显语义）。
+        return new JsonObject { ["type"] = "item", ["streamId"] = streamId, ["value"] = snapshot }.ToJsonString();
+    }
+
+    /// <summary>
+    /// 同一个 mux 帧脚本重复 N 份：假 Host 按 mux 连接序号分配脚本，而单次 Gateway 读取可能
+    /// 因为（测试或探测产生的）额外连接而落到不同序号上，重复脚本保证读取器总能收到同一帧。
+    /// </summary>
+    private static Queue<string>[] MuxScripts(int copies, params string[] steps)
+        => Enumerable.Range(0, copies).Select(_ => new Queue<string>(steps.AsEnumerable())).ToArray();
+
+    /// <summary>构造超过单帧上限的 snapshot 帧（用于验证大包拒绝路径）。</summary>
+    private static string HugeGatewaySnapshotFrame(string streamId)
+    {
+        var big = new string('y', HarnessGatewaySnapshotReader.MaxFrameChars + 4096);
+        var snapshot = new JsonObject
+        {
+            ["type"] = "snapshot",
+            ["cursor"] = 1L,
+            ["records"] = new JsonArray(new JsonObject { ["event"] = new JsonObject { ["type"] = "turn/start", ["seq"] = 1L, ["data"] = new JsonObject { ["text"] = big } } })
+        };
+        return new JsonObject { ["type"] = "item", ["streamId"] = streamId, ["value"] = snapshot }.ToJsonString();
     }
 }

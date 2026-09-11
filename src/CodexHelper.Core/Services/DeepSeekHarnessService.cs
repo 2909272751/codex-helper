@@ -79,6 +79,14 @@ public sealed class DeepSeekHarnessService
     public Func<string, string, string>? WebProfileReader { get; init; }
     /// <summary>能力探测缓存工厂（默认使用 AppPaths.BaseDirectory 下文件缓存；测试可注入）。</summary>
     public Func<DeepSeekHarnessCapabilityCache>? CapabilityCacheFactory { get; init; }
+    /// <summary>
+    /// 基础插件部署（默认 <see cref="DshBasePluginDeploymentService"/>；测试可注入）。
+    /// 在 Helper 真正启动 Web Host 之前执行：Host 未运行时先部署就绪，已有 Host 不被打断。
+    /// </summary>
+    public Func<CancellationToken, Task<DshBasePluginDeploymentResult>>? BasePluginDeployer { get; init; }
+
+    /// <summary>最近一次基础插件部署结果（脱敏摘要；测试可读取，仅一个有界对象）。</summary>
+    public DshBasePluginDeploymentResult? LastBasePluginDeployment { get; private set; }
 
     public DeepSeekHarnessService(AppPaths paths, string? webUrl = null)
     {
@@ -347,9 +355,13 @@ public sealed class DeepSeekHarnessService
         if (!status.EnableAllowed)
             return new(false, false, 0, "无法启动 Harness Web Host：Node 或 dsh 入口未就绪。", status);
 
+        // Helper 真正拉起 DSH 之前先部署基础插件：只补缺失项，已有用户版本/禁用状态不动，
+        // 部署失败只记录有界诊断，绝不阻断 DSH 启动（重启后生效）。
+        var pluginNote = await DeployBasePluginsAsync(cancellationToken);
+
         var process = StartWebHost(status.NodePath, status.DshEntryPath, permissionMode);
         if (process is null)
-            return new(false, false, 0, "Harness Web Host 进程启动失败。", status);
+            return new(false, false, 0, "Harness Web Host 进程启动失败。" + pluginNote, status);
 
         var processId = 0;
         try { processId = process.Id; } catch { }
@@ -361,7 +373,7 @@ public sealed class DeepSeekHarnessService
                 // 启动后立即核对 88frp 信任（新 Host 已带 --trusted-host 启动，这里做只读验证与状态落盘）。
                 try { await EnsureAuthoritySyncedAsync(cancellationToken); } catch { }
                 var ready = await DiagnoseAsync(userSelectedNodePath, userSelectedDshEntryPath, cancellationToken, forceRefresh: true);
-                return new(true, true, processId, "Harness Web Host 已自动启动并通过健康检查。", ready);
+                return new(true, true, processId, "Harness Web Host 已自动启动并通过健康检查。" + pluginNote, ready);
             }
             try
             {
@@ -380,7 +392,29 @@ public sealed class DeepSeekHarnessService
             await Task.Delay(250, cancellationToken);
         }
 
-        return new(false, true, processId, "Harness Web Host 已启动，但 10 秒内未通过健康检查。", status);
+        return new(false, true, processId, "Harness Web Host 已启动，但 10 秒内未通过健康检查。" + pluginNote, status);
+    }
+
+    /// <summary>
+    /// DSH 启动前部署基础插件。返回一段可直接拼进界面提示的有界中文说明（无写入时为空串）：
+    /// 部署失败/未就绪只说事实，不阻断启动；已有 Host 的场景不会走到这里，因而不中断现有任务。
+    /// </summary>
+    internal async Task<string> DeployBasePluginsAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            var deployer = BasePluginDeployer
+                ?? (static token => new DshBasePluginDeploymentService().EnsureDeployedAsync(cancellationToken: token));
+            LastBasePluginDeployment = await deployer(cancellationToken);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            LastBasePluginDeployment = new DshBasePluginDeploymentResult(false, false, [], [], [],
+                "基础插件部署异常（不影响 DSH 启动）：" + FrpAuthoritySyncService.Sanitize(ex.Message));
+        }
+        var result = LastBasePluginDeployment;
+        return result is null || string.IsNullOrWhiteSpace(result.Message) ? string.Empty : " " + result.Message;
     }
 
     /// <summary>停止 Helper 启动的 Web Host（终止进程树）。</summary>
@@ -675,12 +709,22 @@ public static class DeepSeekHarnessProcess
     }
 
     /// <summary>
+    /// 基础插件部署（默认 <see cref="DshBasePluginDeploymentService"/>；测试可注入）。
+    /// 这是所有启动路径（GUI 与隐藏宿主）共用的一处保险：即使调用方没有显式部署，
+    /// 真正 spawn node + dsh 之前也会再补一次缺失的基础插件。
+    /// </summary>
+    public static Func<CancellationToken, Task>? BasePluginDeployer { get; set; }
+
+    /// <summary>
     /// 启动 Web Host 进程（无窗口、参数安全）；失败返回 null。
     /// stdout/stderr 异步排空，避免管道缓冲阻塞；同时保留有界尾部供启动失败诊断使用，
     /// 不保存完整输出（原始 stderr 绝不写入日志）。
     /// </summary>
     public static Process? LaunchWebHost(string nodePath, string dshEntryPath, string? permissionMode = null, IEnumerable<string>? trustedHosts = null)
     {
+        // 启动前补一次基础插件（幂等、无网络、有界耗时；失败只记录诊断，绝不阻断启动）。
+        try { (BasePluginDeployer ?? DefaultBasePluginDeployer)(CancellationToken.None).GetAwaiter().GetResult(); }
+        catch { }
         try
         {
             var process = new Process { StartInfo = BuildWebHostStartInfo(nodePath, dshEntryPath, permissionMode, trustedHosts) };
@@ -695,6 +739,10 @@ public static class DeepSeekHarnessProcess
 
     /// <summary>已启动进程的输出捕获表：进程实例弱引用（不泄漏），仅 LaunchWebHost 启动的进程有捕获。</summary>
     private static readonly ConditionalWeakTable<Process, HarnessProcessOutput> CapturedOutputs = new();
+
+    /// <summary>默认基础插件部署：部署失败只吞掉（诊断已由部署服务记录），不阻断 Host 启动。</summary>
+    private static async Task DefaultBasePluginDeployer(CancellationToken cancellationToken)
+        => await new DshBasePluginDeploymentService().EnsureDeployedAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
 
     /// <summary>读取进程的输出捕获（仅 LaunchWebHost 启动的进程；未知进程返回 null）。</summary>
     public static HarnessProcessOutput? GetCapturedOutput(Process process)

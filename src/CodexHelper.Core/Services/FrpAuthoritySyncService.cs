@@ -132,11 +132,20 @@ public sealed record FrpAuthorityPatchUpdate(bool Changed, string UpdatedText, I
         => !Changed && string.Equals(existing ?? string.Empty, UpdatedText, StringComparison.Ordinal);
 }
 
-/// <summary>公网 Origin 验证结果（只读 session.list；RunningSessions 为托管会话数的保守估计）。</summary>
-public sealed record FrpOriginVerification(bool Accepted, string? Error, int ActiveSessions)
+/// <summary>
+/// 公网 Origin 验证结果（只读 session.list；RunningSessions 为托管会话数的保守估计）。
+/// <para><see cref="ActiveSessionsKnown"/> 必须显式表示"本机回环确实读到了会话列表"：
+/// 公网 403/超时/网络失败都拿不到活动数，此时绝不能按 0 运行中会话处理（否则会误杀正在编码的任务）。
+/// 未知活动数时同步服务必须延后重启。</para>
+/// </summary>
+public sealed record FrpOriginVerification(bool Accepted, string? Error, int ActiveSessions, bool ActiveSessionsKnown)
 {
-    public static FrpOriginVerification Ok(int activeSessions) => new(true, null, activeSessions);
-    public static FrpOriginVerification Reject(string error, int activeSessions = 0) => new(false, error, activeSessions);
+    /// <summary>公网 Origin 验证通过；活动数来自真实只读回环 session.list。</summary>
+    public static FrpOriginVerification Ok(int activeSessions) => new(true, null, activeSessions, true);
+
+    /// <summary>公网 Origin 验证未通过；活动数未知（<paramref name="activeSessionsKnown"/> 需显式传入真实回环结论）。</summary>
+    public static FrpOriginVerification Reject(string error, int activeSessions = 0, bool activeSessionsKnown = false)
+        => new(false, error, activeSessions, activeSessionsKnown);
 }
 
 /// <summary>一次同步检查的结果（脱敏、可回报给 UI/日志）。</summary>
@@ -311,12 +320,22 @@ public sealed class FrpAuthoritySyncService
                 return new(previous, $"公网 origin 验证通过（{detected}），远程只读 RPC 可用。", false, patchWritten);
             }
 
-            // 4) Host 不接受新 Origin：只有没有运行中会话、提供了受控重启且尚未因该入口重启过时才重启一次。
+            // 4) Host 不接受新 Origin：只有"确实确认没有运行中会话"且提供了受控重启、尚未因该入口重启过时才重启一次。
             previous.Error = Sanitize(verification.Error);
             if (verification.ActiveSessions > 0)
             {
                 previous.State = FrpAuthorityStatus.Pending;
                 previous.PendingReason = $"存在 {verification.ActiveSessions} 个运行中 Harness 会话，延后 Host 重启（不中断编码任务）。";
+                previous.UpdatedUtc = now;
+                store.Save(previous);
+                return new(previous, previous.PendingReason!, false, patchWritten);
+            }
+            if (!verification.ActiveSessionsKnown)
+            {
+                // 只读回环会话列表读不到（公网 403/超时/本机不可达）：活动数未知，绝不按 0 处理，
+                // 否则会把正在编码的任务杀掉。延后重启，保留既有信任与 patch。
+                previous.State = FrpAuthorityStatus.Pending;
+                previous.PendingReason = "无法确认本机是否仍有运行中 Harness 会话（公网验证未通过且只读回环会话列表不可读），延后 Host 重启。";
                 previous.UpdatedUtc = now;
                 store.Save(previous);
                 return new(previous, previous.PendingReason!, false, patchWritten);

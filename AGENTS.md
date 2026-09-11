@@ -3,6 +3,8 @@
 - 当前恢复基线为 `v4.4.7`。用户已撤回 `v4.4.8` 的后台独立 GPT 验收/自动修复，以及未完成的原任务唤醒改造；后续开发不得从旧合同、历史提交或安装包自动恢复这些功能，重新引入须有用户新的明确要求。
 
 - 主版本源是根目录 `Directory.Build.props` 中的 `Version`。
+- v4.4.13 起，同一规范化开发目录续用 Helper 登记的已停止会话，不要求相同 rootCauseKey。不同合同必须排队后发送自己的提示，不得接管或冒用前序运行中的合同；取消排队不取消前序。TaskId、指纹、组键和报告仍独立，跨目录隔离、关闭续用和已取消任务的禁止自动重提继续生效。
+- 新版 DSH Gateway 从 session/follow 首快照读取可信 cursor、最小终态元数据与 modelSelection.next；禁止以全局 catalog.default 冒充会话模型，禁止对新版调用旧 session.history。报告门禁未通过的前轮不得在连续上下文中宣称成功。
 - 所有可分发 EXE、ZIP 和安装包名称必须包含 `vX.Y.Z`。
 - 不在源码、测试夹具、日志、README 或发布产物中写入真实 token、API Key、账号文件或私人服务地址。
 - 涉及 `auth.json`、`config.toml`、SQLite、Skills 或项目原位恢复的修改，必须覆盖安全快照、原子提交、失败回滚和路径越界测试。

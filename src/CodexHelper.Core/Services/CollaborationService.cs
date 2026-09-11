@@ -125,9 +125,11 @@ For implementation tasks that change project files, GPT is the planner and judge
 
 ### 连续执行与合同目录（强制）
 - 每个 Harness 任务目录必须唯一创建于 `<project>/.codex-helper/runs/run-<timestamp>-<guid>/`，内含 SPEC.md、ACCEPTANCE.md、HANDOFF.md 与 manifest.json；不要为同一工作流生成旧式 `.codex-helper/tasks/*` 合同，也不要复用既有任务的目录。
-- 同一产品工作流的后续合同（新阶段/增量回合/截断恢复）必须写入 manifest.json 的显式 `rootCauseKey`（稳定、可审计的非空字符串），不同工作流使用不同组键，绝不把不同根因合并到同一组键；无组键的旧记录继续被保守隔离读取，不再作为续接依据。
-- 大型工作必须按可验证阶段拆分合同（先完成最小可验证阶段、运行 workerChecks、再进入下一阶段），避免在单个回合内做完整个大工作；Helper 会自动向同一会话续接同组键合同，并在单回合 `max-tokens` 截断时（stopReason=length）自动恢复一次，但自动恢复有上限且绝不伪装完成。
-- 旧 `.codex-helper/tasks/*` 状态仍可被读取兼容，但不会获得组键续接；迁移方式：打开旧任务目录确认其内容与报告，把要延续的工作流按上文重建为一个带 `rootCauseKey` 的新 `runs/run-*` 合同，旧目录保留只读备份即可。
+- 同一产品工作流的后续合同（新阶段/增量回合/截断恢复）应在 manifest.json 写入显式 `rootCauseKey`（稳定、可审计的非空字符串），不同工作流使用不同组键，绝不把不同根因合并到同一组键；`rootCauseKey` 是审计与合并边界，不再作为会话续用的前置条件。
+- 会话续用规则（用户已明确修改旧规则）：项目目录归一化相同即可续用 Helper 自己登记的持续会话，**不再要求相同 rootCauseKey**；各合同的 TaskId、合同指纹、组键与报告仍严格独立审计，绝不把不同组键合并成一份报告，跨项目绝不复用，也不收养任意手动会话。已停止的最近会话（含前轮报告未过门禁或失败）可作为同一会话的既有上下文继续，但绝不算前轮成功；被取消（防循环取消/用户明确终止）的任务禁止自动重提或续接。
+- 大型工作必须按可验证阶段拆分合同（先完成最小可验证阶段、运行 workerChecks、再进入下一阶段），避免在单个回合内做完整个大工作；Helper 会向同一开发目录的最近已停止会话续接新回合，并在单回合 `max-tokens` 截断时（stopReason=length）自动恢复一次，但自动恢复有上限且绝不伪装完成。
+- 同一开发目录已有其他 Runner 持项目锁时，新任务在本地排队等待（不创建新会话、不提交提示），锁释放后重新读取最近会话归属再续用；取消只结束自己的排队，绝不取消持有锁的 DSH 任务。也不得把其他正在运行的同组键合同当作本合同的成果：必须等前合同 Runner 真终态后再提交自己的增量提示，本合同报告门禁通过才算完成。
+- 旧 `.codex-helper/tasks/*` 状态仍可被读取兼容，但不参与会话续用；迁移方式：打开旧任务目录确认其内容与报告，把要延续的工作流按上文重建为新的 `runs/run-*` 合同，旧目录保留只读备份即可。
 
 ### 额度与上下文纪律（强制）
 - 先按规模路由：不超过 2 文件、约 80 行、低风险且无跨模块接线的修复，直接由 GPT 实施和聚焦验收，不创建 Harness 合同；只有中大型实施才提交 Harness。用户明确指定 Harness/DeepSeek 时例外。
@@ -282,8 +284,10 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File invoke-harness.ps1 -Proj
 - 不提交、不推送、不重置、不清理、不安装依赖、不打包发布，除非合同明确授权。
 - 凭据、API Key 与任务正文绝不进入命令行；日志脱敏。
 - Harness 版本 0.1.0-rc.5 仅为已知兼容基线：通过运行时能力探测的新语义版本可用，绝不静默使用 latest。
-- 每个 Harness 任务目录必须唯一创建于 `<project>/.codex-helper/runs/run-<timestamp>-<guid>/`；同一工作流的后续合同在 manifest.json 写入显式 `rootCauseKey`（稳定非空，不同工作流用不同键），禁止生成无组键的旧式 `.codex-helper/tasks/*` 合同（旧 tasks 记录只读兼容，不参与续接）。
-- 大型工作按可验证阶段拆分合同，每阶段先完成最小可验证部分并运行 workerChecks；Helper 会向同一会话续接同组键合同，并在单回合 `max-tokens` 截断（stopReason=length）时自动恢复一次（上限 1，绝不伪装完成）。
+- 每个 Harness 任务目录必须唯一创建于 `<project>/.codex-helper/runs/run-<timestamp>-<guid>/`；同一工作流的后续合同在 manifest.json 写入显式 `rootCauseKey`（稳定非空，不同工作流用不同键）作为审计边界，禁止生成无组键的旧式 `.codex-helper/tasks/*` 合同（旧 tasks 记录只读兼容，不参与续用）。
+- 会话续用按开发目录：项目目录归一化相同即可续用 Helper 自己登记的持续会话，不再要求相同 rootCauseKey；各合同 TaskId/指纹/组键/报告严格独立审计，绝不合并不同组键报告，跨项目绝不复用，也不收养手动会话。已停止的最近会话（含前轮报告未过门禁/失败）可继续同一会话但绝不算前轮成功；被取消的任务禁止自动重提。
+- 同一开发目录已有其他 Runner 持项目锁时本地排队等待（不建会话、不提交提示），锁释放后重新读取最近会话归属再续用；取消只结束自己的排队，不取消持锁任务。
+- 大型工作按可验证阶段拆分合同，每阶段先完成最小可验证部分并运行 workerChecks；Helper 会向同一开发目录的最近已停止会话续接新回合，并在单回合 `max-tokens` 截断（stopReason=length）时自动恢复一次（上限 1，绝不伪装完成）。
 {{HarnessVisualBoundaryRule}}
 """;
 }

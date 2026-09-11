@@ -31,7 +31,7 @@ public static class HarnessExecutionOptions
         "standard" => "使用 DSH 原生 standard 预设，合同提示与默认一致。",
         "minimal" => "使用 DSH 原生 minimal 预设，仅提供持久 bash 与 str_replace_editor 双工具。",
         "plan" => "只输出实施计划，不修改项目文件；合同提示明确禁止实施与写入。",
-        _ => "中文进度、直接实施、只做 workerChecks、结构化 EXECUTION_REPORT；使用 Helper 托管的 codex-contract 预设，不支持时降级 standard。该模式支持快速连续：首次基线合同独立读取任务合同并实施；可信同组键（rootCauseKey）前序回合通过报告门禁后，后续回合以增量方式续接同一 DSH 会话，先读 Helper 生成的有界 PROJECT_CONTEXT.md 与当前 HANDOFF.md，禁止递归扫描项目。"
+        _ => "中文进度、直接实施、只做 workerChecks、结构化 EXECUTION_REPORT；使用 Helper 托管的 codex-contract 预设（官方 standard 完整副本，只替换 persona 的 prefix/text 标量），预设结构确实不兼容时降级 standard 并显示具体原因。同一开发目录（项目目录归一化相同）续用 Helper 自己登记的持续会话：首份合同独立读取任务合同并实施；同一目录的后续合同在最近一个已停止会话上提交增量回合，只先读 Helper 生成的有界 PROJECT_CONTEXT.md 与当前 HANDOFF.md，禁止递归扫描项目。各合同 TaskId/指纹/组键/报告仍严格独立审计，跨项目绝不复用。"
     };
 
     /// <summary>
@@ -114,8 +114,9 @@ public static class HarnessExecutionOptions
 /// Codex 合同模式 agent preset 管理器：在用户 DSH Home（$DSH_HOME，默认 ~/.dsh）的
 /// <c>.agent-presets/codex-contract/</c> 下幂等生成 Helper 专属 preset，不修改用户已有
 /// profile、不覆盖凭据或默认模型。生成内容基于 DSH 官方 standard preset 的完整副本，
-/// 只替换 persona 段落为合同模式规则；结构不兼容时拒绝生成并诚实降级到 standard。
-/// 生成完全幂等：重复调用产生逐字节相同内容。
+/// 只替换 persona 的 prefix/text 标量为合同模式规则（suffix 与其余原文逐字不变）；
+/// 结构不兼容时拒绝生成并诚实降级到 standard，安装失败保留旧预设。
+/// 生成完全幂等：重复调用不写盘且产生逐字节相同内容。
 /// </summary>
 public sealed class HarnessContractProfileService
 {
@@ -125,7 +126,7 @@ public sealed class HarnessContractProfileService
     /// <summary>预设目录下的元数据文件名。</summary>
     public const string MetadataFileName = "preset.yml";
 
-    /// <summary>standard preset 中需要替换的官方 persona 原文（与 rc.6 发布的 agent.cordis.yml 一致）。</summary>
+    /// <summary>旧版 standard preset 的官方 persona 单行原文（rc.6 及更早；仅用于兼容识别的说明文本）。</summary>
     public const string StandardPersonaLine =
         "You are a coding agent powered by the {{model}} model. Your working directory is {{cwd}}.";
 
@@ -156,53 +157,133 @@ public sealed class HarnessContractProfileService
     public bool IsInstalled => File.Exists(CompositionPath) && File.Exists(MetadataPath);
 
     /// <summary>
-    /// 探测当前 DSH 是否支持 Helper 的 profile/preset 覆盖能力：
-    /// 1) dsh 包内存在官方 standard preset 组合文件；2) 该组合包含可识别的 persona 原文。
-    /// 不满足时返回 false，调用方必须诚实降级到 standard，UI 不得虚报。
+    /// 探测当前 DSH 是否支持 Helper 的 profile/preset 覆盖能力。与
+    /// <see cref="InstallOrRepair"/> 共用同一识别入口（<see cref="HarnessContractPresetCompatibility.TryRecognize"/>），
+    /// 绝不出现"IsSupported true 而 Install 拒绝"或反之的分裂判定。不满足时返回 false，
+    /// 调用方必须诚实降级到 standard，UI 不得虚报。
     /// </summary>
-    public bool IsSupported(string dshEntryPath)
+    public bool IsSupported(string dshEntryPath) => Probe(dshEntryPath).Supported;
+
+    /// <summary>
+    /// 带具体诊断的兼容探测：支持时 Supported=true 并给出后端来源；不支持时 Reason 说明
+    /// 是"未定位到官方 standard 预设"、"persona 结构变化"还是"多个 persona/别名/路径越界"。
+    /// 诊断文本只含来源描述与结构事实，已脱敏且不含任何凭据。
+    /// </summary>
+    public (bool Supported, string Reason, string Backend) Probe(string? dshEntryPath)
     {
-        try
-        {
-            var packageRoot = FindPackageRoot(dshEntryPath);
-            if (packageRoot is null) return false;
-            var shipped = Path.Combine(packageRoot, "config", "agent-presets", "standard", "agent.cordis.yml");
-            return File.Exists(shipped) && File.ReadAllText(shipped, Encoding.UTF8).Contains(StandardPersonaLine, StringComparison.Ordinal);
-        }
-        catch
-        {
-            return false;
-        }
+        if (HarnessContractPresetCompatibility.TryRecognize(dshEntryPath, out var located, out var rewrite, out var diagnostic))
+            return (true, diagnostic, located!.BackendText);
+        return (false, diagnostic, "未定位到兼容的 standard 预设");
     }
 
     /// <summary>
     /// 幂等生成/修复 codex-contract preset。基于官方 standard preset 的完整副本，
-    /// 仅替换 persona 为合同模式规则（中文进度、直接实施、只做 workerChecks、
-    /// 禁止重新规划/截图/视觉验收/发布结论、结构化 EXECUTION_REPORT）。
-    /// 结构不兼容（persona 原文缺失）时抛 InvalidOperationException 拒绝生成，
-    /// 绝不产出残缺预设；调用方捕获后降级 standard。
+    /// 仅替换 persona 的 prefix/text 标量为合同模式规则（中文进度、直接实施、只做 workerChecks、
+    /// 禁止重新规划/截图/视觉验收/发布结论、结构化 EXECUTION_REPORT）；suffix、工具行、realm 与
+    /// <c>!!js</c> 标签、注释与换行风格全部逐字保留。
+    /// <para>
+    /// 两个文件（组合文件 + 元数据）作为一个事务提交：先备份旧文件，任一步失败回滚到旧内容，
+    /// 绝不留下半写状态；内容已一致时不写盘（重复调用零写入）。
+    /// 结构不兼容（未定位到来源、persona 不可识别、多个 persona、别名、路径/软链越界）时抛
+    /// <see cref="InvalidOperationException"/> 拒绝生成，绝不产出残缺预设；调用方捕获后降级 standard。
+    /// </para>
     /// </summary>
     public void InstallOrRepair(string dshEntryPath)
     {
-        var packageRoot = FindPackageRoot(dshEntryPath)
-            ?? throw new InvalidOperationException("无法定位 Harness 包根目录，不能生成 Codex 合同模式预设。");
-        var shipped = Path.Combine(packageRoot, "config", "agent-presets", "standard", "agent.cordis.yml");
+        if (string.IsNullOrWhiteSpace(dshEntryPath))
+            throw new InvalidOperationException("未配置 Harness dsh 入口，不能生成 Codex 合同模式预设。");
+        // 与 IsSupported 共用的同一识别入口：绝不允许一个 false 一个 true。
+        if (!HarnessContractPresetCompatibility.TryRecognize(dshEntryPath, out var located, out var recognition, out var diagnostic))
+            throw new InvalidOperationException("standard preset 不兼容，已拒绝生成合同模式预设：" + diagnostic);
+        var shipped = located!.CompositionPath;
         if (!File.Exists(shipped))
             throw new FileNotFoundException("当前 Harness 未提供 standard agent preset。", shipped);
-        var composition = File.ReadAllText(shipped, Encoding.UTF8);
-        if (!composition.Contains(StandardPersonaLine, StringComparison.Ordinal))
-            throw new InvalidOperationException("standard preset 的 persona 结构已变化，已拒绝生成不兼容配置。");
-        // The persona lives inside a YAML folded scalar (text: >-). Every continuation
-        // line must keep the same six-space indentation; raw newlines make the preset
-        // syntactically invalid and prevent Harness from creating any session.
-        var yamlPersona = ContractPersonaText
-            .Replace("\r\n", "\n", StringComparison.Ordinal)
-            .Replace("\n", "\n      ", StringComparison.Ordinal);
-        composition = composition.Replace(StandardPersonaLine, yamlPersona, StringComparison.Ordinal);
 
+        var composition = File.ReadAllText(shipped, Encoding.UTF8);
+        var rewrite = HarnessContractPresetCompatibility.RewritePersonaPrefix(composition, ContractPersonaText);
+        if (!rewrite.Supported || rewrite.Rewritten is null)
+            throw new InvalidOperationException("standard preset 的 persona 结构不兼容，已拒绝生成不兼容配置：" + recognition.Reason);
+
+        // 路径越界与软链拒绝：目标必须位于本 DSH Home 之下，且整条路径不得经过重解析点。
+        if (HarnessContractPresetCompatibility.AnyReparsePointOnPath(home, PresetDirectory)
+            || HarnessContractPresetCompatibility.AnyReparsePointOnPath(home, CompositionPath)
+            || HarnessContractPresetCompatibility.AnyReparsePointOnPath(home, MetadataPath))
+            throw new InvalidOperationException("预设写入路径位于符号链接或重解析点上（越界风险），已拒绝写入。");
+
+        var metadata = BuildMetadata();
         Directory.CreateDirectory(PresetDirectory);
-        AtomicFile.WriteAllText(CompositionPath, composition);
-        AtomicFile.WriteAllText(MetadataPath, BuildMetadata());
+        using var writeLease = new FileStream(Path.Combine(PresetDirectory, ".helper-write.lock"),
+            FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+        // 写前完整读取：任何旧文件不可读（共享冲突/权限/IO）一律拒绝写入，绝不把"读不到"当成
+        // "不存在"而在回滚时删掉一个其实存在且重要的旧文件；读到的原文同时作为可恢复备份。
+        var compositionExisting = ReadExisting(CompositionPath);
+        var metadataExisting = ReadExisting(MetadataPath);
+        // 幂等前置：两个文件内容都已一致时零写入（不触碰时间戳、不产生任何中间文件）。
+        if (MatchesContent(compositionExisting, rewrite.Rewritten) && MatchesContent(metadataExisting, metadata)) return;
+
+        var backupSuffix = ".bak-" + DateTime.UtcNow.ToString("yyyyMMddHHmmssfff") + "-" + Guid.NewGuid().ToString("N")[..8];
+        if (compositionExisting is not null) AtomicFile.WriteAllText(CompositionPath + backupSuffix, compositionExisting);
+        if (metadataExisting is not null) AtomicFile.WriteAllText(MetadataPath + backupSuffix, metadataExisting);
+        // ---- 两文件事务：写前已完整读取（作为备份）→ 写入 → 失败回滚旧内容并如实报告回滚失败 ----
+        try
+        {
+            AtomicFile.WriteAllText(CompositionPath, rewrite.Rewritten);
+            AtomicFile.WriteAllText(MetadataPath, metadata);
+        }
+        catch (Exception writeFailure)
+        {
+            var compositionRollback = TryRestore(CompositionPath, compositionExisting);
+            var metadataRollback = TryRestore(MetadataPath, metadataExisting);
+            var rollbackFact = compositionRollback is null && metadataRollback is null
+                ? "已回滚旧预设。"
+                : "回滚未完全成功：" + string.Join("；", new[] { compositionRollback, metadataRollback }.Where(item => item is not null)) + "。";
+            throw new InvalidOperationException("写入 codex-contract 预设失败，" + rollbackFact
+                + " 原始原因：" + HarnessContractPresetCompatibility.Sanitize(writeFailure.Message), writeFailure);
+        }
+    }
+
+    private static bool MatchesContent(string? existing, string expected)
+        => existing is not null && string.Equals(existing, expected, StringComparison.Ordinal);
+
+    /// <summary>
+    /// 写入前读取旧文件原文：文件不存在返回 null；存在但不可读（权限/共享冲突/IO/编码失败）
+    /// 一律抛出可读中文异常拒绝写入——绝不把不可读误认成不存在。
+    /// </summary>
+    private static string? ReadExisting(string path)
+    {
+        if (!File.Exists(path)) return null;
+        try
+        {
+            return File.ReadAllText(path, Encoding.UTF8);
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException("已有预设文件不可读，已拒绝写入以免误删可恢复内容（"
+                + HarnessContractPresetCompatibility.Sanitize(ex.Message) + "）：" + path, ex);
+        }
+    }
+
+    /// <summary>
+    /// 回滚到旧内容；回滚本身失败时返回可读原因（绝不吞掉），成功返回 null。
+    /// 备份为 null 表示写入前该文件确实不存在，回滚即删除本次写入的文件。
+    /// </summary>
+    private static string? TryRestore(string path, string? backup)
+    {
+        try
+        {
+            if (backup is null)
+            {
+                if (File.Exists(path)) File.Delete(path);
+                return null;
+            }
+            AtomicFile.WriteAllText(path, backup);
+            return null;
+        }
+        catch (Exception ex)
+        {
+            // 回滚失败不掩盖原始写入失败原因，但必须如实回报（旧文件可能已被半写替换）。
+            return HarnessContractPresetCompatibility.Sanitize(ex.Message);
+        }
     }
 
     /// <summary>合同模式 persona：五阶段协议、冻结决策优先、集中读取与批量编辑、仅 workerChecks、结束即报告。</summary>
@@ -215,16 +296,5 @@ public sealed class HarnessContractProfileService
         "凭据与任务正文绝不进入命令行；完成即报告：写入 EXECUTION_REPORT.md，成功退出码必须单独写成一行“- 退出码：0”，该行不得附加括号、命令或解释（解释可写在 workerChecks 条目中），随后停止，等待 GPT 验收。";
 
     private static string BuildMetadata()
-        => "name: Codex 合同模式\ndescription: GPT 规划验收，Harness 仅实现与 workerChecks；支持快速连续（同组键前序回合续接同一会话，Helper 生成有界 PROJECT_CONTEXT.md）。\norder: 0\n";
-
-    /// <summary>从 dsh 入口向上找包含 package.json 且带 config/agent-presets 的包根目录。</summary>
-    private static string? FindPackageRoot(string entry)
-    {
-        if (string.IsNullOrWhiteSpace(entry)) return null;
-        var dir = new FileInfo(entry).Directory;
-        for (var i = 0; dir is not null && i < 5; i++, dir = dir.Parent)
-            if (File.Exists(Path.Combine(dir.FullName, "package.json")) && Directory.Exists(Path.Combine(dir.FullName, "config", "agent-presets")))
-                return dir.FullName;
-        return null;
-    }
+        => "name: Codex 合同模式\ndescription: GPT 规划验收，Harness 仅实现与 workerChecks；同一开发目录续用同一 DSH 会话，Helper 生成有界 PROJECT_CONTEXT.md。\norder: 0\n";
 }

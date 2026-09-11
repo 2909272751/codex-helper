@@ -55,8 +55,10 @@ internal static class HarnessTurnEnd
     /// </summary>
     public static string? Coerce(JsonObject? eventData, string? kind)
     {
-        if (IsMaxTokenKind(kind)) return kind;
         var reason = eventData?["reason"] as JsonObject;
+        if (kind == "aborted")
+            return HarnessJson.Text(reason?["reason"]?["kind"]) is "error" or "failed" ? "error" : "aborted";
+        if (IsMaxTokenKind(kind)) return kind;
         if (reason is not null && IsLengthStopReason(HarnessJson.Text(reason["stopReason"]))) return "length";
         if (IsLengthStopReason(HarnessJson.Text(eventData?["stopReason"]))) return "length";
         if (eventData is not null && IsLengthStopReason(HarnessJson.Text(eventData["stop_reason"]))) return "length";
@@ -251,11 +253,21 @@ public sealed class HarnessRpcClient : IDisposable
     public Task<HarnessRpcResult> ListSessionsAsync(CancellationToken cancellationToken = default)
         => CallAsync("session.list", new JsonObject(), cancellationToken);
 
-    public Task<HarnessRpcResult> GetSessionHistoryAsync(string sessionId, CancellationToken cancellationToken = default)
-        => CallAsync("session.history", new JsonObject { ["sessionId"] = sessionId }, cancellationToken);
+    /// <summary>
+    /// 旧版协议的历史事件读取（<c>session.history</c>，仅 legacy 端点存在）。
+    /// 新版 Gateway 不公开旧入口；自动改用 follow 的小尾窗，只返回可信终态元数据。
+    /// 不把旧接口请求发到新版 Host，避免将接口不存在误判成任务失败。
+    /// </summary>
+    public async Task<HarnessRpcResult> GetSessionHistoryAsync(string sessionId, CancellationToken cancellationToken = default)
+    {
+        await EnsureProtocolAsync(cancellationToken);
+        if (protocol == ProtocolFlavor.GatewaySlashRpc)
+            return await GetGatewaySnapshotBaselineAsync(sessionId, cancellationToken);
+        return await CallWireAsync("session.history", "session.history", new JsonObject { ["sessionId"] = sessionId }, cancellationToken);
+    }
 
     /// <summary>
-    /// 轻量历史/基线读取：以 DSH 实际支持的 session.history 分页参数请求最小尾部窗口，
+    /// 轻量历史/基线读取（旧版协议路径）：以 DSH 实际支持的 session.history 分页参数请求最小尾部窗口，
     /// 只取 projections.asOfSeq（会话级可信最高序号，旧 Host 可能缺失），绝不下载完整事件列表。
     /// DSH rc.6 schema：请求可带 beforeSeq（向后分页锚点）与 maxMessages（正整数，按消息数
     /// 从窗口尾部向前分页，chunk 按 sourceEventSeqs 分组不切消息）；省略 beforeSeq 时 Host
@@ -268,9 +280,49 @@ public sealed class HarnessRpcClient : IDisposable
         {
             ["sessionId"] = sessionId,
             // 消息数而非事件数：尾页按消息分组，单个大回合的 chunk 仍会整组返回；
-            // 对同组键前序"最近一次 turn/end 后"的基线探测足够且响应有界。
+            // 对已完成前序"最近一次 turn/end 后"的基线探测足够且响应有界。
             ["maxMessages"] = 1
         }, cancellationToken);
+
+    /// <summary>
+    /// 新版 Gateway 的事件基线/水位读取：官方 Remote 流多路复用端点上的 <c>session/follow</c>
+    /// 首个 <c>snapshot</c> 的 <c>cursor</c>（会话级可信最高序号）。结果归一成与旧
+    /// <c>session.history</c> 兼容的形状（<c>projections.asOfSeq</c>），调用方无需分支；
+    /// 不传 <c>assistantStream</c>，不消费也不返回任何正文/推理增量。
+    /// 缺少水位、无法验证或临时网络失败时返回失败并保留会话 ID（由调用方写明"等待/不能确认续接"），
+    /// 绝不用 0 或伪序号代替错误，也绝不把 session/page 当无 throughSeq 的 history。
+    /// </summary>
+    public async Task<HarnessRpcResult> GetGatewaySnapshotBaselineAsync(string sessionId, CancellationToken cancellationToken = default)
+    {
+        var reader = new HarnessGatewaySnapshotReader(baseUrl);
+        var opening = await reader.ReadOpeningAsync(sessionId, cancellationToken);
+        if (!opening.Success) return HarnessRpcResult.Fail(opening.ErrorMessage ?? "Gateway snapshot 读取失败。");
+        var baseline = opening.Baseline;
+        if (baseline is null || baseline < 0)
+            return HarnessRpcResult.Fail("Gateway snapshot 缺少可信水位（不是 0，也不猜测），不能确认续接。");
+        var value = new JsonObject
+        {
+            ["projections"] = new JsonObject { ["asOfSeq"] = baseline.Value },
+            ["source"] = "gateway-follow-snapshot",
+            ["cursor"] = baseline.Value,
+            ["events"] = opening.TerminalEvents.DeepClone()
+        };
+        if (opening.HighestSequence is not null) value["highestSeq"] = opening.HighestSequence.Value;
+        if (opening.LastTurnEndKind is not null) value["lastTurnEnd"] = opening.LastTurnEndKind;
+        return HarnessRpcResult.Ok(value);
+    }
+
+    /// <summary>
+    /// 事件基线读取入口：按当前已探测协议选择实现，绝不混用两种协议。
+    /// 旧版继续用 <c>session.history, maxMessages=1</c>；新版走官方 follow 水位。
+    /// </summary>
+    public async Task<HarnessRpcResult> GetSessionBaselineAsync(string sessionId, CancellationToken cancellationToken = default)
+    {
+        await EnsureProtocolAsync(cancellationToken);
+        return protocol == ProtocolFlavor.GatewaySlashRpc
+            ? await GetGatewaySnapshotBaselineAsync(sessionId, cancellationToken)
+            : await GetSessionHistoryBaselineAsync(sessionId, cancellationToken);
+    }
 
     /// <summary>
     /// session.models：读取一个会话已选中的模型（current，provider-qualified ID）以及 DSH 当前
@@ -285,14 +337,18 @@ public sealed class HarnessRpcClient : IDisposable
         if (protocol != ProtocolFlavor.GatewaySlashRpc)
             return await CallAsync("session.models", new JsonObject { ["sessionId"] = sessionId }, cancellationToken);
 
-        // 新 Gateway 的目录是 Host 级 modelCatalog；它没有旧接口的 current 字段。
-        // 新会话在创建后尚未执行 turn，因此以 Gateway 返回的 default 作为可验证当前值。
-        var catalog = await CallGatewayAsync("session/modelCatalog", new JsonObject { ["args"] = new JsonObject() }, cancellationToken);
-        if (!catalog.Success || catalog.Value is not JsonObject value) return catalog;
-        var normalized = (JsonObject)value.DeepClone();
-        if (normalized["current"] is null && normalized["default"] is JsonObject current)
-            normalized["current"] = current.DeepClone();
+        // Gateway 的会话模型只来自官方 follow 的 modelSelection.next；Host default 不是会话选择。
+        var catalogTask = CallGatewayAsync("session/modelCatalog", new JsonObject { ["args"] = new JsonObject() }, cancellationToken);
+        var selectionTask = new HarnessGatewaySnapshotReader(baseUrl).ReadOpeningAsync(sessionId, cancellationToken);
+        await Task.WhenAll(catalogTask, selectionTask);
+        var catalog = await catalogTask;
+        if (!catalog.Success || catalog.Value is not JsonObject catalogValue) return catalog;
+        var snapshot = await selectionTask;
+        if (!snapshot.Success) return HarnessRpcResult.Fail(snapshot.ErrorMessage ?? "会话模型投影无法核验。");
+        var normalized = (JsonObject)catalogValue.DeepClone();
         if (normalized["routable"] is null) normalized["routable"] = true;
+        normalized.Remove("current");
+        if (snapshot.CurrentModel is not null) normalized["current"] = snapshot.CurrentModel.DeepClone();
         return HarnessRpcResult.Ok(normalized);
     }
 
@@ -1041,7 +1097,7 @@ public sealed class HarnessDegenerationDetector
 /// GET /api/events.mux 返回 426 属正常协议提示。服务端关闭或连接失败时枚举结束（不抛出）；
 /// 用户取消以 CancellationToken 传播。WebSocket 随枚举结束释放。
 /// </summary>
-public sealed class DeepSeekHarnessEventStream : IDisposable
+public sealed partial class DeepSeekHarnessEventStream : IDisposable
 {
     private readonly string wsUrl;
     private readonly string hostWsUrl;
@@ -1057,6 +1113,7 @@ public sealed class DeepSeekHarnessEventStream : IDisposable
     public string? NodeRelayScriptPath { get; init; }
     /// <summary>仅转发该 Harness 会话的事件，防止全局 mux 历史会话淹没当前合同。</summary>
     public string? SessionIdFilter { get; init; }
+    public bool UseGatewayProtocol { get; init; }
     /// <summary>
     /// rc.6 的一代事件连接只有在 mux/host 两条下行流均打开且 host.describe 成功后才算可用。
     /// Runner 注入本回调，避免把"能连上一个 WebSocket"误报为实时中继已就绪。
@@ -1081,6 +1138,11 @@ public sealed class DeepSeekHarnessEventStream : IDisposable
 
     public async IAsyncEnumerable<HarnessMuxFrame> ListenAsync([EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
+        if (UseGatewayProtocol)
+        {
+            await foreach (var frame in ListenGatewayAsync(cancellationToken)) yield return frame;
+            yield break;
+        }
         if (!string.IsNullOrWhiteSpace(NodeExecutablePath) && File.Exists(NodeExecutablePath)
             && !string.IsNullOrWhiteSpace(NodeRelayScriptPath) && File.Exists(NodeRelayScriptPath))
         {
@@ -1340,7 +1402,11 @@ public sealed class DeepSeekHarnessRelayProbe : IDeepSeekHarnessRelay
         string? eventsReason = null;
         try
         {
-            using var stream = new DeepSeekHarnessEventStream(baseUrl) { WebSocketFactory = WebSocketFactory };
+            using var stream = new DeepSeekHarnessEventStream(baseUrl)
+            {
+                WebSocketFactory = WebSocketFactory, SessionIdFilter = probeSessionId,
+                UseGatewayProtocol = rpc.ProtocolName == "gateway-slash-rpc"
+            };
             using var wait = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             wait.CancelAfter(EventWaitTimeout);
             await foreach (var frame in stream.ListenAsync(wait.Token))
@@ -1353,7 +1419,7 @@ public sealed class DeepSeekHarnessRelayProbe : IDeepSeekHarnessRelay
                 eventsOk = true;
                 break;
             }
-            if (eventsOk)
+            if (eventsOk && rpc.ProtocolName != "gateway-slash-rpc")
             {
                 var described = await rpc.CallAsync("host.describe", new JsonObject(), cancellationToken);
                 if (!described.Success)

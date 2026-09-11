@@ -65,6 +65,8 @@ public partial class MainWindow : Window
     private IReadOnlyList<HarnessModelEntry> harnessModelEntries = Array.Empty<HarnessModelEntry>();
     /// <summary>模型目录最近一次读取失败原因（非空时禁止应用未验证选择）。</summary>
     private string? harnessModelCatalogError;
+    /// <summary>最近一次"应用并测试"里 codex-contract 预设是否真的降级（只有确实兼容失败才为 true）。</summary>
+    private bool harnessPresetDegraded;
     private string? harnessTaskRenderedFingerprint;
     private IReadOnlyList<DshComponentInfo> dshComponents = Array.Empty<DshComponentInfo>();
     private CancellationTokenSource? dshScanCts;
@@ -627,17 +629,20 @@ public partial class MainWindow : Window
             settings.HarnessNodePath = status.NodePath;
             settings.HarnessDshEntryPath = status.DshEntryPath;
             var profileDegraded = false;
+            string? profileDegradeReason = null;
+            harnessPresetDegraded = false;
             if (settings.HarnessExecutionMode == HarnessExecutionOptions.DefaultMode)
             {
-                // 合同 profile 幂等生成；结构不兼容/无法定位时记录降级，UI 不虚报 codex-contract。
+                // 合同 profile 幂等生成；结构不兼容/无法定位/路径越界时记录具体原因，UI 不虚报 codex-contract。
                 // Runner 启动时同样探测，安装失败会诚实使用 standard 预设并继续。
                 try
                 {
                     await Task.Run(() => new HarnessContractProfileService().InstallOrRepair(status.DshEntryPath), cancellationToken);
                 }
-                catch
+                catch (Exception ex)
                 {
                     profileDegraded = true;
+                    profileDegradeReason = ex.Message;
                 }
             }
             settingsService.Save(settings);
@@ -650,10 +655,25 @@ public partial class MainWindow : Window
                 if (!ready.Ready) throw new InvalidOperationException(ready.Message);
             }
             if (profileDegraded)
-                await Dispatcher.InvokeAsync(() => MessageBox.Show("codex-contract 预设无法生成（当前 Harness 结构不兼容），合同模式将降级为 standard；合同边界仍由短提示保证。", "已降级", MessageBoxButton.OK, MessageBoxImage.Warning));
+            {
+                // 只有确实兼容失败才提示降级，并给出具体原因；绝不先报"已降级"再笼统"设置完成"。
+                harnessPresetDegraded = true;
+                var reason = profileDegradeReason ?? "未定位到可兼容的官方 standard 预设。";
+                await Dispatcher.InvokeAsync(() => MessageBox.Show(
+                    "codex-contract 预设未生成，合同模式将降级为 standard（合同边界仍由短提示保证）。具体原因：" + reason,
+                    "预设降级", MessageBoxButton.OK, MessageBoxImage.Warning));
+            }
             await RefreshHarnessSettingsAsync(forceRefresh: true, cancellationToken);
         }, showProgress: false);
-        if (success) MessageBox.Show("Harness 合同设置已应用。完全控制通过 Host 受控环境传递，不会写入命令行或日志。", "设置完成", MessageBoxButton.OK, MessageBoxImage.Information);
+        if (success)
+        {
+            // 降级已在上方以具体原因单独提示；这里只报告真正落到设置里的事实，不重复笼统"设置完成"。
+            MessageBox.Show(harnessPresetDegraded
+                    ? "Harness 合同设置已应用，但 codex-contract 预设未生成（上面已显示具体原因），本次执行会使用 standard 预设。"
+                    : "Harness 合同设置已应用。完全控制通过 Host 受控环境传递，不会写入命令行或日志。",
+                harnessPresetDegraded ? "设置已应用（预设降级）" : "设置完成", MessageBoxButton.OK,
+                harnessPresetDegraded ? MessageBoxImage.Warning : MessageBoxImage.Information);
+        }
     }
 
     private void RestoreHarnessRecommendedSettings_Click(object sender, RoutedEventArgs e)

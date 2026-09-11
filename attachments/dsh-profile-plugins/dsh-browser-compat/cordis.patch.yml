@@ -1,0 +1,5 @@
+# A normal bundle layer keeps this extension visible and controllable in DSH
+# Plugin Manager. Its behavior is a host-side index.html tap (see index.js).
+- insert:
+    - id: dsh-browser-compat
+      name: dsh-browser-compat

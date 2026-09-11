@@ -1,0 +1,31 @@
+{
+  "name": "dsh-model-vision-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Normalizes DSH model image-capability metadata for the Web client without guessing model or provider capabilities.",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-connection"
+      ],
+      "platform": "web"
+    },
+    "plugin": {
+      "displayNameZh": "图片能力桥接",
+      "descriptionZh": "把运行时已声明的模型 input/image 能力同步给聊天界面；不按模型名猜测，也不会给文本模型伪造图片能力。",
+      "category": "模型能力"
+    }
+  }
+}

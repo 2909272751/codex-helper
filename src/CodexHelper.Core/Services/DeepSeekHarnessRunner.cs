@@ -1718,6 +1718,32 @@ public sealed class DeepSeekHarnessRunner
             var running = item["running"] is System.Text.Json.Nodes.JsonValue runningValue
                 && runningValue.TryGetValue<bool>(out var isRunning) && isRunning;
 
+            // 新版 DSH Gateway 已公开 session/list，但不再提供旧版 session.history。
+            // 这时不能把“历史接口不存在”误判成任务未启动，更不能重新提交。以 session.list
+            // 的 running 作为存活事实；停止后仍强制走同一报告门禁，缺报告即诚实失败。
+            // Gateway 后续若公开 follow/page 的稳定终态投影，可在此增加读取，不影响旧协议。
+            if (rpc.UsesGatewayProtocol)
+            {
+                current = EnrichFromSessionItem(current, item);
+                if (!running)
+                {
+                    var gatewayTerminal = WithSummary(GateReport(new TerminalState("awaiting-gpt",
+                        "新版 DSH 会话已停止，已按执行报告门禁进入验收。"), current), detector);
+                    return gatewayTerminal;
+                }
+                current = WithSummary(current with
+                {
+                    State = "running",
+                    SessionState = "running",
+                    Message = "新版 DSH 正在运行；实时流不可用时通过会话状态继续等待。",
+                    UpdatedUtc = DateTime.UtcNow,
+                    EventTransport = "gateway-status-poll"
+                }, detector);
+                Write(current);
+                await Task.Delay(HttpPollInterval, cancellationToken);
+                continue;
+            }
+
             // WebSocket 已断而 session 仍显示 running 时，不能无限把一个并未
             // 真正启动的会话伪装成“运行中”。先从 session 投影读取可验证进度；
             // 再增量读取 history：history 中出现的真实事件（turn/start、assistant 增量、

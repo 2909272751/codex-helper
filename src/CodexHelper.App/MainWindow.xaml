@@ -121,11 +121,13 @@
                                             <Button x:Name="OpenHarnessWebButton" Style="{StaticResource SecondaryButton}" Content="打开 Harness Web" Click="OpenHarnessWeb_Click" Margin="0,0,8,6" IsEnabled="False"/>
                                             <Button x:Name="HarnessRescanButton" Style="{StaticResource SecondaryButton}" Content="重新检测" Click="HarnessRescan_Click" Margin="0,0,8,6"/>
                                             <Button x:Name="StopHarnessHostButton" Style="{StaticResource SecondaryButton}" Content="停止 Helper 启动的 Host" Click="StopHarnessHost_Click" Margin="0,0,8,6"/>
+                                            <Button x:Name="TakeOverHarnessHostButton" Style="{StaticResource SecondaryButton}" Content="接管当前 Host" Click="TakeOverHarnessHost_Click" Margin="0,0,8,6"/>
                                             <Button x:Name="ChooseHarnessNodeButton" Style="{StaticResource SecondaryButton}" Content="选择 Node 路径" Click="ChooseHarnessNode_Click" Margin="0,0,8,6"/>
                                             <Button x:Name="ConfigureHarnessStartupButton" Style="{StaticResource PrimaryButton}" Content="一键配置 Codex + Harness" Click="ConfigureHarnessStartup_Click" Margin="0,0,8,6"/>
                                             <Button x:Name="RemoveHarnessStartupButton" Style="{StaticResource SecondaryButton}" Content="移除登录自启动" Click="RemoveHarnessStartup_Click" Margin="0,0,0,6"/>
                                         </WrapPanel>
                                         <TextBlock x:Name="HarnessStartupStatusText" Text="登录自启动尚未检查。" TextWrapping="Wrap" Foreground="{StaticResource SecondaryTextBrush}" FontSize="12" Margin="0,4,0,0"/>
+                                        <TextBlock x:Name="FrpAuthoritySyncStateText" Text="88frp 公网入口：尚未检查。Helper 会在后台检测 88frp 隧道地址变化、更新受管的 DSH 信任配置并以公网 Origin 做只读验证；地址变化不会中断正在运行的编码任务。" TextWrapping="Wrap" Foreground="{StaticResource SecondaryTextBrush}" FontSize="12" Margin="0,2,0,0"/>
                                             </StackPanel>
                                         </Expander>
                                     </StackPanel><Button x:Name="HarnessCollaborationActionButton" Grid.Column="1" Style="{StaticResource PrimaryButton}" Content="开启协作编码" VerticalAlignment="Top" Margin="12,0,0,0" Click="HarnessCollaborationActionButton_Click"/></Grid></Border>

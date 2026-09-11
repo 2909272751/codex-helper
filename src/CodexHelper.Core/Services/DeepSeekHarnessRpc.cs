@@ -167,9 +167,11 @@ public sealed record HarnessSessionModels(
 /// </summary>
 public sealed class HarnessRpcClient : IDisposable
 {
+    private enum ProtocolFlavor { Unknown, LegacyDotRpc, GatewaySlashRpc }
     private readonly HttpClient http;
     private readonly bool ownsHttp;
     private readonly string baseUrl;
+    private ProtocolFlavor protocol;
 
     /// <param name="baseUrl">Host 基地址（默认 http://127.0.0.1:3080）。</param>
     /// <param name="http">可选注入的 HttpClient（默认新建，Timeout 30 秒，随实例释放）。</param>
@@ -191,6 +193,39 @@ public sealed class HarnessRpcClient : IDisposable
     }
 
     public string BaseUrl => baseUrl;
+
+    /// <summary>当前 Host 经只读探测确认的协议。null 表示尚未调用 RPC。</summary>
+    public string? ProtocolName => protocol switch
+    {
+        ProtocolFlavor.LegacyDotRpc => "legacy-dot-rpc",
+        ProtocolFlavor.GatewaySlashRpc => "gateway-slash-rpc",
+        _ => null
+    };
+
+    /// <summary>新版公开 Gateway 已由只读 session/list 探测确认。</summary>
+    public bool UsesGatewayProtocol => protocol == ProtocolFlavor.GatewaySlashRpc;
+
+    /// <summary>
+    /// 远程 Origin 验证用：为非空时随请求发送 <c>Origin</c> 头（形如 <c>http://authority</c>）。
+    /// 默认 null（本机回环调用不需要）；绝不携带凭据、cookie 或 token。
+    /// </summary>
+    public string? OriginHeader { get; init; }
+
+    /// <summary>读取运行中会话数的保守估计：只读 session.list，统计 running=true 的条目。</summary>
+    public async Task<int> CountRunningSessionsAsync(CancellationToken cancellationToken = default)
+    {
+        var list = await ListSessionsAsync(cancellationToken);
+        if (!list.Success) throw new InvalidOperationException(list.ErrorMessage ?? "session.list 失败。");
+        var sessions = list.Value?["sessions"] as JsonArray ?? list.Value?["items"] as JsonArray;
+        if (sessions is null) return 0;
+        var count = 0;
+        foreach (var node in sessions)
+        {
+            if (node is not JsonObject session) continue;
+            if (session["running"] is JsonValue running && running.TryGetValue<bool>(out var flag) && flag) count++;
+        }
+        return count;
+    }
 
     /// <summary>session.create：以 cwd 为项目根目录创建标准编码会话（agentPreset="standard"）。</summary>
     public Task<HarnessRpcResult> CreateSessionAsync(string cwd, string agentPreset, CancellationToken cancellationToken = default)
@@ -244,8 +279,22 @@ public sealed class HarnessRpcClient : IDisposable
     /// （payload {sessionId,provider,model,reasoningEffort?}，失败码 model-unavailable），
     /// 本 Helper 不猜测替代模型，因此刻意不代为选模，只在目录不可达时诚实拒绝提交。
     /// </summary>
-    public Task<HarnessRpcResult> GetSessionModelsAsync(string sessionId, CancellationToken cancellationToken = default)
-        => CallAsync("session.models", new JsonObject { ["sessionId"] = sessionId }, cancellationToken);
+    public async Task<HarnessRpcResult> GetSessionModelsAsync(string sessionId, CancellationToken cancellationToken = default)
+    {
+        await EnsureProtocolAsync(cancellationToken);
+        if (protocol != ProtocolFlavor.GatewaySlashRpc)
+            return await CallAsync("session.models", new JsonObject { ["sessionId"] = sessionId }, cancellationToken);
+
+        // 新 Gateway 的目录是 Host 级 modelCatalog；它没有旧接口的 current 字段。
+        // 新会话在创建后尚未执行 turn，因此以 Gateway 返回的 default 作为可验证当前值。
+        var catalog = await CallGatewayAsync("session/modelCatalog", new JsonObject { ["args"] = new JsonObject() }, cancellationToken);
+        if (!catalog.Success || catalog.Value is not JsonObject value) return catalog;
+        var normalized = (JsonObject)value.DeepClone();
+        if (normalized["current"] is null && normalized["default"] is JsonObject current)
+            normalized["current"] = current.DeepClone();
+        if (normalized["routable"] is null) normalized["routable"] = true;
+        return HarnessRpcResult.Ok(normalized);
+    }
 
     /// <summary>
     /// session.selectModel：DSH 官方唯一的会话选模入口。请求形状取自 rc.6 Host 的
@@ -270,6 +319,78 @@ public sealed class HarnessRpcClient : IDisposable
     /// <summary>执行一次一元 RPC；网络/协议/业务错误均转换为可读失败，不抛出（取消除外）。</summary>
     public async Task<HarnessRpcResult> CallAsync(string method, JsonNode? payload, CancellationToken cancellationToken = default)
     {
+        await EnsureProtocolAsync(cancellationToken);
+        if (protocol == ProtocolFlavor.GatewaySlashRpc)
+        {
+            if (!TryMapGateway(method, payload, out var endpoint, out var gatewayPayload))
+                return HarnessRpcResult.Fail($"当前 DSH Gateway 未公开 {method} 的兼容入口；未提交或猜测请求。");
+            return await CallGatewayAsync(endpoint, gatewayPayload, cancellationToken);
+        }
+        return await CallWireAsync(method, method, payload ?? new JsonObject(), cancellationToken);
+    }
+
+    /// <summary>
+    /// 只读协议探测：优先新版 session/list，再回退旧 session.list。禁止通过 create/prompt
+    /// 猜测协议，避免一次探测就产生孤儿会话或消耗模型额度。
+    /// </summary>
+    private async Task EnsureProtocolAsync(CancellationToken cancellationToken)
+    {
+        if (protocol != ProtocolFlavor.Unknown) return;
+        var gateway = await CallWireAsync("session/list", "session/list", new JsonObject
+        {
+            ["args"] = new JsonObject { ["_request"] = new JsonObject() }
+        }, cancellationToken);
+        // 只把具有新版 list 固定结果形状（items 数组）的响应视为 Gateway。某些旧
+        // Host 会把未知路径宽松地回 200/{}，不能因此误选新版并把后续写请求送错端点。
+        if (gateway.Success && gateway.Value?["items"] is JsonArray)
+        {
+            protocol = ProtocolFlavor.GatewaySlashRpc;
+            return;
+        }
+        var legacy = await CallWireAsync("session.list", "session.list", new JsonObject(), cancellationToken);
+        if (legacy.Success)
+        {
+            protocol = ProtocolFlavor.LegacyDotRpc;
+            return;
+        }
+        // 保留旧协议路径以给调用方提供其原始、可读的失败原因；不把未知协议伪装成可用。
+        protocol = ProtocolFlavor.LegacyDotRpc;
+    }
+
+    private static bool TryMapGateway(string method, JsonNode? payload, out string endpoint, out JsonObject gatewayPayload)
+    {
+        endpoint = string.Empty;
+        gatewayPayload = new JsonObject();
+        var value = payload as JsonObject ?? new JsonObject();
+        switch (method)
+        {
+            case "session.list":
+                endpoint = "session/list";
+                gatewayPayload["args"] = new JsonObject { ["_request"] = value.DeepClone() };
+                return true;
+            case "session.create":
+            case "session.cancel":
+            case "session.selectModel":
+                endpoint = method.Replace('.', '/');
+                gatewayPayload["args"] = new JsonObject { ["request"] = value.DeepClone() };
+                return true;
+            case "session.prompt":
+                endpoint = "session/prompt";
+                var request = (JsonObject)value.DeepClone();
+                request["requestId"] ??= Guid.NewGuid().ToString("N");
+                gatewayPayload["args"] = new JsonObject { ["request"] = request };
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    private Task<HarnessRpcResult> CallGatewayAsync(string endpoint, JsonObject payload, CancellationToken cancellationToken)
+        => CallWireAsync(endpoint, endpoint, payload, cancellationToken);
+
+    /// <summary>执行已明确协议的单次 RPC；响应信封校验始终相同。</summary>
+    private async Task<HarnessRpcResult> CallWireAsync(string endpoint, string method, JsonNode? payload, CancellationToken cancellationToken)
+    {
         var rpcId = Guid.NewGuid().ToString("N");
         var envelope = new JsonObject
         {
@@ -280,10 +401,15 @@ public sealed class HarnessRpcClient : IDisposable
         };
 
         using var content = new StringContent(envelope.ToJsonString(), Encoding.UTF8, "application/json");
+        using var request = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/api/{endpoint}") { Content = content };
+        if (!string.IsNullOrWhiteSpace(OriginHeader))
+        {
+            try { request.Headers.TryAddWithoutValidation("Origin", OriginHeader.Trim()); } catch { /* 非法头不阻断本机调用 */ }
+        }
         HttpResponseMessage response;
         try
         {
-            response = await http.PostAsync($"{baseUrl}/api/{method}", content, cancellationToken);
+            response = await http.SendAsync(request, cancellationToken);
         }
         catch (OperationCanceledException)
         {
@@ -1283,7 +1409,11 @@ public sealed class DeepSeekHarnessRelayProbe : IDeepSeekHarnessRelay
             $"提交：{(submitOk ? "通过" : $"失败（{submitReason}）")}",
             $"事件流：{(eventsOk ? "通过" : $"失败（{eventsReason}）")}",
             $"取消：{(cancelOk ? "通过" : $"失败（{cancelReason}）")}"
-        }) + (confirmed ? "。中继三项能力均已由运行时探测确认。" : "。中继能力未完全确认，自动提交已降级。");
+        }) + (confirmed
+            ? "。中继三项能力均已由运行时探测确认。"
+            : submitOk && cancelOk
+                ? "。实时事件流未确认；任务可提交并会改用安全的会话状态轮询，不会重提。"
+                : "。提交或取消能力未确认，自动提交已降级。");
         return new HarnessRelayCapability(submitOk, eventsOk, cancelOk, confirmed, message);
     }
 }

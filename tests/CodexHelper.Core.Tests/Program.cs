@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Reflection;
 using System.IO.Compression;
 using System.Net;
+using System.Net.Http;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
@@ -88,6 +89,7 @@ internal static class Program
         ("Harness Web Host 超时与用户取消区分", TestHarnessWebHostTimeoutAsync),
         ("Harness Host 按需启动与合同提交门禁", TestHarnessHostAutoStartAndContractGateAsync),
         ("Harness 中继 RPC 协议（信封/回显/中文 cwd/业务错误映射）", TestHarnessRpcProtocolAsync),
+        ("Harness 自适应 Gateway 协议（只读探测/斜杠端点/模型目录/提示请求 ID）", TestHarnessGatewayAdaptiveProtocolAsync),
         ("Harness 中继能力真实探测（完整/单项缺失/中文 cwd/降级原因）", TestHarnessRelayProbeRealAsync),
         ("Harness runner 真实中继提交与终态（sessionId/运行中/完成/事件取消）", TestHarnessRunnerRelayLifecycleAsync),
         ("Harness runner 取消与事件流断开（终态可复现/不提前完成）", TestHarnessRunnerCancelAndDisconnectAsync),
@@ -157,6 +159,9 @@ internal static class Program
         ,("Harness 组键续接诊断（无组键默认/不同组键隔离/报告未过门禁/续接成功原因可读）", TestHarnessContinuityDiagnosticAsync)
         ,("Harness max-tokens 自动恢复（length/max-tokens 识别/同一会话短恢复一次/上限 1/再次截断真实失败/不建第二会话）", TestHarnessMaxTokenRecoveryAsync)
         ,("Harness max-tokens 恢复门禁与失败诊断（恢复后无报告 failed/提交失败/Host 不可核验/HTTP 轮询恢复）", TestHarnessMaxTokenRecoveryGateAndFallbacksAsync)
+        ,("88frp 入口解析与去抖（回环隧道/非回环排除/多实例歧义/缺失保留既有信任/稳定后才切换）", TestFrpAuthorityResolutionAndDebounceAsync)
+        ,("受管 profile patch 原子更新与回滚（只改两处受管条目/注释与插件开关不变/备份/写入失败回滚/幂等）", TestFrpAuthorityPatchUpdateAndRollbackAsync)
+        ,("公网 Origin 只读验证与安全重启（成功才 verified/运行中会话延后/无会话单次受控重启/无句柄不重启/无变化不打断）", TestFrpOriginVerificationAndRestartAsync)
     ];
 
     private static async Task<int> Main()
@@ -5639,6 +5644,48 @@ internal static class Program
         finally { TryDeleteDirectory(root); }
     }
 
+    private static async Task TestHarnessGatewayAdaptiveProtocolAsync()
+    {
+        await using var host = new FakeHarnessHost
+        {
+            Respond = (method, _) => method switch
+            {
+                "session/list" => new JsonObject { ["items"] = new JsonArray() },
+                "session/create" => new JsonObject { ["sessionId"] = "sess-gateway-1" },
+                "session/modelCatalog" => new JsonObject
+                {
+                    ["default"] = new JsonObject { ["provider"] = "commandgoat", ["model"] = "flash" },
+                    ["groups"] = new JsonArray(new JsonObject
+                    {
+                        ["id"] = "commandgoat", ["name"] = "commandgoat",
+                        ["models"] = new JsonArray(new JsonObject { ["id"] = "flash", ["name"] = "Flash" })
+                    })
+                },
+                "session/selectModel" => new JsonObject { ["selected"] = new JsonObject { ["provider"] = "commandgoat", ["model"] = "flash" } },
+                "session/prompt" => new JsonObject { ["accepted"] = true },
+                "session/cancel" => new JsonObject { ["accepted"] = true },
+                _ => throw new FakeHostError("bad-request", "unexpected endpoint")
+            }
+        };
+        await host.StartAsync();
+        using var rpc = new HarnessRpcClient(host.BaseUrl);
+        var created = await rpc.CreateSessionAsync(Path.GetTempPath(), "standard");
+        Assert(created.Success && created.GetString("sessionId") == "sess-gateway-1", "Gateway create 应成功：" + created.ErrorMessage);
+        Assert(rpc.ProtocolName == "gateway-slash-rpc", "应以只读 session/list 识别 Gateway，不按版本号猜测。");
+        var models = await rpc.GetSessionModelsAsync("sess-gateway-1");
+        var catalog = HarnessModelCatalog.FromValue(models.Value);
+        Assert(models.Success && catalog.Succeeded && catalog.CurrentModel == "flash", "Gateway modelCatalog 应归一为模型目录。");
+        var prompt = await rpc.PromptAsync("sess-gateway-1", "只读合同定位", "Asia/Shanghai");
+        Assert(prompt.Success, "Gateway prompt 应成功：" + prompt.ErrorMessage);
+        var cancel = await rpc.CancelAsync("sess-gateway-1");
+        Assert(cancel.Success, "Gateway cancel 应成功：" + cancel.ErrorMessage);
+
+        var create = host.Calls.Single(call => call.Method == "session/create");
+        Assert(create.Payload["args"]?["request"]?["agentPreset"]?.GetValue<string>() == "standard", "Gateway create 必须按 args.request 发送。");
+        var prompted = host.Calls.Single(call => call.Method == "session/prompt");
+        Assert(!string.IsNullOrWhiteSpace(prompted.Payload["args"]?["request"]?["requestId"]?.GetValue<string>()), "Gateway prompt 必须带 requestId。");
+    }
+
     private static async Task TestHarnessRelayProbeRealAsync()
     {
         var root = Path.Combine(Path.GetTempPath(), "codex-helper-harness-probe-" + Guid.NewGuid().ToString("N"));
@@ -6842,6 +6889,303 @@ internal static class Program
         finally { TryDeleteDirectory(root); }
     }
 
+    private static Task TestFrpAuthorityResolutionAndDebounceAsync()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "codex-helper-frp-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            string WriteInstance(string name, string? toml)
+            {
+                var folder = Path.Combine(root, name);
+                Directory.CreateDirectory(folder);
+                if (toml is not null) File.WriteAllText(Path.Combine(folder, "runtime-frpc.toml"), toml);
+                return folder;
+            }
+
+            string Toml(string host, int remotePort = 58831, string localIp = "127.0.0.1", int localPort = 3080)
+                => $"serverAddr = \"{host}\"\n[[proxies]]\ntype = \"tcp\"\nlocalIP = \"{localIp}\"\nlocalPort = {localPort}\nremotePort = {remotePort}\n";
+
+            WriteInstance("a", Toml("frp.example.test"));
+            var single = FrpRuntimeAuthorityResolver.ResolveDshWebAuthorities(root);
+            Assert(single.Count == 1 && single[0] == "frp.example.test:58831", "应解析唯一回环隧道 authority：" + string.Join(",", single));
+            Assert(FrpRuntimeAuthorityResolver.TryResolveDshWebAuthority(root) == "frp.example.test:58831", "唯一时 TryResolve 应返回该 authority");
+            // 非回环隧道、非 3080 端口、无 remotePort 都不得成为候选。
+            Assert(FrpRuntimeAuthorityResolver.TryParseRuntimeToml(Toml("frp.example.test", localIp: "0.0.0.0")) is null, "非回环隧道不得进入候选。");
+            Assert(FrpRuntimeAuthorityResolver.TryParseRuntimeToml(Toml("frp.example.test", localPort: 3090)) is null, "非 3080 隧道不得进入候选。");
+            Assert(FrpRuntimeAuthorityResolver.TryParseRuntimeToml("serverAddr = \"frp.example.test\"\n[[proxies]]\ntype = \"tcp\"\nlocalIP = \"127.0.0.1\"\nlocalPort = 3080\n") is null, "缺少 remotePort 不得猜测端口。");
+
+            // 多实例歧义 → 0 个唯一候选，调用方必须保留既有信任。
+            WriteInstance("b", Toml("frp.second.test"));
+            var ambiguous = FrpRuntimeAuthorityResolver.ResolveDshWebAuthorities(root);
+            Assert(ambiguous.Count == 2, "多实例应返回 2 个候选以标识歧义：" + ambiguous.Count);
+            Assert(FrpRuntimeAuthorityResolver.TryResolveDshWebAuthority(root) is null, "歧义时不得返回唯一 authority");
+            Directory.Delete(Path.Combine(root, "b"), recursive: true);
+
+            // 去抖：候选需持续稳定达到阈值才切换。
+            var store = new FrpAuthorityMemoryStore();
+            var clock = DateTimeOffset.Parse("2026-09-11T00:00:00Z", System.Globalization.CultureInfo.InvariantCulture);
+            var service = new FrpAuthoritySyncService(store, () => clock);
+            FrpAuthoritySyncOptions Options(string[] authorities, TimeSpan debounce) => new()
+            {
+                RestartAllowed = false,
+                ResolveAuthorities = () => authorities,
+                PatchPath = null,
+                DebounceWindow = debounce,
+                VerifyOriginAsync = (_, _) => Task.FromResult(FrpOriginVerification.Ok(0))
+            };
+
+            var seed = store.Load();
+            seed.VerifiedAuthority = "old.example.test:58831";
+            seed.VerifiedUtc = clock.AddMinutes(-5);
+            seed.State = FrpAuthorityStatus.Verified;
+            store.Save(seed);
+
+            var firstSeen = service.Check(Options(["new.example.test:58831"], TimeSpan.FromSeconds(20)));
+            Assert(firstSeen.Status.State == FrpAuthorityStatus.Verified, "去抖期间不得清空已生效信任：" + firstSeen.Status.State);
+            Assert(firstSeen.Status.DetectedAuthority is null, "去抖未通过时不得登记检测入口为已确认：" + firstSeen.Status.DetectedAuthority);
+            Assert(firstSeen.Status.VerifiedAuthority == "old.example.test:58831", "去抖期间已验证入口必须保持");
+
+            clock = clock.AddSeconds(25);
+            var second = service.Check(Options(["new.example.test:58831"], TimeSpan.FromSeconds(20)));
+            Assert(second.Status.DetectedAuthority == "new.example.test:58831", "稳定超过阈值后应确认新入口：" + second.Status.DetectedAuthority);
+            Assert(second.Status.VerifiedAuthority == "new.example.test:58831" && second.Status.State == FrpAuthorityStatus.Verified,
+                "验证通过后应切换已验证入口：" + second.Status.State);
+
+            // 配置缺失/不完整：状态保留，绝不清空已生效信任。
+            var empty = service.Check(Options([], TimeSpan.Zero));
+            Assert(empty.Status.State == FrpAuthorityStatus.Verified, "缺配置时不得清空已验证状态：" + empty.Status.State);
+            Assert(empty.Status.VerifiedAuthority == "new.example.test:58831", "缺配置时已验证入口必须保留");
+            Assert(empty.Status.DetectedAuthority is null, "缺配置时应报告未检测到唯一入口");
+            Assert(empty.Status.PendingReason is not null, "缺配置应说明保留既有信任的原因");
+
+            // 多实例歧义：同样保留既有信任且不做任何切换。
+            var conflicted = service.Check(Options(["a.example.test:58831", "b.example.test:58831"], TimeSpan.Zero));
+            Assert(conflicted.Status.VerifiedAuthority == "new.example.test:58831" && conflicted.Message.Contains("歧义", StringComparison.Ordinal),
+                "歧义时应说明原因并保留已验证入口：" + conflicted.Message);
+
+            // 未验证过且去抖未满：状态为稳定性确认中（绝不虚报已验证）。
+            var freshStore = new FrpAuthorityMemoryStore();
+            var freshClock = DateTimeOffset.Parse("2026-09-11T00:00:00Z", System.Globalization.CultureInfo.InvariantCulture);
+            var fresh = new FrpAuthoritySyncService(freshStore, () => freshClock);
+            var debouncing = fresh.Check(Options(["candidate.example.test:58831"], TimeSpan.FromMinutes(1)));
+            Assert(debouncing.Status.State == FrpAuthorityStatus.Debouncing && !debouncing.Status.IsVerified,
+                "未验证过且去抖未满应处于稳定性确认中：" + debouncing.Status.State);
+        }
+        finally { TryDeleteDirectory(root); }
+        return Task.CompletedTask;
+    }
+
+    private static async Task TestFrpAuthorityPatchUpdateAndRollbackAsync()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "codex-helper-frp-patch-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            const string Fixture = """
+# Your patch layer for this dsh profile, applied after every bundle layer:
+- id: files-toolkit
+  config:
+    trustedUploadHosts:
+      - 'old.example.test:58831'
+
+# web runtime trusted hosts (managed by Codex Helper)
+- id: web-runtime
+  config:
+    trustedHosts:
+      - 'old.example.test:58831'
+- id: web
+  config:
+    searchProvider: deepseek-official
+# CODEX-HELPER-PLUGIN-TOGGLES-START
+- id: super-injector
+  disabled: true
+# CODEX-HELPER-PLUGIN-TOGGLES-END
+""";
+            var updated = FrpAuthorityPatchDocument.Merge(Fixture, "new.example.test:60001");
+            Assert(updated.Changed, "入口变化应产生 patch 更新");
+            Assert(updated.UpdatedText.Contains("new.example.test:60001", StringComparison.Ordinal), "应写入新 authority");
+            Assert(!updated.UpdatedText.Contains("old.example.test", StringComparison.Ordinal), "受管列表项不得保留旧 authority");
+            Assert(updated.UpdatedText.Contains("# Your patch layer for this dsh profile", StringComparison.Ordinal)
+                && updated.UpdatedText.Contains("searchProvider: deepseek-official", StringComparison.Ordinal)
+                && updated.UpdatedText.Contains("# CODEX-HELPER-PLUGIN-TOGGLES-END", StringComparison.Ordinal), "注释与其他插件条目必须逐字保留");
+            Assert(updated.UpdatedText.Contains("  config:\n    trustedUploadHosts:\n      - 'new.example.test:60001'", StringComparison.Ordinal)
+                && updated.UpdatedText.Contains("  config:\n    trustedHosts:\n      - 'new.example.test:60001'", StringComparison.Ordinal),
+                "两处受管列表项都应保持原有缩进结构：\n" + updated.UpdatedText);
+            var again = FrpAuthorityPatchDocument.Merge(updated.UpdatedText, "new.example.test:60001");
+            Assert(!again.Changed && again.IsEquivalent(updated.UpdatedText), "同一 authority 重复合并且不得产生变化（幂等，不写盘）");
+            var preserved = FrpAuthorityPatchDocument.Merge(Fixture, "new.example.test:60001", ["web-runtime:trustedHosts"]);
+            Assert(preserved.UpdatedText.Contains("'old.example.test:58831'", StringComparison.Ordinal), "未列出的受管条目不得被改动");
+
+            // 原子更新 + 备份 + 失败回滚。
+            var patchPath = Path.Combine(root, "cordis.patch.yml");
+            File.WriteAllText(patchPath, Fixture);
+            var store = new FrpAuthorityMemoryStore();
+            var clock = DateTimeOffset.Parse("2026-09-11T00:00:00Z", System.Globalization.CultureInfo.InvariantCulture);
+            var service = new FrpAuthoritySyncService(store, () => clock);
+            FrpAuthoritySyncOptions PatchOptions(string authority, bool accepted)
+            {
+                var snapshot = service.Snapshot();
+                return new FrpAuthoritySyncOptions
+                {
+                    ResolveAuthorities = () => new[] { authority },
+                    PatchPath = patchPath,
+                    DebounceWindow = TimeSpan.Zero,
+                    // 与 prod 一致：把当前已验证入口视为已去抖确认，避免同一入口重复长时间去抖。
+                    DebounceConfirmedAuthority = snapshot.VerifiedAuthority,
+                    VerifyOriginAsync = (_, _) => Task.FromResult(accepted
+                        ? FrpOriginVerification.Ok(0)
+                        : FrpOriginVerification.Reject("HTTP 403（origin 未被接受）"))
+                };
+            }
+
+            var success = await service.CheckAsync(PatchOptions("new.example.test:60001", accepted: true));
+            Assert(success.Status.State == FrpAuthorityStatus.Verified && success.Status.VerifiedUtc is not null,
+                "只有公网 Origin 验证成功才可标记 verified：" + success.Message);
+            var written = File.ReadAllText(patchPath);
+            Assert(written.Contains("new.example.test:60001", StringComparison.Ordinal), "验证成功后 patch 应已原子写入新入口");
+            Assert(Directory.EnumerateFiles(root, "cordis.patch.yml.bak-frp-origin-sync-*").Any(), "更新前必须留下同目录备份");
+
+            // 阻塞写盘（目标路径是目录 → 原子替换必然失败）→ 更新失败必须回滚并保留既有已验证信任。
+            var failurePath = Path.Combine(root, "blocked", "cordis.patch.yml");
+            Directory.CreateDirectory(Path.Combine(root, "blocked"));
+            File.WriteAllText(failurePath, Fixture);
+            var blockedPath = Path.Combine(root, "blocked-as-directory");
+            Directory.CreateDirectory(blockedPath);
+            var blocked = await service.CheckAsync(new FrpAuthoritySyncOptions
+            {
+                ResolveAuthorities = () => new[] { "blocked.example.test:60002" },
+                PatchPath = blockedPath,
+                DebounceWindow = TimeSpan.Zero,
+                DebounceConfirmedAuthority = "blocked.example.test:60002",
+                VerifyOriginAsync = (_, _) => Task.FromResult(FrpOriginVerification.Ok(0))
+            });
+            Assert(blocked.Status.Error is not null, "patch 更新失败必须给出可读错误");
+            Assert(blocked.Status.State != FrpAuthorityStatus.Verified, "更新失败不得虚报已验证：" + blocked.Status.State);
+            Assert(blocked.Status.PendingReason is not null, "更新失败应说明已回滚并保留既有信任");
+            Assert(File.ReadAllText(failurePath).Contains("old.example.test:58831", StringComparison.Ordinal), "失败时未受管文件内容不得被改写");
+        }
+        finally { TryDeleteDirectory(root); }
+    }
+
+    private static async Task TestFrpOriginVerificationAndRestartAsync()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "codex-helper-frp-verify-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            // 1) 真实只读验证通道：以公网 authority 作 Origin 调用 session.list；403 → 未通过，200 → 通过。
+            var rejections = 0;
+            var acceptAfter = 1;
+            using var server = new HttpListener();
+            var port = 20000 + new Random().Next(20000);
+            server.Prefixes.Add($"http://127.0.0.1:{port}/");
+            try { server.Start(); }
+            catch (HttpListenerException) { return; /* 极端环境下端口不可用：跳过该子项，其余断言仍执行 */ }
+            var stopped = false;
+            var requests = new System.Collections.Concurrent.ConcurrentBag<string>();
+            var expectedOrigin = $"http://127.0.0.1:{port}";
+            var serverLoop = Task.Run(async () =>
+            {
+                while (!stopped)
+                {
+                    HttpListenerContext context;
+                    try { context = await server.GetContextAsync(); }
+                    catch { return; }
+                    var origin = context.Request.Headers["Origin"] ?? string.Empty;
+                    // 读请求体只为如实回显 rpcId（真实 Host 同样回显）；不记录任何正文到日志。
+                    string requestBody;
+                    using (var reader = new StreamReader(context.Request.InputStream, Encoding.UTF8)) requestBody = await reader.ReadToEndAsync();
+                    var rpcId = (JsonNode.Parse(requestBody) as JsonObject)?["rpcId"]?.ToString() ?? "x";
+                    requests.Add($"origin=[{origin}] attempt={rejections}");
+                    var accepted = rejections >= acceptAfter && origin.Contains(expectedOrigin.Substring("http://".Length), StringComparison.Ordinal);
+                    var status = accepted ? 200 : 403;
+                    var body = accepted
+                        ? $"{{\"type\":\"server-response\",\"rpcId\":\"{rpcId}\",\"result\":{{\"ok\":true,\"value\":{{\"sessions\":[{{\"sessionId\":\"s1\",\"running\":true}}]}}}}}}"
+                        : $"{{\"type\":\"server-response\",\"rpcId\":\"{rpcId}\",\"result\":{{\"ok\":false,\"error\":{{\"code\":\"origin-not-trusted\",\"message\":\"origin not trusted\"}}}}}}";
+                    var bytes = Encoding.UTF8.GetBytes(body);
+                    context.Response.StatusCode = status;
+                    context.Response.ContentType = "application/json";
+                    context.Response.ContentLength64 = bytes.Length;
+                    await context.Response.OutputStream.WriteAsync(bytes);
+                    context.Response.Close();
+                }
+            });
+            try
+            {
+                var localAuthority = $"127.0.0.1:{port}";
+                var rejected = await DeepSeekHarnessHiddenHost.VerifyOriginAsync(localAuthority, CancellationToken.None);
+                Assert(!rejected.Accepted && rejected.Error is not null, "Host 拒绝该 Origin 时验证必须失败并给出可读原因");
+                rejections++;
+                var accepted = await DeepSeekHarnessHiddenHost.VerifyOriginAsync(localAuthority, CancellationToken.None);
+                Assert(accepted.Accepted,
+                    "只读 session.list 成功才可判定 origin 被接受：" + accepted.Error + " | 服务端收到的请求：" +
+                    string.Join(" ; ", requests.Select(r => r.Replace(Environment.NewLine, " | ", StringComparison.Ordinal))));
+                Assert(accepted.ActiveSessions == 1, "运行中会话数应从 session.list 如实统计：" + accepted.ActiveSessions);
+                var bad = await DeepSeekHarnessHiddenHost.VerifyOriginAsync("127.0.0.1:1", CancellationToken.None);
+                Assert(!bad.Accepted, "不可达的公网 authority 不得被判定为已验证");
+            }
+            finally
+            {
+                stopped = true;
+                try { server.Stop(); } catch { }
+                try { await serverLoop; } catch { }
+            }
+
+            var patchPath = Path.Combine(root, "cordis.patch.yml");
+            File.WriteAllText(patchPath, "- id: web-runtime\n  config:\n    trustedHosts:\n      - 'old.example.test:58831'\n");
+            var store = new FrpAuthorityMemoryStore();
+            var clock = DateTimeOffset.Parse("2026-09-11T00:00:00Z", System.Globalization.CultureInfo.InvariantCulture);
+            var service = new FrpAuthoritySyncService(store, () => clock);
+            var restarts = 0;
+            FrpAuthoritySyncOptions Options(string authority, bool accepted, int activeSessions, bool restartAllowed)
+                => new()
+                {
+                    RestartAllowed = restartAllowed,
+                    ResolveAuthorities = () => new[] { authority },
+                    PatchPath = patchPath,
+                    DebounceWindow = TimeSpan.Zero,
+                    DebounceConfirmedAuthority = service.Snapshot().VerifiedAuthority,
+                    VerifyOriginAsync = (_, _) => Task.FromResult(accepted
+                        ? FrpOriginVerification.Ok(activeSessions)
+                        : FrpOriginVerification.Reject("HTTP 403（origin 未被接受）", activeSessions)),
+                    RestartHostAsync = (_, _) => { restarts++; return Task.CompletedTask; }
+                };
+
+            // 2) 未通过验证 + 存在运行中会话 → 延后重启，保留旧信任，绝不中断编码任务。
+            var deferred = await service.CheckAsync(Options("new.example.test:60001", accepted: false, activeSessions: 2, restartAllowed: true));
+            Assert(restarts == 0, "存在运行中会话时禁止重启 Host");
+            Assert(deferred.Status.State == FrpAuthorityStatus.Pending && deferred.Status.PendingReason!.Contains("运行中", StringComparison.Ordinal),
+                "应登记延后重启的 pending 原因：" + deferred.Status.PendingReason);
+            Assert(File.ReadAllText(patchPath).Contains("new.example.test:60001", StringComparison.Ordinal), "未通过验证时仍应先更新受管 patch 供下次启动生效");
+
+            // 3) 无运行中会话 → 允许一次受控重启；重启后保持 pending，不虚报已验证。
+            var restarted = await service.CheckAsync(Options("new.example.test:60001", accepted: false, activeSessions: 0, restartAllowed: true));
+            Assert(restarts == 1, "无运行中会话时应执行一次受控重启：" + restarts);
+            Assert(restarted.Restarted && !restarted.Verified, "重启后仍须等待下次验证，不得虚报已验证");
+            Assert(restarted.Status.PendingReason!.Contains("重启", StringComparison.Ordinal), "pending 原因应说明已执行受控重启：" + restarted.Status.PendingReason);
+
+            // 4) 重启后 Host 接受该 Origin → 只有此时标记 verified 并记录验证时间。
+            clock = clock.AddMinutes(1);
+            var verified = await service.CheckAsync(Options("new.example.test:60001", accepted: true, activeSessions: 0, restartAllowed: true));
+            Assert(verified.Status.State == FrpAuthorityStatus.Verified && verified.Status.VerifiedAuthority == "new.example.test:60001",
+                "公网 Origin 验证通过后应标记 verified：" + verified.Message);
+            Assert(verified.Status.VerifiedUtc == clock, "应记录最后验证时间");
+            Assert(restarts == 1, "已验证后不得再次重启：" + restarts);
+
+            // 5) 入口未变化 → 不重启、不重复验证，验证状态保持。
+            var stable = await service.CheckAsync(Options("new.example.test:60001", accepted: true, activeSessions: 0, restartAllowed: true));
+            Assert(!stable.Restarted && stable.Status.State == FrpAuthorityStatus.Verified, "入口未变化时不得重启 Host");
+            Assert(restarts == 1, "入口未变化时不得额外重启：" + restarts);
+
+            // 6) 无受管句柄（未提供重启回调）→ 只标记 pending，绝不自行杀进程。
+            var detached = await service.CheckAsync(Options("another.example.test:60003", accepted: false, activeSessions: 0, restartAllowed: false));
+            Assert(detached.Status.State == FrpAuthorityStatus.Pending && !detached.Restarted,
+                "没有受管句柄时只能 pending：" + detached.Message);
+        }
+        finally { TryDeleteDirectory(root); }
+    }
+
     private static async Task TestHarnessHiddenHostAsync()
     {
         // ---- 1) 参数解析。 ----
@@ -6906,6 +7250,103 @@ remotePort = 58831
         DeepSeekHarnessHiddenHost.Launcher = (_, _) => null;
         var launchFail = await DeepSeekHarnessHiddenHost.RunAsync(@"C:\node.exe", @"C:\dsh\bin.js");
         Assert(launchFail == HarnessHiddenHostCli.ExitFailed, "启动失败应返回失败码：" + launchFail);
+
+        // ---- 6) 隐藏宿主与同步服务共用同一 authority 来源：启动参数携带解析出的公网入口，
+        //         没有运行中会话时由同步服务执行一次受控重启并使用新入口。 ----
+        var syncRoot = Path.Combine(Path.GetTempPath(), "codex-helper-host-sync-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(syncRoot);
+        var oldResolve = DeepSeekHarnessHiddenHost.AuthoritiesResolver;
+        var oldPatch = DeepSeekHarnessHiddenHost.PatchPathResolver;
+        var oldVerifier = DeepSeekHarnessHiddenHost.OriginVerifier;
+        var oldStore = DeepSeekHarnessHiddenHost.SyncStateStore;
+        var oldService = DeepSeekHarnessHiddenHost.SyncService;
+        var oldInterval = DeepSeekHarnessHiddenHost.FrpMonitorInterval;
+        var oldDebounceWindow = DeepSeekHarnessHiddenHost.FrpAuthorityDebounceWindow;
+        try
+        {
+            // 场景：Host 仍按旧入口运行（旧入口已验证），88frp 已改分配到新入口。
+            var announced = "frp-one.example.test:58831";
+            var store = new FrpAuthorityMemoryStore();
+            var seeded = store.Load();
+            seeded.VerifiedAuthority = announced;
+            seeded.VerifiedUtc = DateTimeOffset.UtcNow.AddMinutes(-1);
+            seeded.State = FrpAuthorityStatus.Verified;
+            store.Save(seeded);
+            var updated = "frp-two.example.test:60002";
+            DeepSeekHarnessHiddenHost.AuthoritiesResolver = () => new[] { updated };
+            DeepSeekHarnessHiddenHost.PatchPathResolver = () => Path.Combine(syncRoot, "cordis.patch.yml");
+            // 首次验证被拒（运行中的 Host 只认旧 origin），受控重启后接受新 origin。
+            var restarts = 0;
+            var verificationAttempts = 0;
+            DeepSeekHarnessHiddenHost.OriginVerifier = (authority, _) =>
+            {
+                verificationAttempts++;
+                return Task.FromResult(restarts == 0
+                    ? FrpOriginVerification.Reject("HTTP 403（origin 未被接受）", 0)
+                    : FrpOriginVerification.Ok(0));
+            };
+            DeepSeekHarnessHiddenHost.SyncStateStore = store;
+            DeepSeekHarnessHiddenHost.SyncService = new FrpAuthoritySyncService(store);
+            DeepSeekHarnessHiddenHost.FrpMonitorInterval = TimeSpan.FromMilliseconds(60);
+            DeepSeekHarnessHiddenHost.FrpAuthorityDebounceWindow = TimeSpan.Zero;
+
+            var failures = new List<string>();
+            void Check(bool condition, string message) { if (!condition) failures.Add(message); }
+
+            var launches = new List<IReadOnlyList<string>>();
+            Process? owned = null;
+            DeepSeekHarnessHiddenHost.PortProbe = (_, _, _) => Task.FromResult(false);
+            DeepSeekHarnessHiddenHost.Launcher = (_, _) =>
+            {
+                var seen = DeepSeekHarnessHiddenHost.LastLaunchAuthority;
+                if (launches.Count > 0) restarts++;
+                launches.Add(DeepSeekHarnessProcess.BuildWebHostStartInfo(@"C:\node.exe", @"C:\dsh\bin.js",
+                    trustedHosts: seen is null ? null : new[] { seen }).ArgumentList.ToList());
+                var start = new ProcessStartInfo("cmd.exe") { UseShellExecute = false, CreateNoWindow = true };
+                start.ArgumentList.Add("/c");
+                start.ArgumentList.Add("timeout");
+                start.ArgumentList.Add("/t");
+                start.ArgumentList.Add("20");
+                start.ArgumentList.Add("/nobreak");
+                var process = new Process { StartInfo = start };
+                process.Start();
+                owned = process;
+                return process;
+            };
+            var run = DeepSeekHarnessHiddenHost.RunAsync(@"C:\node.exe", @"C:\dsh\bin.js");
+            await Task.Delay(1200);
+            Check(launches.Count == 2,
+                $"旧入口运行、新入口未被接受时隐藏宿主应恰好受控重启一次（launches={launches.Count}，state={store.Load().State}，" +
+                $"pending={store.Load().PendingReason}，已结束={run.IsCompleted}）");
+            if (launches.Count > 0)
+                Check(launches[0].Contains(updated), "首次启动就应携带已解析的新公网入口：" + string.Join(" ", launches[0]));
+            if (launches.Count > 1)
+                Check(launches[1].Contains(updated) && launches[1].Count == launches[0].Count,
+                    "受控重启后的启动参数应携带同一 authority：" + string.Join(" ", launches[1]));
+            Check(store.Load().DetectedAuthority == updated, "受控重启后状态应记录检测入口");
+            Check(store.Load().State == FrpAuthorityStatus.Verified && store.Load().VerifiedAuthority == updated,
+                "受控重启后公网 Origin 验证通过应标记 verified：" + store.Load().State);
+            Check(store.Load().RestartPendingAuthority == updated, "应记录已因该入口重启过，避免重复重启");
+            Check(verificationAttempts >= 2, "应先验证失败再在重启后重新验证：" + verificationAttempts);
+            Check(restarts == 1, "同一入口只允许一次受控重启（不得重启风暴）：" + restarts);
+            // 结束受管子进程（真实 Host 场景由用户/系统结束），隐藏宿主应随子进程退出返回真实退出码。
+            try { if (owned is not null && !owned.HasExited) owned.Kill(entireProcessTree: true); } catch { }
+            var exit = await run.WaitAsync(TimeSpan.FromSeconds(30));
+            Check(run.IsCompleted, "子进程结束后隐藏宿主必须返回（不得滞留等待）：exit=" + exit);
+            foreach (var failure in failures) Console.WriteLine("      · " + failure);
+            Assert(failures.Count == 0, "隐藏宿主与同步服务共用 authority 的断言失败 " + failures.Count + " 项。");
+        }
+        finally
+        {
+            DeepSeekHarnessHiddenHost.AuthoritiesResolver = oldResolve;
+            DeepSeekHarnessHiddenHost.PatchPathResolver = oldPatch;
+            DeepSeekHarnessHiddenHost.OriginVerifier = oldVerifier;
+            DeepSeekHarnessHiddenHost.SyncStateStore = oldStore;
+            DeepSeekHarnessHiddenHost.SyncService = oldService;
+            DeepSeekHarnessHiddenHost.FrpMonitorInterval = oldInterval;
+            DeepSeekHarnessHiddenHost.FrpAuthorityDebounceWindow = oldDebounceWindow;
+            TryDeleteDirectory(syncRoot);
+        }
     }
 
     private static Task TestHarnessStartupXmlAsync()

@@ -1,0 +1,19 @@
+{
+  "name": "dsh-open-web-access",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cordis extension that removes DSH Web launch-token authentication while retaining the host/origin trust fence.",
+  "type": "module",
+  "main": "index.js",
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "plugin": {
+      "displayNameZh": "开放 Web 访问",
+      "descriptionZh": "移除启动令牌与浏览器 Cookie 验证；仍保留回环、受信任 Host 与 Origin 限制。",
+      "category": "网络与访问"
+    }
+  }
+}

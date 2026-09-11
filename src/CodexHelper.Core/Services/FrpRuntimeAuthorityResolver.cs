@@ -7,21 +7,34 @@ public static class FrpRuntimeAuthorityResolver
 {
     public static string? TryResolveDshWebAuthority(string? instancesRoot = null)
     {
+        var authorities = ResolveDshWebAuthorities(instancesRoot);
+        return authorities.Count == 1 ? authorities[0] : null;
+    }
+
+    /// <summary>
+    /// 解析全部候选 authority（去重、最多 2 个）：0 个表示缺失/不完整，2 个表示多实例歧义。
+    /// 调用方据此决定是否保留既有信任，绝不因暂时读不到配置而清空已生效信任。
+    /// </summary>
+    public static IReadOnlyList<string> ResolveDshWebAuthorities(string? instancesRoot = null)
+    {
         try
         {
-            instancesRoot ??= Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "88frp-node", "data", "instances");
-            if (!Directory.Exists(instancesRoot)) return null;
-            var authorities = Directory.EnumerateDirectories(instancesRoot, "*", SearchOption.TopDirectoryOnly)
+            instancesRoot ??= DefaultInstancesRoot();
+            if (!Directory.Exists(instancesRoot)) return Array.Empty<string>();
+            return Directory.EnumerateDirectories(instancesRoot, "*", SearchOption.TopDirectoryOnly)
                 .Select(ReadAuthority)
                 .Where(value => !string.IsNullOrWhiteSpace(value))
                 .Cast<string>()
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .Take(2)
                 .ToArray();
-            return authorities.Length == 1 ? authorities[0] : null;
         }
-        catch { return null; }
+        catch { return Array.Empty<string>(); }
     }
+
+    /// <summary>88frp 实例根目录（%LOCALAPPDATA%\88frp-node\data\instances）。</summary>
+    public static string DefaultInstancesRoot()
+        => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "88frp-node", "data", "instances");
 
     private static string? ReadAuthority(string folder)
     {

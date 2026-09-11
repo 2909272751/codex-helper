@@ -47,6 +47,7 @@ public sealed record DeepSeekHarnessStatus(
     string? PermissionEnvMessage = null);
 
 public sealed record HarnessHostReadyResult(bool Ready, bool Started, int ProcessId, string Message, DeepSeekHarnessStatus Status);
+public sealed record HarnessHostTakeoverResult(bool TakenOver, string Message, DeepSeekHarnessStatus Status);
 
 /// <summary>
 /// DeepSeek Harness 环境诊断、Web Host 生命周期（启动/停止/重新检测）与中继能力探测。
@@ -58,6 +59,7 @@ public sealed class DeepSeekHarnessService
     private readonly AppPaths paths;
     private readonly string webUrl;
     private Process? webHostProcess;
+    private FrpAuthoritySyncService? authoritySync;
     private static readonly object HostLock = new();
 
     /// <summary>Node 候选发现器（测试注入用）。</summary>
@@ -336,7 +338,12 @@ public sealed class DeepSeekHarnessService
     {
         var status = await DiagnoseAsync(userSelectedNodePath, userSelectedDshEntryPath, cancellationToken);
         if (status.WebHostRunning)
+        {
+            // 现存 Host 也要同步 88frp 信任：本路径不重启进程，只更新受管 patch 并验证 origin，
+            // 地址变化绝不中断正在运行的编码任务。
+            try { await EnsureAuthoritySyncedAsync(cancellationToken); } catch { }
             return new(true, false, 0, "Harness Web Host 已在运行。", status);
+        }
         if (!status.EnableAllowed)
             return new(false, false, 0, "无法启动 Harness Web Host：Node 或 dsh 入口未就绪。", status);
 
@@ -351,6 +358,8 @@ public sealed class DeepSeekHarnessService
             cancellationToken.ThrowIfCancellationRequested();
             if (await IsWebHostRunningAsync(cancellationToken))
             {
+                // 启动后立即核对 88frp 信任（新 Host 已带 --trusted-host 启动，这里做只读验证与状态落盘）。
+                try { await EnsureAuthoritySyncedAsync(cancellationToken); } catch { }
                 var ready = await DiagnoseAsync(userSelectedNodePath, userSelectedDshEntryPath, cancellationToken, forceRefresh: true);
                 return new(true, true, processId, "Harness Web Host 已自动启动并通过健康检查。", ready);
             }
@@ -384,6 +393,103 @@ public sealed class DeepSeekHarnessService
             try { webHostProcess.Dispose(); } catch { }
             webHostProcess = null;
         }
+    }
+
+    /// <summary>
+    /// 显式接管一个并非本实例启动的 DSH Web Host。此操作绝不在普通“确保可用”流程中自动执行：
+    /// 仅允许停止严格绑定在 127.0.0.1:3080 的 node.exe，且必须先通过只读 session.list
+    /// 确认没有运行中会话。无法确认进程身份、会话状态或端口释放时均拒绝，避免误杀其他服务。
+    /// </summary>
+    public async Task<HarnessHostTakeoverResult> TakeOverExternalWebHostAsync(
+        string? userSelectedNodePath = null,
+        string? userSelectedDshEntryPath = null,
+        CancellationToken cancellationToken = default,
+        string? permissionMode = null)
+    {
+        var status = await DiagnoseAsync(userSelectedNodePath, userSelectedDshEntryPath, cancellationToken, forceRefresh: true);
+        if (!status.WebHostRunning)
+        {
+            var started = await EnsureWebHostReadyAsync(userSelectedNodePath, userSelectedDshEntryPath, cancellationToken, permissionMode);
+            return new(started.Ready, started.Message, started.Status);
+        }
+        lock (HostLock)
+        {
+            if (webHostProcess is not null && !webHostProcess.HasExited)
+                return new(true, "当前 DSH 已由本 Helper 进程托管，无需接管。", status);
+        }
+
+        var listenerPid = TryGetLoopbackWebListenerProcessId();
+        if (listenerPid is null)
+            return new(false, "无法确认 127.0.0.1:3080 的监听进程，未停止任何进程。", status);
+        Process? external = null;
+        try { external = Process.GetProcessById(listenerPid.Value); }
+        catch { return new(false, "监听进程已退出或无法读取，未停止任何进程。", status); }
+        using (external)
+        {
+            if (!string.Equals(external.ProcessName, "node", StringComparison.OrdinalIgnoreCase))
+                return new(false, $"3080 正由 {external.ProcessName}.exe 监听，不是可确认的 DSH node Host，未停止。", status);
+
+            int running;
+            try
+            {
+                using var rpc = new HarnessRpcClient(webUrl, timeout: TimeSpan.FromSeconds(5));
+                running = await rpc.CountRunningSessionsAsync(cancellationToken);
+            }
+            catch (OperationCanceledException) { throw; }
+            catch
+            {
+                return new(false, "无法通过只读会话列表确认外部 DSH 是否空闲，未停止。", status);
+            }
+            if (running > 0)
+                return new(false, $"外部 DSH 仍有 {running} 个运行中会话；为避免中断任务，未接管。", status);
+
+            try { if (!external.HasExited) external.Kill(entireProcessTree: true); }
+            catch (Exception ex) { return new(false, "停止外部 DSH Host 失败：" + HarnessJson.Truncate(ex.Message, 160), status); }
+            for (var attempt = 0; attempt < 20; attempt++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!await IsWebHostRunningAsync(cancellationToken)) break;
+                await Task.Delay(250, cancellationToken);
+            }
+            if (await IsWebHostRunningAsync(cancellationToken))
+                return new(false, "外部 DSH Host 停止后端口仍被占用，未启动 Helper Host。", status);
+        }
+
+        var ready = await EnsureWebHostReadyAsync(userSelectedNodePath, userSelectedDshEntryPath, cancellationToken, permissionMode);
+        return new(ready.Ready, ready.Ready ? "已停止空闲外部 DSH，并由 Helper 接管启动。" : ready.Message, ready.Status);
+    }
+
+    /// <summary>只解析严格的本机回环监听行，拒绝 0.0.0.0/IPv6 全局绑定与非 node 进程。</summary>
+    private static int? TryGetLoopbackWebListenerProcessId()
+    {
+        try
+        {
+            var start = new ProcessStartInfo(Path.Combine(Environment.SystemDirectory, "netstat.exe"))
+            {
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                CreateNoWindow = true
+            };
+            start.ArgumentList.Add("-ano");
+            start.ArgumentList.Add("-p");
+            start.ArgumentList.Add("tcp");
+            using var process = Process.Start(start);
+            if (process is null) return null;
+            var output = process.StandardOutput.ReadToEnd();
+            if (!process.WaitForExit(3000) || process.ExitCode != 0) return null;
+            foreach (var line in output.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
+            {
+                var fields = Regex.Split(line.Trim(), @"\s+");
+                if (fields.Length < 5) continue;
+                var local = fields[1];
+                var loopback = local.EndsWith(":3080", StringComparison.Ordinal)
+                    && (local.StartsWith("127.0.0.1:", StringComparison.Ordinal) || local.StartsWith("[::1]:", StringComparison.Ordinal));
+                if (!loopback || !int.TryParse(fields[^1], out var pid) || pid <= 0) continue;
+                return pid;
+            }
+        }
+        catch { }
+        return null;
     }
 
     private async Task<bool> IsWebHostRunningAsync(CancellationToken cancellationToken)
@@ -489,8 +595,47 @@ public sealed class DeepSeekHarnessService
     /// 不调用裸 dsh，也不依赖 PATH 或 dsh.cmd 能自行找到 node。参数经 ArgumentList 传递。
     /// 启动失败（dsh 未安装/预览协议不可确认）不会误报成功；stdout/stderr 异步读取防死锁。
     /// </summary>
-    private static Process? LaunchDshWeb(string nodePath, string dshEntryPath, string? permissionMode = null)
-        => DeepSeekHarnessProcess.LaunchWebHost(nodePath, dshEntryPath, permissionMode);
+    private Process? LaunchDshWeb(string nodePath, string dshEntryPath, string? permissionMode = null)
+        => DeepSeekHarnessProcess.LaunchWebHost(nodePath, dshEntryPath, permissionMode, ResolveTrustedAuthorities());
+
+    /// <summary>
+    /// 本次同步的 88frp 公网 authority（0 或歧义时为 null）：Host 启动与同步服务共用同一解析结果，
+    /// 使"启动即带 --trusted-host"与"运行时再验证"看到一致的入口。解析失败不阻断启动。
+    /// </summary>
+    internal static IReadOnlyList<string>? ResolveTrustedAuthorities()
+    {
+        try
+        {
+            var authorities = FrpRuntimeAuthorityResolver.ResolveDshWebAuthorities();
+            return authorities.Count == 1 ? authorities : null;
+        }
+        catch { return null; }
+    }
+
+    /// <summary>
+    /// 触发一次受管 authority 同步并返回脱敏状态；同步失败不抛出（启动/诊断路径绝不因同步失败而失败）。
+    /// </summary>
+    public async Task<FrpAuthorityStatus> EnsureAuthoritySyncedAsync(CancellationToken cancellationToken = default)
+    {
+        var sync = authoritySync ??= new FrpAuthoritySyncService();
+        try
+        {
+            var outcome = await sync.CheckAsync(new FrpAuthoritySyncOptions
+            {
+                RestartAllowed = false,
+                ResolveAuthorities = () => FrpRuntimeAuthorityResolver.ResolveDshWebAuthorities(),
+                PatchPath = DshProfilePatchLocator.TryResolveDefaultPatchPath(),
+                DebounceConfirmedAuthority = sync.Snapshot().VerifiedAuthority,
+                VerifyOriginAsync = DeepSeekHarnessHiddenHost.VerifyOriginAsync
+            }, cancellationToken);
+            return outcome.Status;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch { return sync.Snapshot(); }
+    }
 }
 
 /// <summary>进程执行助手：参数安全、异步读取、进程树停止。无 shell 字符串拼接传参。</summary>

@@ -1,0 +1,4 @@
+# Loaded as a normal profile bundle so DSH Plugin Manager can enumerate it.
+- insert:
+    - id: dsh-open-web-access
+      name: dsh-open-web-access

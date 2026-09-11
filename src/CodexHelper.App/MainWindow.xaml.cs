@@ -51,6 +51,9 @@ public partial class MainWindow : Window
     private DeepSeekHarnessService? harnessService;
     private DeepSeekHarnessRunner? harnessRunner;
     private DeepSeekHarnessStartupService? harnessStartupService;
+    /// <summary>88frp 公网 authority 与 DSH 远程信任同步服务（脱敏状态持久化，进程内单例）。</summary>
+    private FrpAuthoritySyncService? frpAuthoritySync;
+    private CancellationTokenSource? frpAuthoritySyncCts;
     private bool harnessRefreshInFlight;
     private bool reasonixRefreshInFlight;
     private HarnessTaskStatus? selectedHarnessTask;
@@ -80,6 +83,7 @@ public partial class MainWindow : Window
         Closed += (_, _) =>
         {
             dshScanCts?.Cancel();
+            frpAuthoritySyncCts?.Cancel();
             taskRefreshCoordinator.Close();
         };
     }
@@ -97,6 +101,8 @@ public partial class MainWindow : Window
         // 也不在启动阶段调用 Reasonix/Harness 外部进程。
         await Task.Yield();
         _ = RefreshStartupDataAsync();
+        // 接管现存 Host 的 88frp 信任同步循环：启动方式无关，与隐藏宿主/计划任务共用同一逻辑。
+        _ = RunFrpAuthoritySyncLoopAsync();
     }
 
     private async Task RefreshStartupDataAsync()
@@ -474,12 +480,101 @@ public partial class MainWindow : Window
         await RefreshHarnessSettingsAsync();
     }
 
+    /// <summary>列表/界面使用的 authority 状态刷新周期（测试可调整）。</summary>
+    private static TimeSpan AuthoritySyncInterval { get; set; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// 接管现存 Host 的信任同步循环：与隐藏宿主、计划任务共用同一套
+    /// <see cref="FrpAuthoritySyncService"/>（检测入口 → 去抖 → 原子更新受管 patch → 公网
+    /// origin 只读验证）。本路径从不重启进程，地址变化只更新状态与 UI，绝不中断编码任务。
+    /// </summary>
+    private async Task RunFrpAuthoritySyncLoopAsync()
+    {
+        frpAuthoritySyncCts?.Cancel();
+        var cts = new CancellationTokenSource();
+        frpAuthoritySyncCts = cts;
+        var token = cts.Token;
+        var sync = frpAuthoritySync ??= new FrpAuthoritySyncService();
+        RenderFrpAuthorityStatus(sync.Snapshot());
+        try
+        {
+            while (!token.IsCancellationRequested && IsLoaded && !taskRefreshCoordinator.Closed)
+            {
+                await RunFrpAuthoritySyncCheckAsync(sync, token);
+                await Task.Delay(AuthoritySyncInterval, token);
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch { /* 同步循环绝不抛出到 UI 线程 */ }
+    }
+
+    /// <summary>执行一次同步检查并把脱敏状态回写界面（窗口关闭或 UI 未加载时不回写）。</summary>
+    private async Task<FrpAuthoritySyncOutcome?> RunFrpAuthoritySyncCheckAsync(FrpAuthoritySyncService sync, CancellationToken cancellationToken)
+    {
+        FrpAuthoritySyncOutcome? outcome = null;
+        try
+        {
+            outcome = await sync.CheckAsync(new FrpAuthoritySyncOptions
+            {
+                // 预先按已确认入口注入 --trusted-host，避免"先被拒再重启"的额外窗口。
+                RestartAllowed = false,
+                ResolveAuthorities = () => FrpRuntimeAuthorityResolver.ResolveDshWebAuthorities(),
+                PatchPath = DshProfilePatchLocator.TryResolveDefaultPatchPath(),
+                DebounceConfirmedAuthority = sync.Snapshot().VerifiedAuthority,
+                VerifyOriginAsync = DeepSeekHarnessHiddenHost.VerifyOriginAsync
+            }, cancellationToken);
+        }
+        catch (OperationCanceledException) { return null; }
+        catch { return null; }
+        if (IsLoaded && !taskRefreshCoordinator.Closed) RenderFrpAuthorityStatus(outcome.Status);
+        return outcome;
+    }
+
+    /// <summary>界面展示脱敏同步状态：检测入口、已验证入口、最后验证时间、pending 原因与最近可读错误。</summary>
+    private void RenderFrpAuthorityStatus(FrpAuthorityStatus status)
+    {
+        if (FrpAuthoritySyncStateText is null || !IsLoaded || taskRefreshCoordinator.Closed) return;
+        var text = status.State switch
+        {
+            FrpAuthorityStatus.Verified => "88frp 公网入口：已验证",
+            FrpAuthorityStatus.Pending => "88frp 公网入口：待生效",
+            FrpAuthorityStatus.Debouncing => "88frp 公网入口：稳定性确认中",
+            FrpAuthorityStatus.Failed => "88frp 公网入口：同步失败",
+            _ => "88frp 公网入口：未检测到唯一入口"
+        };
+        if (!string.IsNullOrWhiteSpace(status.DetectedAuthority)) text += " · 检测 " + status.DetectedAuthority;
+        if (!string.IsNullOrWhiteSpace(status.VerifiedAuthority))
+            text += " · 已验证 " + status.VerifiedAuthority
+                + (status.VerifiedUtc is { } time ? $"（{time.ToLocalTime():MM-dd HH:mm}）" : string.Empty);
+        if (!string.IsNullOrWhiteSpace(status.PendingReason)) text += " · " + status.PendingReason;
+        if (!string.IsNullOrWhiteSpace(status.Error)) text += " · " + status.Error;
+        FrpAuthoritySyncStateText.Text = text + "。";
+    }
+
     private void StopHarnessHost_Click(object sender, RoutedEventArgs e)
     {
         if (harnessService is null) return;
         harnessService.StopWebHost();
         _ = RefreshHarnessSettingsAsync();
         MessageBox.Show("已停止 Helper 启动的 Harness Web Host。", "Harness Host", MessageBoxButton.OK, MessageBoxImage.Information);
+    }
+
+    private async void TakeOverHarnessHost_Click(object sender, RoutedEventArgs e)
+    {
+        if (harnessService is null) return;
+        var confirm = MessageBox.Show(
+            "接管会先确认 127.0.0.1:3080 上的外部 DSH 没有运行任务；只有空闲时才会停止它并由 Helper 重启。是否继续？",
+            "接管 DSH Host", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+        if (confirm != MessageBoxResult.Yes) return;
+        await RunOperationAsync("接管 Harness Host", async cancellationToken =>
+        {
+            var result = await harnessService.TakeOverExternalWebHostAsync(
+                settings.HarnessNodePath, settings.HarnessDshEntryPath, cancellationToken, settings.HarnessPermissionMode);
+            harnessStatus = result.Status;
+            await RefreshHarnessSettingsAsync(forceRefresh: true, cancellationToken);
+            MessageBox.Show(result.Message, "Harness Host", MessageBoxButton.OK,
+                result.TakenOver ? MessageBoxImage.Information : MessageBoxImage.Warning);
+        }, showProgress: false);
     }
 
     private void ChooseHarnessNode_Click(object sender, RoutedEventArgs e)
